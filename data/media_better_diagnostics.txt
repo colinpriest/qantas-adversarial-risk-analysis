@@ -1,0 +1,19 @@
+Processing csv files: C:\Users\colin\AppData\Local\Temp\tmp0wdujdi5\media_betteroch6tlss\media_better-20260228191906_1.csv, C:\Users\colin\AppData\Local\Temp\tmp0wdujdi5\media_betteroch6tlss\media_better-20260228191906_2.csv, C:\Users\colin\AppData\Local\Temp\tmp0wdujdi5\media_betteroch6tlss\media_better-20260228191906_3.csv, C:\Users\colin\AppData\Local\Temp\tmp0wdujdi5\media_betteroch6tlss\media_better-20260228191906_4.csv
+
+Checking sampler transitions treedepth.
+Treedepth satisfactory for all transitions.
+
+Checking sampler transitions for divergences.
+2 of 8000 (0.03%) transitions ended with a divergence.
+These divergent transitions indicate that HMC is not fully able to explore the posterior distribution.
+Try increasing adapt delta closer to 1.
+If this doesn't remove all divergences, try to reparameterize the model.
+
+Checking E-BFMI - sampler transitions HMC potential energy.
+E-BFMI satisfactory.
+
+Effective sample size satisfactory.
+
+Split R-hat values satisfactory all parameters.
+
+Processing complete.

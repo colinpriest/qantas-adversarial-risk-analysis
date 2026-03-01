@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Conda environment
+.conda/
+
+# Claude Code
+.claude/
+
+# Compiled Stan models (rebuild from .stan source)
+models/*.exe
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

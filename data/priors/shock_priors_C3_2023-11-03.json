@@ -1,0 +1,42 @@
+{
+  "gamma_A_vote_logit": {
+    "dist": "normal",
+    "mu": 2.0854056566153325,
+    "sigma": 0.7594722280759145,
+    "n": 27,
+    "model": "OLS: logit(rem_against_pct) ~ asa_against + prior_year_pct + log_mkt_cap + gics_FE",
+    "asof": "2023-11-03",
+    "max_included_month": "2023-10",
+    "notes": "Vote-channel prior on additive logit scale. sigma = sqrt(SE^2 + (0.35*resid_sd)^2)."
+  },
+  "gamma_A_strike_logodds": {
+    "dist": "normal",
+    "mu": 3.163552501509208,
+    "sigma": 1.3781948122593453,
+    "n": 27,
+    "model": "BayesLogit(MAP+Laplace): first_strike ~ asa_against + prior_year_pct + log_mkt_cap + gics_FE; beta~N(0,2.5^2)",
+    "asof": "2023-11-03",
+    "max_included_month": "2023-10",
+    "notes": "Strike-channel prior on log-odds scale from Bayesian logistic regression; Laplace approx for SE."
+  },
+  "gamma_A_combined": {
+    "dist": "normal",
+    "mu": 2.3365437880610873,
+    "sigma": 0.6651628446982732,
+    "n": 27,
+    "model": "Inverse-variance blend of vote-logit and strike-logodds priors",
+    "asof": "2023-11-03",
+    "max_included_month": "2023-10",
+    "notes": "Combined prior blends two logit-scale effects (vote opposition and strike propensity)."
+  },
+  "gamma_A_belief_from_vote": {
+    "dist": "normal",
+    "mu": 33.18713695206601,
+    "sigma": 376.07959299416933,
+    "n": 27,
+    "model": "Mapped: gamma_A_vote_logit / lambda_rem (Monte Carlo over Stan lambda posterior)",
+    "asof": "2023-11-03",
+    "max_included_month": "2023-10",
+    "notes": "Belief-scale prior compatible with checkpoint_update.py additive B-shock."
+  }
+}

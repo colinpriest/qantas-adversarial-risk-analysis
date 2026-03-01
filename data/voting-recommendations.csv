@@ -1,0 +1,37 @@
+company,asx_code,year,month,rem_against_pct,first_strike,asa_against,asa_proxy_against,proxy_adv_against,multi_target,prior_year_pct,log_mkt_cap,headline_incident,gics
+Rio Tinto,RIO,2021,05,0.610,1,1,1,1,1,0.120,25.1,1,Materials
+AGL Energy,AGL,2021,09,0.310,1,1,1,1,0,0.150,22.8,1,Utilities
+QBE Insurance,QBE,2021,05,0.440,1,1,1,1,0,0.080,23.4,0,Financials
+Scentre Group,SCG,2021,04,0.510,1,1,1,1,1,0.100,23.6,0,Real Estate
+Westpac,WBC,2021,12,0.300,1,1,1,1,0,0.180,25.4,1,Financials
+IAG,IAG,2021,10,0.573,1,1,1,1,0,0.220,23.2,1,Financials
+Dexus,DXS,2021,10,0.660,1,1,1,1,1,0.050,22.9,0,Real Estate
+Link Administration,LNK,2021,11,0.630,1,1,1,1,0,0.140,21.5,0,Info Tech
+Platinum Asset Mgmt,PTM,2021,11,0.500,1,1,1,1,0,0.120,20.8,0,Financials
+Argo Investments,ARG,2021,10,0.170,0,1,1,0,0,0.170,22.2,0,Financials
+Downer EDI,DOW,2022,11,0.558,1,1,1,1,0,0.120,21.8,1,Industrials
+Blackmores,BKL,2022,10,0.434,1,1,1,1,0,0.150,20.9,0,Consumer Staples
+Newcrest Mining,NCM,2022,11,0.370,1,1,1,1,0,0.090,23.8,0,Materials
+ASX Ltd,ASX,2022,10,0.310,1,1,1,1,1,0.050,23.1,1,Financials
+Goodman Group,GMG,2022,11,0.289,1,1,1,1,0,0.210,24.5,0,Real Estate
+Santos,STO,2022,05,0.253,1,0,0,1,0,0.080,24.1,0,Energy
+Corporate Travel,CTD,2022,10,0.330,1,1,1,1,0,0.110,21.3,0,Consumer Disc.
+BHP Group,BHP,2022,11,0.030,0,0,0,0,0,0.020,26.1,0,Materials
+Rio Tinto,RIO,2022,05,0.157,0,0,0,0,0,0.610,25.0,0,Materials
+Westpac,WBC,2022,12,0.120,0,0,0,0,0,0.300,25.3,0,Financials
+Qantas,QAN,2023,11,0.829,1,1,1,1,1,0.070,23.1,1,Industrials
+Harvey Norman,HVN,2023,11,0.818,1,1,1,1,1,0.180,22.4,1,Consumer Disc.
+Fortescue,FMG,2023,11,0.520,1,0,0,1,0,0.150,24.8,1,Materials
+Treasury Wine,TWE,2023,10,0.460,1,1,1,1,0,0.120,22.8,0,Consumer Staples
+Tabcorp,TAH,2023,10,0.340,1,1,1,1,0,0.090,21.6,0,Consumer Disc.
+Woolworths,WOW,2023,10,0.280,1,1,1,1,0,0.045,24.4,1,Consumer Staples
+Elders,ELD,2023,12,0.627,1,1,1,1,1,0.140,20.8,1,Consumer Disc.
+Mineral Resources,MIN,2023,11,0.746,1,1,1,1,0,0.180,23.2,1,Materials
+Computershare,CPU,2023,11,0.275,1,1,1,1,0,0.040,23.3,0,Info Tech
+Perpetual,PPT,2023,10,0.881,1,1,1,1,1,0.189,21.1,1,Financials
+Healius,HLS,2023,11,0.550,1,1,1,1,0,0.120,21.5,0,Health Care
+Sandfire Resources,SFR,2023,11,0.561,1,1,1,1,0,0.150,21.4,0,Materials
+BrainChip,BRN,2023,05,0.520,1,1,1,1,0,0.180,20.6,0,Info Tech
+Atlas Arteria,ALX,2023,05,0.510,1,1,1,1,0,0.140,22.5,1,Industrials
+Macquarie Group,MQG,2023,07,0.254,1,1,0,1,0,0.110,24.9,1,Financials
+NRW Holdings,NWH,2023,11,0.498,1,1,1,1,1,0.310,21.1,1,Materials
