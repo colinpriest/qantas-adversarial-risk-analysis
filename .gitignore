@@ -20,6 +20,9 @@ models/*.exe
 Thumbs.db
 desktop.ini
 
+# Generated outputs (regenerate via run scripts)
+outputs/
+
 # IDE
 .vscode/
 .idea/

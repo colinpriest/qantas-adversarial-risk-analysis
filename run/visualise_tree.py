@@ -1,0 +1,466 @@
+"""
+Visualise the ARA game tree with annotations from solver results.
+
+Generates two left-to-right tree diagrams:
+  1. Probability tree  — edge labels show split probabilities
+  2. Expected utility tree — node labels show EU values
+
+Strategy:
+  - Run the solver with small K/R to get EU per initial action quickly
+  - Build the visual tree by walking game structure with:
+    * Fixed policies for decision-node probabilities (instant)
+    * Cheap MC sampling for chance-node probabilities
+    * Direct utility computation at terminals (instant)
+  - Use solver results to annotate the D1 root with accurate EU values
+
+Node shapes:   box = decision,  ellipse = chance,  diamond = terminal
+Node colours:  Board = blue,  ASA = green,  CEO = red,  Nature = grey
+
+Usage:
+    python -m run.visualise_tree --checkpoint C0 --n_draws 5
+    python -m run.visualise_tree --checkpoint C3 --focal ASA --n_draws 10
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# Graphviz binary on Windows
+_GV_BIN = Path(r"C:\Program Files\Graphviz\bin")
+if _GV_BIN.exists():
+    os.environ["PATH"] = str(_GV_BIN) + os.pathsep + os.environ.get("PATH", "")
+
+import graphviz
+
+from engine.solver import Solver, SolveResult
+from engine.state import DecisionState, BeliefBundle
+from engine.modes import (
+    AVAILABLE_MODES, ModeConfig,
+    MODE_BOARD_POLICY_ASA, MODE_ASA_POLICY_BOARD,
+)
+from engine.chance_models import ChanceModels, OverconfidenceBias
+from engine.predictive import PredictiveDistribution
+from engine.utilities import TerminalOutcome, compute_utility
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# ── Visual constants ────────────────────────────────────────────────
+OWNER_COLOURS = {
+    "Board": "#4A90D9", "ASA": "#50C878",
+    "CEO": "#E85D5D", "Nature": "#AAAAAA",
+}
+TYPE_SHAPES = {"decision": "box", "chance": "ellipse", "terminal": "diamond"}
+
+NICE_NODE = {
+    "D0_ceo": "D0_ceo\nCEO\nResign?",
+    "D1": "D1\nBoard\nGovernance",
+    "A2": "A2\nASA\nStrike Rec.",
+    "V": "V\nShareholder\nVote",
+    "M_agm": "M_agm\nMarket (AGM)",
+    "D_rev": "D_rev\nBoard\nReview Resp.",
+    "R": "R\nReview\nFindings",
+    "M_rev": "M_rev\nMarket (Rev.)",
+    "D4": "D4\nCEO\nResponse",
+    "Terminal": "Terminal",
+}
+NICE_EDGE = {
+    "CEO_resign": "CEO resigns\n(05-Sep-2023)",
+    "CEO_stay": "CEO stays\n(counterfactual)",
+    "D0_minimal": "Do nothing",
+    "D1_review": "Commission review",
+    "D3_ceo_transition": "Force CEO exit",
+    "A2_no_strike": "No strike",
+    "A2_rec_strike": "Rec. strike",
+    "Drev_no_action": "No action",
+    "Drev_commission_review": "Commission review",
+    "Drev_sack_ceo": "Sack CEO",
+    "D4_stay": "Stay",
+    "D4_resign": "Resign",
+    "D4_negotiate_exit": "Negotiate exit",
+}
+
+
+# ── Data structures ─────────────────────────────────────────────────
+
+@dataclass
+class VizNode:
+    id: str
+    node_name: str
+    node_type: str          # decision / chance / terminal
+    owner: str
+    eu: float = 0.0
+    children: list = field(default_factory=list)   # (label, prob, VizNode)
+
+
+# ── Cheap MC helpers for chance-node probabilities ──────────────────
+
+def _sample_vote_probs(
+    beliefs, history, state, chance, bias, n, seed,
+):
+    """Return {pr_strike, pr_no, avg_v_strike, avg_v_no}."""
+    sc, nc = 0, 0
+    vs, vn = 0.0, 0.0
+    for i in range(n):
+        rng = np.random.default_rng(seed + i + 5000)
+        d1 = history.get("D1", "D0_minimal")
+        ge = chance.vote._governance_effect(d1, rng, bias=bias)
+        ss = bias.sigma_scale if bias else None
+        vo = chance.sample_vote(i % beliefs.N, beliefs, history, state, rng,
+                                governance_effect=ge, sigma_scale=ss)
+        if vo.strike_indicator:
+            sc += 1; vs += vo.vote_percent
+        else:
+            nc += 1; vn += vo.vote_percent
+    pr_s = sc / max(n, 1)
+    return dict(pr_strike=pr_s, pr_no=1 - pr_s,
+                avg_v_strike=vs / sc if sc else 0.35,
+                avg_v_no=vn / nc if nc else 0.15)
+
+
+def _sample_review_stats(beliefs, history, state, chance, bias, n, seed):
+    """Return P(adverse), mean CAR for adverse branch, mean CAR for clean branch."""
+    adv_count = 0
+    car_adv_sum = 0.0
+    car_clean_sum = 0.0
+    clean_count = 0
+    for i in range(n):
+        out = chance.sample_review(
+            i % beliefs.N, beliefs, history, state,
+            np.random.default_rng(seed + i + 8000), bias=bias,
+        )
+        if out.review_adverse:
+            adv_count += 1
+            car_adv_sum += out.review_car
+        else:
+            clean_count += 1
+            car_clean_sum += out.review_car
+    p_adv = adv_count / max(n, 1)
+    mean_car_adv = car_adv_sum / max(adv_count, 1)
+    mean_car_clean = car_clean_sum / max(clean_count, 1)
+    return dict(p_adv=p_adv, mean_car_adv=mean_car_adv,
+                mean_car_clean=mean_car_clean)
+
+
+def _terminal_eu(history, state, focal, weights):
+    outcome = PredictiveDistribution._build_outcome(history, state)
+    return compute_utility(focal, outcome, weights)
+
+
+# ── Tree builder (uses fixed policies — no ARA recursion) ──────────
+
+def _sample_policy_probs(pred, owner, node_name, history, state, feasible,
+                         n, seed):
+    """Sample a fixed policy n times to get an empirical distribution."""
+    counts = {a: 0 for a in feasible}
+    for i in range(n):
+        rng = np.random.default_rng(seed + i + 3000)
+        a = pred._fixed_policy(owner, node_name, history, state, feasible,
+                               rng=rng)
+        counts[a] += 1
+    total = sum(counts.values())
+    return {a: c / total for a, c in counts.items()} if total else {
+        a: 1.0 / len(feasible) for a in feasible}
+
+
+def build_viz_tree(
+    solver: Solver,
+    result: SolveResult,
+    focal: str,
+    checkpoint_id: str,
+    mode: ModeConfig,
+    bias: Optional[OverconfidenceBias],
+    n_mc: int = 200,
+    scenario: str = "ceo_stayed",
+) -> VizNode:
+    cp_path = solver._find_checkpoint(checkpoint_id)
+    beliefs = BeliefBundle(cp_path)
+    chance = ChanceModels(solver.vote_thresholds)
+    base_state = DecisionState.from_governance_spec(
+        solver.governance_spec_path, checkpoint_id=checkpoint_id)
+    base_state = base_state.for_scenario(scenario)
+    weights = solver.utility_weights.get(focal, {})
+    seed = solver.seed
+
+    # Light-weight predictive engine — used for _fixed_policy() sampling
+    pred = PredictiveDistribution(
+        beliefs=beliefs, param_sampler=solver.param_sampler,
+        chance_models=chance, policy_params=solver.policy_params,
+        K=20, R_rollouts=5, overconfidence_bias=bias,
+    )
+
+    # Index solver predictive dists: result.predictive_dists is
+    #   {d1_action: {"A2 (ASA)": {action: prob}, "D4 (CEO)": ...}}
+    # Flatten to {(d1_action, node_name_prefix): {action: prob}}
+    _solver_preds = {}
+    for d1_act, node_dists in result.predictive_dists.items():
+        for node_label, dist in node_dists.items():
+            # node_label is e.g. "A2 (ASA)" — extract "A2"
+            node_key = node_label.split(" ")[0]
+            _solver_preds[(d1_act, node_key)] = dist
+
+    _ctr = [0]
+    def _nid():
+        _ctr[0] += 1; return f"n{_ctr[0]}"
+
+    def _walk(node_name, history, state, depth):
+        ntype = state.node_type(node_name) if node_name else "terminal"
+        owner = state.node_owner(node_name) if node_name else "Nature"
+
+        if node_name is None or ntype == "terminal" or depth > 12:
+            eu = _terminal_eu(history, state, focal, weights)
+            return VizNode(_nid(), "Terminal", "terminal", "Nature", eu=eu)
+
+        nd = VizNode(_nid(), node_name, ntype, owner)
+
+        if ntype == "decision":
+            feasible = state.feasible_actions(node_name)
+            if not feasible:
+                child = _walk(state.next_node(node_name), history, state, depth)
+                nd.children.append(("(skip)", 1.0, child))
+                return nd
+
+            if node_name == "D1" and depth == 0:
+                # Root: use solver EU values directly
+                best = result.optimal_action
+                for a in feasible:
+                    h = dict(history); h[node_name] = a
+                    s = state.apply(node_name, a)
+                    child = _walk(s.next_node(node_name), h, s, depth + 1)
+                    p = 1.0 if a == best else 0.0
+                    nd.children.append((a, p, child))
+                nd.eu = result.optimal_EU
+
+            elif not mode.is_focal(owner):
+                # Opponent node: use solver's predictive distributions
+                # if available, otherwise sample the fixed policy many times
+                d1_act = history.get("D1", "D0_minimal")
+                solver_dist = _solver_preds.get((d1_act, node_name))
+                if solver_dist:
+                    probs = solver_dist
+                else:
+                    probs = _sample_policy_probs(
+                        pred, owner, node_name, history, state,
+                        feasible, n_mc, seed)
+                for a in feasible:
+                    h = dict(history); h[node_name] = a
+                    s = state.apply(node_name, a)
+                    child = _walk(s.next_node(node_name), h, s, depth + 1)
+                    nd.children.append((a, probs.get(a, 0.0), child))
+
+            else:
+                # Deeper focal node: sample fixed policy many times
+                probs = _sample_policy_probs(
+                    pred, owner, node_name, history, state,
+                    feasible, n_mc, seed)
+                for a in feasible:
+                    h = dict(history); h[node_name] = a
+                    s = state.apply(node_name, a)
+                    child = _walk(s.next_node(node_name), h, s, depth + 1)
+                    nd.children.append((a, probs.get(a, 0.0), child))
+
+        elif ntype == "chance":
+            if node_name in ("M_agm", "M_rev"):
+                h = dict(history); h[node_name] = "market_reaction"
+                child = _walk(state.next_node(node_name), h, state, depth + 1)
+                nd.children.append(("pass-through", 1.0, child))
+
+            elif node_name == "V":
+                vp = _sample_vote_probs(
+                    beliefs, history, state, chance, bias, n_mc, seed)
+                for lbl, pr, vpct, strike, ovw in [
+                    ("No strike (<25%)", vp["pr_no"],
+                     vp["avg_v_no"], False, False),
+                    ("Strike (>=25%)", vp["pr_strike"],
+                     vp["avg_v_strike"], True, False),
+                ]:
+                    h = dict(history)
+                    h["V"] = "vote"; h["V_percent"] = vpct
+                    h["V_strike"] = strike; h["V_overwhelming"] = ovw
+                    child = _walk(
+                        state.next_node("V"), h, state, depth + 1)
+                    nd.children.append((lbl, pr, child))
+
+            elif node_name == "R":
+                if not state.review_commissioned:
+                    h = dict(history)
+                    h["R"] = "review"; h["R_adverse"] = False
+                    h["R_car"] = 0.0
+                    sc = state.apply("R", "no_adverse")
+                    sc.review_completed = True
+                    child = _walk(state.next_node("R"), h, sc, depth + 1)
+                    nd.children.append(("No review", 1.0, child))
+                else:
+                    rs = _sample_review_stats(
+                        beliefs, history, state, chance, bias, n_mc, seed)
+                    for lbl, pr, adv, car in [
+                        ("No adverse", 1 - rs["p_adv"], False,
+                         rs["mean_car_clean"]),
+                        ("Adverse finding", rs["p_adv"], True,
+                         rs["mean_car_adv"]),
+                    ]:
+                        h = dict(history)
+                        h["R"] = "review"; h["R_adverse"] = adv
+                        h["R_car"] = car
+                        s = state.apply(
+                            "R", "adverse" if adv else "no_adverse")
+                        s.review_completed = True
+                        child = _walk(
+                            state.next_node("R"), h, s, depth + 1)
+                        nd.children.append((lbl, pr, child))
+
+        return nd
+
+    root = _walk("D1", {}, base_state, 0)
+
+    # Back-propagate EU from terminals
+    def _bp(nd):
+        if not nd.children:
+            return nd.eu
+        total = 0.0
+        for _, p, ch in nd.children:
+            _bp(ch)
+            total += p * ch.eu
+        if nd.node_name == "D1":
+            # Keep solver EU at root
+            pass
+        elif nd.eu == 0.0:
+            nd.eu = total
+        return nd.eu
+    _bp(root)
+
+    # Override D1-branch EU from solver result
+    for action, _, child in root.children:
+        if action in result.EU_per_action:
+            child.eu = result.EU_per_action[action]
+
+    return root
+
+
+# ── Graphviz rendering ──────────────────────────────────────────────
+
+def render_tree(root, title, diagram_mode, output_path, fmt="png"):
+    g = graphviz.Digraph(format=fmt, engine="dot")
+    g.attr(rankdir="LR", label=title, labelloc="t", fontsize="18",
+           fontname="Helvetica", bgcolor="#FAFAFA", dpi="150",
+           nodesep="0.5", ranksep="1.0", margin="0.3")
+    g.attr("node", fontname="Helvetica", fontsize="10",
+           style="filled", penwidth="1.5")
+    g.attr("edge", fontname="Helvetica", fontsize="9")
+
+    def _add(nd):
+        colour = OWNER_COLOURS.get(nd.owner, "#CCC")
+        shape = TYPE_SHAPES.get(nd.node_type, "ellipse")
+        nice = NICE_NODE.get(nd.node_name, nd.node_name)
+        if diagram_mode == "eu":
+            label = f"{nice}\nEU={nd.eu:+.3f}"
+        else:
+            label = nice
+
+        g.node(nd.id, label=label, shape=shape,
+               fillcolor=colour, fontcolor="white")
+
+        for action, prob, child in nd.children:
+            _add(child)
+            alabel = NICE_EDGE.get(action, action)
+            if diagram_mode == "prob":
+                elabel = f"{alabel}\np={prob:.2f}"
+            else:
+                elabel = f"{alabel}\nEU={child.eu:+.3f}"
+            pw = str(max(0.5, prob * 4.0))
+            ecol = "#333" if prob > 0.01 else "#CCC"
+            g.edge(nd.id, child.id, label=elabel,
+                   penwidth=pw, color=ecol, fontcolor="#333")
+
+    _add(root)
+    g.render(output_path, cleanup=True)
+    logger.info(f"Saved: {output_path}.{fmt}")
+
+
+# ── CLI ─────────────────────────────────────────────────────────────
+
+def main():
+    p = argparse.ArgumentParser(description="Visualise the ARA game tree")
+    p.add_argument("--checkpoint", default="C0")
+    p.add_argument("--focal", default="Board", choices=["Board", "ASA"])
+    p.add_argument("--n_draws", type=int, default=5,
+                   help="Belief draws for solver (default 5; keep small)")
+    p.add_argument("--n_mc", type=int, default=200,
+                   help="MC samples for chance-node probabilities")
+    p.add_argument("--no-bias", action="store_true")
+    p.add_argument("--scenario", default="both",
+                   choices=["ceo_stayed", "ceo_resigned", "both"],
+                   help="Pre-game CEO resignation scenario (default: both)")
+    p.add_argument("--format", default="png", choices=["png", "svg", "pdf"])
+    p.add_argument("--seed", type=int, default=42)
+    args = p.parse_args()
+
+    data = PROJECT_ROOT / "data"
+    out = PROJECT_ROOT / "outputs"
+    out.mkdir(exist_ok=True)
+
+    # Use Policy modes for the solver — much faster than ARA
+    if args.focal == "Board":
+        mode = MODE_BOARD_POLICY_ASA
+    else:
+        mode = MODE_ASA_POLICY_BOARD
+
+    solver = Solver(
+        governance_spec_path=data / "governance_spec.xlsx",
+        opponent_priors_path=data / "opponent_priors.xlsx",
+        checkpoint_dir=data / "checkpoints",
+        K=30, R_rollouts=5, seed=args.seed,
+    )
+    bias = None if args.no_bias else solver.overconfidence_bias
+
+    scenarios = (["ceo_stayed", "ceo_resigned"] if args.scenario == "both"
+                 else [args.scenario])
+
+    for scenario in scenarios:
+        # Step 1: run solver (fast with policy mode + small K/R)
+        logger.info(f"Solving: {args.focal}, {args.checkpoint}, scenario={scenario}, n={args.n_draws}")
+        result = solver.solve(
+            focal_actor=args.focal, checkpoint_id=args.checkpoint,
+            mode=mode, n_draws=args.n_draws, overconfidence_bias=bias,
+            scenario=scenario,
+        )
+        result.print_diagnostics()
+
+        # Step 2: build visual tree (instant — fixed policies + MC)
+        logger.info("Building visual tree…")
+        root = build_viz_tree(
+            solver, result, args.focal, args.checkpoint, mode, bias,
+            n_mc=args.n_mc, scenario=scenario,
+        )
+
+        tag = f"{args.focal}_{args.checkpoint}_{scenario}"
+
+        # Step 3: render
+        render_tree(root,
+                    title=f"Game Tree — Probabilities  ({args.focal}, {args.checkpoint}, {scenario})",
+                    diagram_mode="prob",
+                    output_path=str(out / f"tree_prob_{tag}"), fmt=args.format)
+        render_tree(root,
+                    title=f"Game Tree — Expected Utility  ({args.focal}, {args.checkpoint}, {scenario})",
+                    diagram_mode="eu",
+                    output_path=str(out / f"tree_eu_{tag}"), fmt=args.format)
+
+        print(f"\nDone. Diagrams for scenario '{scenario}' in {out}/")
+        print(f"  tree_prob_{tag}.{args.format}")
+        print(f"  tree_eu_{tag}.{args.format}")
+
+
+if __name__ == "__main__":
+    main()

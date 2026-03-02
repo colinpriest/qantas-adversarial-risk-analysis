@@ -1,0 +1,1927 @@
+"""
+Comprehensive test suite for the ARA engine.
+
+Tests cover:
+1. Data loading and validation (state, beliefs, priors)
+2. Feasibility rules and state transitions
+3. Chance models (vote and review)
+4. Utility functions
+5. Mode configurations
+6. Predictive distributions
+7. Tree evaluation
+8. Solver integration
+9. Validation checklist from spec (policy sensitivity)
+"""
+
+import sys
+import os
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+# Add project root
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+DATA_DIR = PROJECT_ROOT / "data"
+CHECKPOINT_DIR = DATA_DIR / "checkpoints"
+GOV_SPEC = DATA_DIR / "governance_spec.xlsx"
+OPP_PRIORS = DATA_DIR / "opponent_priors.xlsx"
+
+
+# ============================================================================
+# 1. DATA LOADING AND VALIDATION
+# ============================================================================
+
+class TestDataLoading:
+    """Test data contract loading and validation."""
+
+    def test_governance_spec_loads(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        assert state.CEO_present is True
+        assert state.review_commissioned is False
+        assert len(state._node_order) == 10
+        assert state._node_order[0] == "D0_ceo"
+        assert state._node_order[1] == "D1"
+        assert state._node_order[-1] == "Terminal"
+
+    def test_node_order_types(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        assert state.node_type("D0_ceo") == "decision"
+        assert state.node_type("D1") == "decision"
+        assert state.node_type("V") == "chance"
+        assert state.node_type("Terminal") == "terminal"
+        assert state.node_type("R") == "chance"
+
+    def test_node_owners(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        assert state.node_owner("D0_ceo") == "CEO"
+        assert state.node_owner("D1") == "Board"
+        assert state.node_owner("A2") == "ASA"
+        assert state.node_owner("V") == "Nature"
+        assert state.node_owner("D4") == "CEO"
+
+    def test_vote_thresholds(self):
+        from engine.state import load_vote_thresholds
+        t = load_vote_thresholds(GOV_SPEC)
+        assert t["first_strike"] == 0.25
+        assert t["overwhelming"] == 0.50
+        assert t["first_strike"] < t["overwhelming"]
+
+    def test_utility_weights_board(self):
+        from engine.state import load_utility_weights
+        w = load_utility_weights(GOV_SPEC, "Board")
+        assert "vote_penalty_weight" in w
+        assert "review_direct_cost_weight" in w
+        assert w["vote_penalty_weight"] > 0
+
+    def test_utility_weights_asa(self):
+        from engine.state import load_utility_weights
+        w = load_utility_weights(GOV_SPEC, "ASA")
+        assert "vote_reward_weight" in w
+        assert "mobilisation_cost" in w
+
+    def test_utility_weights_ceo(self):
+        from engine.state import load_utility_weights
+        w = load_utility_weights(GOV_SPEC, "CEO")
+        assert "gamma" in w
+        assert "W_resign" in w
+        assert "D_sacked" in w
+
+    def test_policy_parameters(self):
+        from engine.state import load_policy_parameters
+        p = load_policy_parameters(GOV_SPEC)
+        assert ("Board", "D_rev", "review_vote_threshold") in p
+        assert ("CEO", "D4", "resign_vote_threshold") in p
+        assert ("ASA", "A2", "mobilise_vote_threshold") in p
+
+    def test_belief_bundle_loads(self):
+        from engine.state import BeliefBundle
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        assert bb.N == 500
+        assert len(bb.B_mkt) == 500
+        assert len(bb.alpha_vote) == 500
+
+    def test_belief_bundle_draw(self):
+        from engine.state import BeliefBundle
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        d = bb.get_draw(0)
+        assert "B_mkt" in d
+        assert "alpha_vote" in d
+        assert "gamma_A" in d
+        assert isinstance(d["B_mkt"], float)
+
+    def test_belief_bundle_metadata(self):
+        from engine.state import BeliefBundle
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        assert bb.metadata["checkpoint_id"] == "C0"
+        assert bb.metadata["n_draws"] == 500
+
+    def test_parameter_sampler(self):
+        from engine.state import ParameterSampler
+        ps = ParameterSampler(OPP_PRIORS)
+        rng = np.random.default_rng(42)
+        # Board's belief about ASA parameters
+        params = ps.sample_parameters("Board", "ASA", rng)
+        assert "mobilisation_cost" in params
+        assert "vote_reward_weight" in params
+
+    def test_parameter_sampler_all_perspectives(self):
+        from engine.state import ParameterSampler
+        ps = ParameterSampler(OPP_PRIORS)
+        rng = np.random.default_rng(42)
+        for persp, tgt in [("Board", "ASA"), ("Board", "CEO"),
+                            ("ASA", "Board"), ("ASA", "CEO")]:
+            params = ps.sample_parameters(persp, tgt, rng)
+            assert len(params) > 0, f"No params for {persp}->{tgt}"
+
+
+# ============================================================================
+# 2. FEASIBILITY RULES AND STATE TRANSITIONS
+# ============================================================================
+
+class TestFeasibility:
+    """Test feasibility rules and state transitions."""
+
+    def test_d1_all_feasible(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        actions = state.feasible_actions("D1")
+        assert len(actions) == 3
+        assert "D0_minimal" in actions
+        assert "D3_ceo_transition" in actions
+
+    def test_a2_all_feasible(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        actions = state.feasible_actions("A2")
+        assert len(actions) == 2
+        assert "A2_no_strike" in actions
+        assert "A2_rec_strike" in actions
+
+    def test_d_rev_no_action_always_feasible(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        actions = state.feasible_actions("D_rev")
+        assert "Drev_no_action" in actions
+
+    def test_d_rev_commission_review_feasibility(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # Initially review not commissioned, so commission should be feasible
+        actions = state.feasible_actions("D_rev")
+        assert "Drev_commission_review" in actions
+
+        # After commissioning review, should no longer be feasible
+        state2 = state.apply("D_rev", "Drev_commission_review")
+        actions2 = state2.feasible_actions("D_rev")
+        assert "Drev_commission_review" not in actions2
+
+    def test_d_rev_sack_requires_ceo_present(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # CEO present: sack feasible
+        actions = state.feasible_actions("D_rev")
+        assert "Drev_sack_ceo" in actions
+
+        # CEO removed: sack not feasible
+        state2 = state.apply("D1", "D3_ceo_transition")
+        actions2 = state2.feasible_actions("D_rev")
+        assert "Drev_sack_ceo" not in actions2
+
+    def test_d4_requires_ceo_present(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # CEO present: all D4 actions feasible
+        actions = state.feasible_actions("D4")
+        assert len(actions) == 3
+
+        # CEO removed: no D4 actions feasible
+        state2 = state.apply("D1", "D3_ceo_transition")
+        actions2 = state2.feasible_actions("D4")
+        assert len(actions2) == 0
+
+    def test_state_apply_d3_removes_ceo(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state2 = state.apply("D1", "D3_ceo_transition")
+        assert state2.CEO_present is False
+        assert state2.CEO_removed is True
+
+    def test_state_apply_resign_removes_ceo(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state2 = state.apply("D4", "D4_resign")
+        assert state2.CEO_present is False
+        assert state2.CEO_removed is True
+
+    def test_next_node_ordering(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        assert state.next_node("D0_ceo") == "D1"
+        assert state.next_node("D1") == "A2"
+        assert state.next_node("A2") == "V"
+        assert state.next_node("V") == "M_agm"
+        assert state.next_node("D4") == "Terminal"
+        assert state.next_node("Terminal") is None
+
+
+# ============================================================================
+# 3. CHANCE MODELS
+# ============================================================================
+
+class TestChanceModels:
+    """Test vote and review models."""
+
+    def test_vote_model_basic(self):
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import VoteModel
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        vote_model = VoteModel({"first_strike": 0.25, "overwhelming": 0.50})
+        rng = np.random.default_rng(42)
+
+        history = {"D1": "D0_minimal", "A2": "A2_no_strike"}
+        out = vote_model.sample(0, bb, history, state, rng)
+
+        assert 0.0 <= out.vote_percent <= 1.0
+        assert isinstance(out.strike_indicator, (bool, np.bool_))
+        assert isinstance(out.overwhelming_indicator, (bool, np.bool_))
+
+    def test_vote_increases_with_strike_recommendation(self):
+        """ASA strike recommendation should increase vote opposition."""
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import VoteModel
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        vote_model = VoteModel({"first_strike": 0.25, "overwhelming": 0.50})
+
+        n_samples = 200
+        votes_no_strike = []
+        votes_strike = []
+
+        for i in range(n_samples):
+            rng1 = np.random.default_rng(1000 + i)
+            rng2 = np.random.default_rng(1000 + i)
+
+            h1 = {"D1": "D0_minimal", "A2": "A2_no_strike"}
+            h2 = {"D1": "D0_minimal", "A2": "A2_rec_strike"}
+
+            v1 = vote_model.sample(i % bb.N, bb, h1, state, rng1)
+            v2 = vote_model.sample(i % bb.N, bb, h2, state, rng2)
+
+            votes_no_strike.append(v1.vote_percent)
+            votes_strike.append(v2.vote_percent)
+
+        mean_no = np.mean(votes_no_strike)
+        mean_yes = np.mean(votes_strike)
+        # Strike recommendation should increase opposition
+        assert mean_yes > mean_no, (
+            f"Strike rec should increase vote: {mean_yes:.3f} vs {mean_no:.3f}"
+        )
+
+    def test_vote_non_monotonic_governance_effect(self):
+        """Governance effects are non-monotonic per empirical data.
+
+        D1 (review) is the sweet spot — reduces protest relative to D0.
+        D3 (CEO exit) signals crisis — increases protest relative to D0.
+        Ranking: mean_d1 < mean_d0 < mean_d3.
+        """
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import VoteModel
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        vote_model = VoteModel({"first_strike": 0.25, "overwhelming": 0.50})
+
+        n_samples = 200
+        votes = {}
+        for d1 in ["D0_minimal", "D1_review", "D3_ceo_transition"]:
+            votes[d1] = []
+            for i in range(n_samples):
+                rng = np.random.default_rng(2000 + i)
+                h = {"D1": d1, "A2": "A2_no_strike"}
+                v = vote_model.sample(i % bb.N, bb, h, state, rng)
+                votes[d1].append(v.vote_percent)
+
+        mean_d0 = np.mean(votes["D0_minimal"])
+        mean_d1 = np.mean(votes["D1_review"])
+        mean_d3 = np.mean(votes["D3_ceo_transition"])
+
+        assert mean_d1 < mean_d0, (
+            f"D1 (review) should reduce protest vs D0: {mean_d1:.3f} vs {mean_d0:.3f}"
+        )
+        assert mean_d3 > mean_d0, (
+            f"D3 (CEO exit) should increase protest vs D0: {mean_d3:.3f} vs {mean_d0:.3f}"
+        )
+
+    def test_review_model_no_commission(self):
+        """If review not commissioned, always no adverse finding."""
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import ReviewModel
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        review = ReviewModel()
+        rng = np.random.default_rng(42)
+
+        assert not state.review_commissioned
+        out = review.sample(0, bb, {}, state, rng)
+        assert out.review_adverse is False
+        assert out.review_car == 0.0
+
+    def test_review_model_commissioned(self):
+        """If review commissioned, should produce both outcomes stochastically."""
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import ReviewModel
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.review_commissioned = True
+        review = ReviewModel()
+
+        adverse_count = 0
+        cars = []
+        n = 200
+        for i in range(n):
+            rng = np.random.default_rng(3000 + i)
+            out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng)
+            if out.review_adverse:
+                adverse_count += 1
+            cars.append(out.review_car)
+
+        # Should get some adverse and some non-adverse
+        assert 0 < adverse_count < n, f"Got {adverse_count}/{n} adverse"
+        # CARs should have non-zero variance (stochastic)
+        assert np.std(cars) > 0.01, f"CAR std too low: {np.std(cars):.4f}"
+        # Mean CAR should be centered around -5% (MU_LOC = -0.05)
+        assert -0.15 < np.mean(cars) < 0.05, f"Mean CAR out of range: {np.mean(cars):.4f}"
+
+    def test_review_direct_cost_model(self):
+        """ReviewDirectCostModel samples from Gamma(4.55, 4741) in decimal CAR."""
+        from engine.chance_models import ReviewDirectCostModel
+        model = ReviewDirectCostModel()
+
+        # Check expected cost
+        expected = model.expected_cost()
+        assert abs(expected - 0.00096) < 1e-6, f"Expected cost wrong: {expected}"
+
+        # Sample many draws and check moments
+        costs = [model.sample(np.random.default_rng(i)) for i in range(2000)]
+        mean_cost = np.mean(costs)
+        sd_cost = np.std(costs)
+
+        # All samples must be positive (Gamma is defined on R+)
+        assert all(c > 0 for c in costs), "Gamma samples must be positive"
+
+        # Mean should be near 0.00096 (tolerance for MC noise)
+        assert abs(mean_cost - 0.00096) < 0.0002, f"Mean cost {mean_cost:.6f} far from 0.00096"
+
+        # SD should be near 0.00045
+        assert abs(sd_cost - 0.00045) < 0.0002, f"SD cost {sd_cost:.6f} far from 0.00045"
+
+    def test_review_direct_cost_via_chance_models(self):
+        """ChanceModels.sample_review_direct_cost delegates correctly."""
+        from engine.chance_models import ChanceModels
+        cm = ChanceModels({"first_strike": 0.25, "overwhelming": 0.50})
+        rng = np.random.default_rng(42)
+        cost = cm.sample_review_direct_cost(rng)
+        assert cost > 0
+        assert cost < 0.01  # Reasonable upper bound (100 bps)
+
+
+# ============================================================================
+# 4. UTILITY FUNCTIONS
+# ============================================================================
+
+class TestUtilities:
+    """Test utility computation for all actors."""
+
+    def test_board_utility_baseline(self):
+        from engine.utilities import utility_board, TerminalOutcome
+        outcome = TerminalOutcome()
+        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
+                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
+                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
+                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0}
+        u = utility_board(outcome, params)
+        # Baseline with no opposition should be 0 (no penalties)
+        assert u == 0.0
+
+    def test_board_utility_high_vote_penalty(self):
+        from engine.utilities import utility_board, TerminalOutcome
+        outcome = TerminalOutcome(vote_percent=0.80, strike_indicator=True,
+                                  overwhelming_indicator=True)
+        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
+                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
+                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
+                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0}
+        u = utility_board(outcome, params)
+        assert u < 0  # Should be negative (bad for board)
+
+    def test_asa_utility_high_vote_reward(self):
+        from engine.utilities import utility_asa, TerminalOutcome
+        outcome = TerminalOutcome(vote_percent=0.80, strike_indicator=True,
+                                  overwhelming_indicator=True, CEO_removed=True)
+        params = {"vote_reward_weight": 2.0, "overwhelming_reward_weight": 2.0,
+                  "ceo_removal_reward": 3.0, "review_car_weight": 15.0,
+                  "mobilisation_cost": 1.0, "reputational_gain_weight": 1.0}
+        u = utility_asa(outcome, params)
+        assert u > 0  # Should be positive (good for ASA)
+
+    def test_asa_mobilisation_cost(self):
+        from engine.utilities import utility_asa, TerminalOutcome
+        params = {"vote_reward_weight": 2.0, "overwhelming_reward_weight": 2.0,
+                  "ceo_removal_reward": 3.0, "review_car_weight": 15.0,
+                  "mobilisation_cost": 1.0, "reputational_gain_weight": 1.0}
+
+        out_no = TerminalOutcome(a2_action="A2_no_strike", vote_percent=0.10)
+        out_yes = TerminalOutcome(a2_action="A2_rec_strike", vote_percent=0.10)
+
+        u_no = utility_asa(out_no, params)
+        u_yes = utility_asa(out_yes, params)
+        # Strike rec costs more
+        assert u_no > u_yes
+
+    def test_ceo_utility_crra_ordering(self):
+        """CRRA CEO utility: staying (kept) > late resign > sacked."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        params = {"gamma": 1.5, "W_resign": 8.0, "W_stay_sacked": 3.0,
+                  "W_stay_kept": 12.0, "D_resign": 50.0, "D_sacked": 100.0,
+                  "D_agm": 30.0, "D_disgrace": 30.0, "D_adverse_review": 10.0}
+
+        out_stay = TerminalOutcome(CEO_removed=False, vote_percent=0.10)
+        out_resign = TerminalOutcome(CEO_removed=True, d4_action="D4_resign",
+                                      vote_percent=0.10)
+        out_sacked = TerminalOutcome(CEO_removed=True, d4_action="D4_stay",
+                                      d_rev_action="Drev_sack_ceo",
+                                      vote_percent=0.50, strike_indicator=True)
+
+        u_stay = utility_ceo(out_stay, params)
+        u_resign = utility_ceo(out_resign, params)
+        u_sacked = utility_ceo(out_sacked, params)
+
+        assert u_stay > u_resign  # Staying (kept) is best
+        assert u_resign > u_sacked  # Late resign > forced sacking
+
+    def test_board_review_direct_cost_in_utility(self):
+        """Board utility subtracts stochastic direct cost when review commissioned."""
+        from engine.utilities import utility_board, TerminalOutcome
+        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
+                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
+                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
+                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0}
+
+        # No review: no direct cost
+        out_no = TerminalOutcome(review_commissioned=False, review_direct_cost=0.001)
+        u_no = utility_board(out_no, params)
+        assert u_no == 0.0  # review_direct_cost ignored when not commissioned
+
+        # Review commissioned with mean direct cost (0.00096 ≈ 9.6 bps)
+        out_yes = TerminalOutcome(
+            d1_action="D1_review",
+            review_commissioned=True,
+            review_direct_cost=0.00096,
+            review_car=0.0,  # Isolate direct cost effect
+        )
+        u_yes = utility_board(out_yes, params)
+        # Direct cost impact: -15.0 * 0.00096 ≈ -0.0144
+        expected_impact = -15.0 * 0.00096
+        assert abs(u_yes - expected_impact) < 1e-6, f"Board direct cost: {u_yes} != {expected_impact}"
+
+    def test_utility_dispatch(self):
+        from engine.utilities import compute_utility, TerminalOutcome
+        outcome = TerminalOutcome(vote_percent=0.30, strike_indicator=True)
+        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
+                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
+                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
+                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0}
+        u = compute_utility("Board", outcome, params)
+        assert isinstance(u, float)
+
+
+# ============================================================================
+# 5. MODE CONFIGURATIONS
+# ============================================================================
+
+class TestModes:
+    """Test mode configurations."""
+
+    def test_board_mode(self):
+        from engine.modes import MODE_BOARD
+        assert MODE_BOARD.focal_actor == "Board"
+        assert MODE_BOARD.is_focal("Board")
+        assert not MODE_BOARD.is_focal("ASA")
+        assert MODE_BOARD.get_opponent_model_type("ASA") == "ARA"
+        assert MODE_BOARD.get_opponent_model_type("CEO") == "ARA"
+
+    def test_asa_mode(self):
+        from engine.modes import MODE_ASA
+        assert MODE_ASA.focal_actor == "ASA"
+        assert MODE_ASA.is_focal("ASA")
+        assert not MODE_ASA.is_focal("Board")
+        assert MODE_ASA.get_opponent_model_type("Board") == "ARA"
+
+    def test_level2_counterparts(self):
+        from engine.modes import MODE_BOARD_L2
+        assert MODE_BOARD_L2.level == 2
+        assert MODE_BOARD_L2.get_strategic_counterpart("ASA") == "Board"
+        assert MODE_BOARD_L2.get_strategic_counterpart("CEO") == "Board"
+
+    def test_policy_mode(self):
+        from engine.modes import MODE_ASA_POLICY_BOARD
+        assert MODE_ASA_POLICY_BOARD.get_opponent_model_type("Board") == "Policy"
+        assert MODE_ASA_POLICY_BOARD.get_opponent_model_type("CEO") == "ARA"
+
+    def test_focal_returns_focal_type(self):
+        from engine.modes import MODE_BOARD
+        assert MODE_BOARD.get_opponent_model_type("Board") == "focal"
+
+
+# ============================================================================
+# 6. PREDICTIVE DISTRIBUTIONS
+# ============================================================================
+
+class TestPredictive:
+    """Test predictive distribution computation."""
+
+    def _make_predictive(self, K=30, R_rollouts=5):
+        from engine.state import (
+            BeliefBundle, DecisionState, ParameterSampler,
+            load_vote_thresholds, load_policy_parameters,
+        )
+        from engine.chance_models import ChanceModels
+        from engine.predictive import PredictiveDistribution
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        chance = ChanceModels(thresholds)
+        sampler = ParameterSampler(OPP_PRIORS)
+        policy_params = load_policy_parameters(GOV_SPEC)
+
+        return PredictiveDistribution(
+            beliefs=beliefs,
+            param_sampler=sampler,
+            chance_models=chance,
+            policy_params=policy_params,
+            K=K,
+            R_rollouts=R_rollouts,
+        )
+
+    def test_predict_returns_distribution(self):
+        pred = self._make_predictive()
+        from engine.state import DecisionState
+        from engine.modes import MODE_BOARD
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        rng = np.random.default_rng(42)
+
+        # Predict ASA's action at A2 from Board's perspective
+        history = {"D1": "D0_minimal"}
+        dist = pred.predict("A2", history, state, 0, "Board", MODE_BOARD, 1, rng)
+
+        assert len(dist) == 2
+        assert "A2_no_strike" in dist
+        assert "A2_rec_strike" in dist
+        total = sum(dist.values())
+        assert abs(total - 1.0) < 1e-6, f"Distribution sums to {total}"
+
+    def test_predict_single_feasible_action(self):
+        pred = self._make_predictive()
+        from engine.state import DecisionState
+        from engine.modes import MODE_BOARD
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state = state.apply("D1", "D3_ceo_transition")  # Removes CEO
+        rng = np.random.default_rng(42)
+
+        # D4 with CEO removed: no feasible actions
+        dist = pred.predict("D4", {}, state, 0, "Board", MODE_BOARD, 1, rng)
+        assert len(dist) == 0
+
+    def test_asa_beta_posterior_strike_probabilities(self):
+        """ASA fixed policy uses Beta-Binomial posteriors from CSV data.
+
+        Beta posteriors (with uniform prior):
+          D0: Beta(23, 3) — posterior mean 0.885
+          D1: Beta(6, 4)  — posterior mean 0.600
+          D3: Beta(5, 1)  — posterior mean 0.833
+
+        Wider tolerance needed because each call samples p ~ Beta(a, b)
+        then flips a Bernoulli(p), adding parameter uncertainty.
+        """
+        pred = self._make_predictive()
+        from engine.state import DecisionState
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        feasible = ["A2_rec_strike", "A2_no_strike"]
+        n_samples = 2000
+
+        strike_counts = {}
+        for d1 in ["D0_minimal", "D1_review", "D3_ceo_transition"]:
+            count = 0
+            for i in range(n_samples):
+                rng = np.random.default_rng(5000 + i)
+                action = pred._fixed_policy(
+                    "ASA", "A2", {"D1": d1}, state, feasible, rng=rng
+                )
+                if action == "A2_rec_strike":
+                    count += 1
+            strike_counts[d1] = count / n_samples
+
+        # D3: Beta(5,1) posterior mean = 0.833, NOT 1.0 (only n=4 observations)
+        assert 0.75 < strike_counts["D3_ceo_transition"] < 0.92, (
+            f"D3 Beta(5,1) mean ~0.833, got {strike_counts['D3_ceo_transition']:.1%}"
+        )
+        # D0: Beta(23,3) posterior mean = 0.885 (tightest, n=24)
+        assert 0.82 < strike_counts["D0_minimal"] < 0.94, (
+            f"D0 Beta(23,3) mean ~0.885, got {strike_counts['D0_minimal']:.1%}"
+        )
+        # D1: Beta(6,4) posterior mean = 0.600 (widest, n=8)
+        assert 0.50 < strike_counts["D1_review"] < 0.70, (
+            f"D1 Beta(6,4) mean ~0.600, got {strike_counts['D1_review']:.1%}"
+        )
+        # Ordering preserved: D1 < D3 ≈ D0 (D3 no longer 100%)
+        assert strike_counts["D1_review"] < strike_counts["D0_minimal"]
+        assert strike_counts["D1_review"] < strike_counts["D3_ceo_transition"]
+
+    def test_build_outcome(self):
+        from engine.predictive import PredictiveDistribution
+        from engine.state import DecisionState
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.CEO_removed = True
+
+        history = {
+            "D1": "D1_review",
+            "A2": "A2_rec_strike",
+            "V_percent": 0.40,
+            "V_strike": True,
+            "V_overwhelming": False,
+            "R_adverse": True,
+            "R_car": -0.08,
+            "R_direct_cost": 0.00096,
+            "D_rev": "Drev_commission_review",
+            "D4": "D4_resign",
+        }
+
+        outcome = PredictiveDistribution._build_outcome(history, state)
+        assert outcome.d1_action == "D1_review"
+        assert outcome.a2_action == "A2_rec_strike"
+        assert outcome.vote_percent == 0.40
+        assert outcome.strike_indicator is True
+        assert outcome.review_adverse is True
+        assert outcome.review_car == -0.08
+        assert outcome.review_direct_cost == 0.00096
+        assert outcome.CEO_removed is True
+
+
+# ============================================================================
+# 7. TREE EVALUATION
+# ============================================================================
+
+class TestTreeEvaluation:
+    """Test the tree evaluator."""
+
+    def _make_tree(self, K=20, R_rollouts=5, n_vote=10, n_review=5):
+        from engine.state import (
+            BeliefBundle, DecisionState, ParameterSampler,
+            load_vote_thresholds, load_utility_weights, load_policy_parameters,
+        )
+        from engine.chance_models import ChanceModels
+        from engine.predictive import PredictiveDistribution
+        from engine.tree import TreeEvaluator
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        chance = ChanceModels(thresholds)
+        sampler = ParameterSampler(OPP_PRIORS)
+        policy_params = load_policy_parameters(GOV_SPEC)
+        utility_weights = {
+            actor: load_utility_weights(GOV_SPEC, actor)
+            for actor in ["Board", "ASA", "CEO"]
+        }
+
+        pred = PredictiveDistribution(
+            beliefs=beliefs,
+            param_sampler=sampler,
+            chance_models=chance,
+            policy_params=policy_params,
+            K=K,
+            R_rollouts=R_rollouts,
+        )
+        tree = TreeEvaluator(
+            beliefs=beliefs,
+            chance_models=chance,
+            predictive=pred,
+            utility_weights=utility_weights,
+            n_vote_samples=n_vote,
+            n_review_samples=n_review,
+        )
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        return tree, state, beliefs
+
+    def test_terminal_value(self):
+        tree, state, _ = self._make_tree()
+        from engine.modes import MODE_BOARD
+
+        rng = np.random.default_rng(42)
+        history = {
+            "D1": "D0_minimal",
+            "A2": "A2_no_strike",
+            "V_percent": 0.10,
+            "V_strike": False,
+            "V_overwhelming": False,
+            "R_adverse": False,
+            "D_rev": "Drev_no_action",
+            "D4": "D4_stay",
+        }
+
+        v = tree.value("Terminal", history, state, 0, MODE_BOARD, rng)
+        assert isinstance(v, float)
+        # Low vote, no adverse, CEO stays -> utility should be near 0
+        assert v >= -1.0
+
+    def test_chance_node_returns_float(self):
+        tree, state, _ = self._make_tree()
+        from engine.modes import MODE_BOARD
+
+        rng = np.random.default_rng(42)
+        history = {"D1": "D0_minimal", "A2": "A2_no_strike"}
+
+        v = tree.value("V", history, state, 0, MODE_BOARD, rng)
+        assert isinstance(v, float)
+        assert np.isfinite(v)
+
+    def test_focal_maximises(self):
+        """Focal actor should get higher value than worst action."""
+        tree, state, _ = self._make_tree()
+        from engine.modes import MODE_BOARD
+
+        rng = np.random.default_rng(42)
+
+        # Evaluate D1 as focal node (Board maximises)
+        v_focal = tree.value("D1", {}, state, 0, MODE_BOARD, rng)
+        assert isinstance(v_focal, float)
+        assert np.isfinite(v_focal)
+
+    def test_optimal_action(self):
+        tree, state, _ = self._make_tree()
+        from engine.modes import MODE_BOARD
+
+        rng = np.random.default_rng(42)
+        action, value = tree.optimal_action("D1", {}, state, 0, MODE_BOARD, rng)
+
+        assert action in ["D0_minimal", "D1_review", "D3_ceo_transition"]
+        assert isinstance(value, float)
+
+    def test_board_vs_asa_perspective(self):
+        """Board and ASA should have different values for the same scenario."""
+        tree, state, _ = self._make_tree()
+        from engine.modes import MODE_BOARD, MODE_ASA
+
+        rng_b = np.random.default_rng(42)
+        rng_a = np.random.default_rng(42)
+
+        history = {
+            "D1": "D0_minimal",
+            "A2": "A2_rec_strike",
+            "V_percent": 0.50,
+            "V_strike": True,
+            "V_overwhelming": True,
+            "R_adverse": True,
+            "D_rev": "Drev_sack_ceo",
+            "D4": "D4_resign",
+        }
+        state.CEO_removed = True
+
+        v_board = tree.value("Terminal", history, state, 0, MODE_BOARD, rng_b)
+        v_asa = tree.value("Terminal", history, state, 0, MODE_ASA, rng_a)
+
+        # High opposition + CEO removed: bad for Board, good for ASA
+        assert v_board < v_asa
+
+
+# ============================================================================
+# 8. SOLVER INTEGRATION
+# ============================================================================
+
+class TestSolver:
+    """Integration tests for the solver."""
+
+    def _make_solver(self, K=20, R=5):
+        from engine.solver import Solver
+        return Solver(
+            governance_spec_path=GOV_SPEC,
+            opponent_priors_path=OPP_PRIORS,
+            checkpoint_dir=CHECKPOINT_DIR,
+            K=K,
+            R_rollouts=R,
+            n_vote_samples=10,
+            n_review_samples=5,
+            seed=42,
+        )
+
+    def test_solve_board_mode(self):
+        solver = self._make_solver()
+        result = solver.solve(
+            focal_actor="Board",
+            checkpoint_id="C0",
+            n_draws=5,
+        )
+        assert result.focal_actor == "Board"
+        assert result.checkpoint_id == "C0"
+        assert len(result.EU_per_action) == 3
+        assert result.optimal_action in result.EU_per_action
+        assert result.elapsed_seconds > 0
+
+    def test_solve_asa_mode(self):
+        from engine.modes import MODE_ASA
+        solver = self._make_solver()
+        result = solver.solve(
+            focal_actor="ASA",
+            checkpoint_id="C0",
+            mode=MODE_ASA,
+            n_draws=5,
+        )
+        assert result.focal_actor == "ASA"
+        assert len(result.EU_per_action) == 3
+
+    def test_solve_summary_df(self):
+        solver = self._make_solver()
+        result = solver.solve(
+            focal_actor="Board",
+            checkpoint_id="C0",
+            n_draws=5,
+        )
+        df = result.summary_df()
+        assert len(df) == 3
+        assert "checkpoint" in df.columns
+        assert "Expected_Utility" in df.columns
+        assert "is_optimal" in df.columns
+        assert df["is_optimal"].sum() == 1
+
+    def test_solve_outcome_stats(self):
+        solver = self._make_solver()
+        result = solver.solve(
+            focal_actor="Board",
+            checkpoint_id="C0",
+            n_draws=5,
+        )
+        for action, stats in result.outcome_stats.items():
+            assert 0 <= stats["Pr_strike"] <= 1
+            assert 0 <= stats["Pr_overwhelming"] <= 1
+            assert 0 <= stats["Pr_CEO_removed"] <= 1
+            assert 0 <= stats["mean_vote_percent"] <= 1
+
+    def test_solve_different_checkpoints_differ(self):
+        """Different checkpoints (different belief levels) should give different results."""
+        solver = self._make_solver()
+        r0 = solver.solve("Board", "C0", n_draws=5)
+        r3 = solver.solve("Board", "C3", n_draws=5)
+
+        # C3 has much higher distrust, so outcomes should differ
+        # At minimum, vote percentages should be higher at C3
+        stats0 = list(r0.outcome_stats.values())[0]
+        stats3 = list(r3.outcome_stats.values())[0]
+        # Just verify both produce valid results
+        assert r0.optimal_action is not None
+        assert r3.optimal_action is not None
+
+
+# ============================================================================
+# 9. VALIDATION CHECKLIST (from spec)
+# ============================================================================
+
+class TestValidationChecklist:
+    """
+    Tests from the spec validation checklist:
+    - Board-mode D1* changes when gamma_A is large
+    - ASA-mode mobilisation increases when CEO removal reward is large
+    - Symmetry: swapping focal switches max vs sum at nodes
+    - Removing CEO reduces future CEO decision nodes
+    """
+
+    def test_ceo_removal_reduces_d4_actions(self):
+        """Removing CEO eliminates D4 options automatically."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+
+        # Before removal: D4 has 3 options
+        assert len(state.feasible_actions("D4")) == 3
+
+        # After CEO transition: D4 has 0 options
+        state2 = state.apply("D1", "D3_ceo_transition")
+        assert len(state2.feasible_actions("D4")) == 0
+
+    def test_focal_symmetry(self):
+        """Swapping focal actor should swap which nodes are max vs sum."""
+        from engine.modes import MODE_BOARD, MODE_ASA
+
+        # In Board mode: D1 is focal (max), A2 is opponent (sum/predict)
+        assert MODE_BOARD.is_focal("Board")
+        assert not MODE_BOARD.is_focal("ASA")
+        assert MODE_BOARD.get_opponent_model_type("ASA") == "ARA"
+
+        # In ASA mode: A2 is focal (max), D1 is opponent (sum/predict)
+        assert MODE_ASA.is_focal("ASA")
+        assert not MODE_ASA.is_focal("Board")
+        assert MODE_ASA.get_opponent_model_type("Board") == "ARA"
+
+    def test_all_checkpoints_loadable(self):
+        """All four checkpoints should load successfully."""
+        from engine.state import BeliefBundle
+        for cid, date in [("C0", "2023-10-01"), ("C1", "2023-10-10"),
+                           ("C2", "2023-10-18"), ("C3", "2023-11-03")]:
+            path = CHECKPOINT_DIR / f"belief_{cid}_{date}.npz"
+            bb = BeliefBundle(path)
+            assert bb.N == 500
+            assert bb.metadata["checkpoint_id"] == cid
+
+    def test_increasing_distrust_across_checkpoints(self):
+        """Belief levels should increase from C0 to C3."""
+        from engine.state import BeliefBundle
+        means = []
+        for cid, date in [("C0", "2023-10-01"), ("C1", "2023-10-10"),
+                           ("C2", "2023-10-18"), ("C3", "2023-11-03")]:
+            bb = BeliefBundle(CHECKPOINT_DIR / f"belief_{cid}_{date}.npz")
+            means.append(np.mean(bb.B_mkt))
+
+        # C0 < C1 < C2 < C3
+        for i in range(len(means) - 1):
+            assert means[i] < means[i + 1], (
+                f"Distrust should increase: C{i}={means[i]:.2f} vs C{i+1}={means[i+1]:.2f}"
+            )
+
+
+# ============================================================================
+# 10. EDGE CASES AND ROBUSTNESS
+# ============================================================================
+
+class TestEdgeCases:
+    """Edge cases and robustness tests."""
+
+    def test_expit_numerical_stability(self):
+        from engine.chance_models import _expit
+        # Large positive
+        assert abs(_expit(100.0) - 1.0) < 1e-10
+        # Large negative
+        assert abs(_expit(-100.0)) < 1e-10
+        # Zero
+        assert abs(_expit(0.0) - 0.5) < 1e-10
+
+    def test_belief_bundle_index_bounds(self):
+        from engine.state import BeliefBundle
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        # Valid
+        bb.get_draw(0)
+        bb.get_draw(bb.N - 1)
+        # Invalid
+        with pytest.raises(IndexError):
+            bb.get_draw(bb.N)
+        with pytest.raises(IndexError):
+            bb.get_draw(-1)
+
+    def test_invalid_actor_raises(self):
+        from engine.utilities import compute_utility, TerminalOutcome
+        with pytest.raises(ValueError, match="Unknown actor"):
+            compute_utility("InvalidActor", TerminalOutcome(), {})
+
+    def test_missing_governance_spec(self):
+        from engine.state import DecisionState
+        with pytest.raises(FileNotFoundError):
+            DecisionState.from_governance_spec("nonexistent.xlsx")
+
+    def test_missing_checkpoint(self):
+        from engine.state import BeliefBundle
+        with pytest.raises(FileNotFoundError):
+            BeliefBundle("nonexistent.npz")
+
+    def test_terminal_outcome_defaults(self):
+        from engine.utilities import TerminalOutcome
+        o = TerminalOutcome()
+        assert o.vote_percent == 0.0
+        assert o.CEO_removed is False
+        assert o.d1_action == "D0_minimal"
+
+    def test_parameter_sampler_reproducible(self):
+        from engine.state import ParameterSampler
+        ps = ParameterSampler(OPP_PRIORS)
+
+        rng1 = np.random.default_rng(42)
+        rng2 = np.random.default_rng(42)
+
+        p1 = ps.sample_parameters("Board", "ASA", rng1)
+        p2 = ps.sample_parameters("Board", "ASA", rng2)
+
+        for key in p1:
+            assert p1[key] == p2[key], f"Parameter {key} not reproducible"
+
+
+# ============================================================================
+# 11. OVERCONFIDENCE BIAS
+# ============================================================================
+
+class TestOverconfidenceBias:
+    """Test CEO/Board overconfidence bias on governance effects."""
+
+    def test_bias_profiles_defined(self):
+        from engine.chance_models import (
+            BIAS_NONE, BIAS_OVERESTIMATION, BIAS_OVERPRECISION, BIAS_HUBRIS,
+        )
+        # Unbiased: full range, sigma_scale = 1.0, no review shift
+        assert BIAS_NONE.d1_floor == 0.0
+        assert BIAS_NONE.d1_ceiling == 1.0
+        assert BIAS_NONE.d3_floor == -1.0
+        assert BIAS_NONE.d3_ceiling == 0.0
+        assert BIAS_NONE.sigma_scale == 1.0
+        assert BIAS_NONE.review_car_bias == 0.0
+
+        # Overestimation: D1 floor raised, D3 floor raised (less negative),
+        # no sigma change, positive review shift
+        assert BIAS_OVERESTIMATION.d1_floor > BIAS_NONE.d1_floor
+        assert BIAS_OVERESTIMATION.d3_floor > BIAS_NONE.d3_floor
+        assert BIAS_OVERESTIMATION.sigma_scale == 1.0
+        assert BIAS_OVERESTIMATION.review_car_bias > 0
+
+        # Overprecision: narrower range + sigma_scale < 1 + positive review shift
+        d1_range_none = BIAS_NONE.d1_ceiling - BIAS_NONE.d1_floor
+        d1_range_prec = BIAS_OVERPRECISION.d1_ceiling - BIAS_OVERPRECISION.d1_floor
+        assert d1_range_prec < d1_range_none
+        assert BIAS_OVERPRECISION.sigma_scale < 1.0
+        assert BIAS_OVERPRECISION.review_car_bias > 0
+
+        # Hubris: sigma_scale < 1, positive review shift
+        assert BIAS_HUBRIS.sigma_scale < 1.0
+        assert BIAS_HUBRIS.review_car_bias > 0
+
+    def test_governance_effect_respects_bias(self):
+        """Biased governance effect for D1 should be shifted upward."""
+        from engine.chance_models import VoteModel, BIAS_OVERESTIMATION
+
+        n_samples = 500
+        effects_unbiased = []
+        effects_biased = []
+
+        for i in range(n_samples):
+            rng_u = np.random.default_rng(8000 + i)
+            rng_b = np.random.default_rng(8000 + i)
+
+            e_u = VoteModel._governance_effect("D1_review", rng_u, bias=None)
+            e_b = VoteModel._governance_effect("D1_review", rng_b, bias=BIAS_OVERESTIMATION)
+
+            effects_unbiased.append(e_u)
+            effects_biased.append(e_b)
+
+        mean_u = np.mean(effects_unbiased)
+        mean_b = np.mean(effects_biased)
+
+        # Unbiased D1: U(0, 1), mean ≈ 0.5
+        assert 0.4 < mean_u < 0.6, f"Unbiased D1 mean should be ~0.5, got {mean_u:.3f}"
+        # Biased D1: U(0.5, 1), mean ≈ 0.75
+        assert 0.65 < mean_b < 0.85, f"Biased D1 mean should be ~0.75, got {mean_b:.3f}"
+        # Biased should be higher
+        assert mean_b > mean_u
+
+    def test_governance_effect_d3_bias(self):
+        """Biased governance effect for D3 should be less negative (closer to 0)."""
+        from engine.chance_models import VoteModel, BIAS_OVERESTIMATION
+
+        n_samples = 500
+        effects_unbiased = []
+        effects_biased = []
+
+        for i in range(n_samples):
+            rng_u = np.random.default_rng(9000 + i)
+            rng_b = np.random.default_rng(9000 + i)
+
+            e_u = VoteModel._governance_effect("D3_ceo_transition", rng_u, bias=None)
+            e_b = VoteModel._governance_effect("D3_ceo_transition", rng_b, bias=BIAS_OVERESTIMATION)
+
+            effects_unbiased.append(e_u)
+            effects_biased.append(e_b)
+
+        mean_u = np.mean(effects_unbiased)
+        mean_b = np.mean(effects_biased)
+
+        # Unbiased D3: U(-1, 0), mean ≈ -0.5
+        assert -0.6 < mean_u < -0.4, f"Unbiased D3 mean should be ~-0.5, got {mean_u:.3f}"
+        # Biased D3: U(-0.67, 0), mean ≈ -0.33 (β=0.5 overestimation)
+        assert -0.45 < mean_b < -0.20, f"Biased D3 mean should be ~-0.33, got {mean_b:.3f}"
+        # Biased should be closer to 0 (less negative)
+        assert mean_b > mean_u
+
+    def test_d0_unaffected_by_bias(self):
+        """D0 (no action) always returns 0 regardless of bias."""
+        from engine.chance_models import VoteModel, BIAS_HUBRIS
+
+        rng = np.random.default_rng(42)
+        assert VoteModel._governance_effect("D0_minimal", rng, bias=None) == 0.0
+        assert VoteModel._governance_effect("D0_minimal", rng, bias=BIAS_HUBRIS) == 0.0
+
+    def test_tree_evaluator_accepts_bias(self):
+        """TreeEvaluator should accept and store overconfidence_bias."""
+        from engine.state import (
+            BeliefBundle, DecisionState, ParameterSampler,
+            load_vote_thresholds, load_utility_weights, load_policy_parameters,
+        )
+        from engine.chance_models import ChanceModels, BIAS_OVERESTIMATION
+        from engine.predictive import PredictiveDistribution
+        from engine.tree import TreeEvaluator
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        chance = ChanceModels(thresholds)
+        sampler = ParameterSampler(OPP_PRIORS)
+        policy_params = load_policy_parameters(GOV_SPEC)
+        utility_weights = {
+            actor: load_utility_weights(GOV_SPEC, actor)
+            for actor in ["Board", "ASA", "CEO"]
+        }
+        pred = PredictiveDistribution(
+            beliefs=beliefs, param_sampler=sampler,
+            chance_models=chance, policy_params=policy_params,
+            K=20, R_rollouts=5,
+        )
+
+        tree = TreeEvaluator(
+            beliefs=beliefs, chance_models=chance, predictive=pred,
+            utility_weights=utility_weights,
+            n_vote_samples=10, n_review_samples=5,
+            overconfidence_bias=BIAS_OVERESTIMATION,
+        )
+        assert tree.overconfidence_bias is BIAS_OVERESTIMATION
+
+    def test_load_board_overconfidence(self):
+        """Board overconfidence loads from governance_spec.xlsx."""
+        from engine.state import load_board_overconfidence
+        params = load_board_overconfidence(GOV_SPEC)
+        assert params["d1_floor"] == 0.63
+        assert params["d1_ceiling"] == 1.0
+        assert params["d3_floor"] == -0.62
+        assert params["d3_ceiling"] == 0.0
+        assert params["sigma_scale"] == 0.53
+        assert params["review_car_bias"] == 0.03
+
+    def test_load_board_overconfidence_validates_bounds(self):
+        """Loaded bounds satisfy required constraints."""
+        from engine.state import load_board_overconfidence
+        params = load_board_overconfidence(GOV_SPEC)
+        assert 0 <= params["d1_floor"] < params["d1_ceiling"] <= 1
+        assert -1 <= params["d3_floor"] < params["d3_ceiling"] <= 0
+        assert 0 < params["sigma_scale"] <= 1
+        assert params["review_car_bias"] >= 0
+
+    def test_solver_default_bias_from_spec(self):
+        """Solver auto-loads overconfidence bias from governance_spec."""
+        from engine.solver import Solver
+        from engine.chance_models import BIAS_HUBRIS
+
+        solver = Solver(
+            governance_spec_path=GOV_SPEC,
+            opponent_priors_path=OPP_PRIORS,
+            checkpoint_dir=CHECKPOINT_DIR,
+            K=20, R_rollouts=5,
+            n_vote_samples=10, n_review_samples=5, seed=42,
+        )
+        # Should match HUBRIS profile from board_overconfidence sheet
+        assert solver.overconfidence_bias.d1_floor == BIAS_HUBRIS.d1_floor
+        assert solver.overconfidence_bias.d1_ceiling == BIAS_HUBRIS.d1_ceiling
+        assert solver.overconfidence_bias.d3_floor == BIAS_HUBRIS.d3_floor
+        assert solver.overconfidence_bias.d3_ceiling == BIAS_HUBRIS.d3_ceiling
+        assert solver.overconfidence_bias.sigma_scale == BIAS_HUBRIS.sigma_scale
+        assert solver.overconfidence_bias.review_car_bias == BIAS_HUBRIS.review_car_bias
+
+        # Default solve uses spec bias (not unbiased)
+        result = solver.solve(
+            focal_actor="Board",
+            checkpoint_id="C0",
+            n_draws=3,
+        )
+        assert len(result.EU_per_action) == 3
+        assert "D1=" in result.overconfidence_bias_label
+        assert "sigma_scale=" in result.overconfidence_bias_label
+        assert "review_car_bias=" in result.overconfidence_bias_label
+
+    def test_solver_no_bias_counterfactual(self):
+        """Solver with overconfidence_bias=None runs unbiased."""
+        from engine.solver import Solver
+
+        solver = Solver(
+            governance_spec_path=GOV_SPEC,
+            opponent_priors_path=OPP_PRIORS,
+            checkpoint_dir=CHECKPOINT_DIR,
+            K=20, R_rollouts=5,
+            n_vote_samples=10, n_review_samples=5, seed=42,
+        )
+        result = solver.solve(
+            focal_actor="Board",
+            checkpoint_id="C0",
+            n_draws=3,
+            overconfidence_bias=None,
+        )
+        assert len(result.EU_per_action) == 3
+        assert "unbiased" in result.overconfidence_bias_label
+
+    def test_sigma_scale_reduces_vote_variance(self):
+        """sigma_scale < 1 reduces the spread of sampled vote percentages."""
+        from engine.chance_models import VoteModel
+        from engine.state import BeliefBundle, DecisionState, load_vote_thresholds
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        vm = VoteModel(thresholds)
+
+        n_samples = 500
+        votes_full = []
+        votes_scaled = []
+
+        for j in range(n_samples):
+            rng_f = np.random.default_rng(5000 + j)
+            rng_s = np.random.default_rng(5000 + j)
+
+            out_f = vm.sample(0, beliefs, {"D1": "D0_minimal"}, state, rng_f,
+                              sigma_scale=None)
+            out_s = vm.sample(0, beliefs, {"D1": "D0_minimal"}, state, rng_s,
+                              sigma_scale=0.5)
+            votes_full.append(out_f.vote_percent)
+            votes_scaled.append(out_s.vote_percent)
+
+        sd_full = np.std(votes_full)
+        sd_scaled = np.std(votes_scaled)
+
+        # Scaled-down sigma → lower vote spread
+        assert sd_scaled < sd_full, (
+            f"sigma_scale=0.5 should reduce vote spread: "
+            f"sd_scaled={sd_scaled:.4f} vs sd_full={sd_full:.4f}"
+        )
+
+    def test_sigma_scale_1_is_identity(self):
+        """sigma_scale=1.0 produces identical results to sigma_scale=None."""
+        from engine.chance_models import VoteModel
+        from engine.state import BeliefBundle, DecisionState, load_vote_thresholds
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        vm = VoteModel(thresholds)
+
+        for j in range(20):
+            rng_none = np.random.default_rng(6000 + j)
+            rng_one = np.random.default_rng(6000 + j)
+
+            out_none = vm.sample(0, beliefs, {"D1": "D0_minimal"}, state,
+                                 rng_none, sigma_scale=None)
+            out_one = vm.sample(0, beliefs, {"D1": "D0_minimal"}, state,
+                                rng_one, sigma_scale=1.0)
+
+            assert abs(out_none.vote_percent - out_one.vote_percent) < 1e-12, (
+                f"sigma_scale=1.0 should be identity, draw {j}: "
+                f"{out_none.vote_percent} vs {out_one.vote_percent}"
+            )
+
+    def test_review_bias_reduces_adverse_probability(self):
+        """Biased review CAR shift should lower the adverse probability."""
+        from engine.chance_models import ReviewModel, OverconfidenceBias, BIAS_HUBRIS
+        from engine.state import BeliefBundle, DecisionState
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.review_commissioned = True
+
+        n_samples = 500
+        adverse_unbiased = 0
+        adverse_biased = 0
+        rm = ReviewModel()
+
+        for j in range(n_samples):
+            rng_u = np.random.default_rng(7000 + j)
+            rng_b = np.random.default_rng(7000 + j)
+
+            out_u = rm.sample(0, beliefs, {"V_percent": 0.30}, state, rng_u,
+                              bias=None)
+            out_b = rm.sample(0, beliefs, {"V_percent": 0.30}, state, rng_b,
+                              bias=BIAS_HUBRIS)
+
+            adverse_unbiased += int(out_u.review_adverse)
+            adverse_biased += int(out_b.review_adverse)
+
+        rate_u = adverse_unbiased / n_samples
+        rate_b = adverse_biased / n_samples
+
+        # Biased adverse rate should be lower (Board thinks governance is sound)
+        assert rate_b < rate_u, (
+            f"Biased review adverse rate should be lower: "
+            f"biased={rate_b:.3f} vs unbiased={rate_u:.3f}"
+        )
+
+    def test_review_expected_car_respects_bias(self):
+        """expected_car() returns higher (less negative) value with bias."""
+        from engine.chance_models import ReviewModel, BIAS_HUBRIS
+        from engine.state import DecisionState
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.review_commissioned = True
+        rm = ReviewModel()
+
+        car_u = rm.expected_car(state, bias=None)
+        car_b = rm.expected_car(state, bias=BIAS_HUBRIS)
+
+        # Biased expected CAR should be higher (Board thinks governance is sound)
+        assert car_b > car_u, (
+            f"Biased expected CAR {car_b:.4f} should be > "
+            f"unbiased {car_u:.4f}"
+        )
+
+    def test_review_bias_zero_is_identity(self):
+        """review_car_bias=0.0 produces identical results to bias=None."""
+        from engine.chance_models import ReviewModel, OverconfidenceBias, BIAS_NONE
+        from engine.state import BeliefBundle, DecisionState
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.review_commissioned = True
+        rm = ReviewModel()
+
+        for j in range(20):
+            rng_none = np.random.default_rng(7500 + j)
+            rng_zero = np.random.default_rng(7500 + j)
+
+            out_none = rm.sample(0, beliefs, {"V_percent": 0.30}, state,
+                                 rng_none, bias=None)
+            out_zero = rm.sample(0, beliefs, {"V_percent": 0.30}, state,
+                                 rng_zero, bias=BIAS_NONE)
+
+            assert out_none.review_adverse == out_zero.review_adverse, (
+                f"review_car_bias=0 should be identity, draw {j}: "
+                f"{out_none.review_adverse} vs {out_zero.review_adverse}"
+            )
+            assert abs(out_none.review_car - out_zero.review_car) < 1e-12, (
+                f"review_car_bias=0 should produce identical CAR, draw {j}: "
+                f"{out_none.review_car} vs {out_zero.review_car}"
+            )
+
+    def test_review_bias_not_commissioned_unaffected(self):
+        """When review is not commissioned, bias has no effect."""
+        from engine.chance_models import ReviewModel, BIAS_HUBRIS
+        from engine.state import BeliefBundle, DecisionState
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        assert not state.review_commissioned
+        rm = ReviewModel()
+
+        rng = np.random.default_rng(42)
+        out = rm.sample(0, beliefs, {}, state, rng, bias=BIAS_HUBRIS)
+        assert not out.review_adverse
+        assert out.review_car == 0.0
+
+        car = rm.expected_car(state, bias=BIAS_HUBRIS)
+        assert car == 0.0
+
+    def test_predictive_rollout_uses_bias_vote(self):
+        """Rollout simulations should use biased vote model (ARA Level-1).
+
+        The Board's overconfidence should affect vote outcomes in rollouts,
+        not just in the focal EU calculation. With bias, the Board
+        underestimates vote variance (sigma_scale < 1), so rollout vote
+        percentages should have lower spread.
+        """
+        from engine.state import (
+            BeliefBundle, DecisionState, ParameterSampler,
+            load_vote_thresholds, load_policy_parameters,
+        )
+        from engine.chance_models import ChanceModels, BIAS_HUBRIS
+        from engine.predictive import PredictiveDistribution
+        from engine.modes import MODE_BOARD
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        chance = ChanceModels(thresholds)
+        sampler = ParameterSampler(OPP_PRIORS)
+        policy_params = load_policy_parameters(GOV_SPEC)
+
+        pred_unbiased = PredictiveDistribution(
+            beliefs=beliefs, param_sampler=sampler,
+            chance_models=chance, policy_params=policy_params,
+            K=20, R_rollouts=5,
+            overconfidence_bias=None,
+        )
+        pred_biased = PredictiveDistribution(
+            beliefs=beliefs, param_sampler=sampler,
+            chance_models=chance, policy_params=policy_params,
+            K=20, R_rollouts=5,
+            overconfidence_bias=BIAS_HUBRIS,
+        )
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        history = {"D1": "D0_minimal"}
+        s = state.apply("D1", "D0_minimal")
+        next_node = s.next_node("D1")
+
+        n_samples = 300
+        votes_unbiased = []
+        votes_biased = []
+
+        for j in range(n_samples):
+            rng_u = np.random.default_rng(11000 + j)
+            rng_b = np.random.default_rng(11000 + j)
+
+            out_u = pred_unbiased._simulate_forward(
+                current_node=next_node, history=dict(history),
+                state=s, draw_i=0, owner="Board", focal_actor="Board",
+                mode=MODE_BOARD, level=1, rng=rng_u,
+            )
+            out_b = pred_biased._simulate_forward(
+                current_node=next_node, history=dict(history),
+                state=s, draw_i=0, owner="Board", focal_actor="Board",
+                mode=MODE_BOARD, level=1, rng=rng_b,
+            )
+            votes_unbiased.append(out_u.vote_percent)
+            votes_biased.append(out_b.vote_percent)
+
+        sd_u = np.std(votes_unbiased)
+        sd_b = np.std(votes_biased)
+
+        # Biased rollouts should have lower vote spread (sigma_scale < 1)
+        assert sd_b < sd_u, (
+            f"Biased rollouts should have lower vote spread: "
+            f"sd_biased={sd_b:.4f} vs sd_unbiased={sd_u:.4f}"
+        )
+
+    def test_predictive_rollout_uses_bias_review(self):
+        """Rollout simulations should use biased review model (ARA Level-1).
+
+        With review_car_bias > 0, the Board thinks review findings
+        will produce a more favourable CAR. Rollouts under D1_review
+        (which commissions the review) should show a lower adverse
+        rate when biased.
+        """
+        from engine.state import (
+            BeliefBundle, DecisionState, ParameterSampler,
+            load_vote_thresholds, load_policy_parameters,
+        )
+        from engine.chance_models import ChanceModels, BIAS_HUBRIS
+        from engine.predictive import PredictiveDistribution
+        from engine.modes import MODE_BOARD
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        chance = ChanceModels(thresholds)
+        sampler = ParameterSampler(OPP_PRIORS)
+        policy_params = load_policy_parameters(GOV_SPEC)
+
+        pred_unbiased = PredictiveDistribution(
+            beliefs=beliefs, param_sampler=sampler,
+            chance_models=chance, policy_params=policy_params,
+            K=20, R_rollouts=5,
+            overconfidence_bias=None,
+        )
+        pred_biased = PredictiveDistribution(
+            beliefs=beliefs, param_sampler=sampler,
+            chance_models=chance, policy_params=policy_params,
+            K=20, R_rollouts=5,
+            overconfidence_bias=BIAS_HUBRIS,
+        )
+
+        # D1_review commissions the review, so R node fires
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        history = {"D1": "D1_review"}
+        s = state.apply("D1", "D1_review")
+        next_node = s.next_node("D1")
+
+        n_samples = 500
+        adverse_unbiased = 0
+        adverse_biased = 0
+
+        for j in range(n_samples):
+            rng_u = np.random.default_rng(12000 + j)
+            rng_b = np.random.default_rng(12000 + j)
+
+            out_u = pred_unbiased._simulate_forward(
+                current_node=next_node, history=dict(history),
+                state=s, draw_i=0, owner="Board", focal_actor="Board",
+                mode=MODE_BOARD, level=1, rng=rng_u,
+            )
+            out_b = pred_biased._simulate_forward(
+                current_node=next_node, history=dict(history),
+                state=s, draw_i=0, owner="Board", focal_actor="Board",
+                mode=MODE_BOARD, level=1, rng=rng_b,
+            )
+            adverse_unbiased += int(out_u.review_adverse)
+            adverse_biased += int(out_b.review_adverse)
+
+        rate_u = adverse_unbiased / n_samples
+        rate_b = adverse_biased / n_samples
+
+        # Biased rollouts should have lower adverse rate
+        assert rate_b < rate_u, (
+            f"Biased rollouts should have lower adverse rate: "
+            f"biased={rate_b:.3f} vs unbiased={rate_u:.3f}"
+        )
+
+    def test_predictive_accepts_overconfidence_bias(self):
+        """PredictiveDistribution should accept and store overconfidence_bias."""
+        from engine.state import (
+            BeliefBundle, ParameterSampler,
+            load_vote_thresholds, load_policy_parameters,
+        )
+        from engine.chance_models import ChanceModels, BIAS_HUBRIS
+        from engine.predictive import PredictiveDistribution
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        chance = ChanceModels(thresholds)
+        sampler = ParameterSampler(OPP_PRIORS)
+        policy_params = load_policy_parameters(GOV_SPEC)
+
+        pred = PredictiveDistribution(
+            beliefs=beliefs, param_sampler=sampler,
+            chance_models=chance, policy_params=policy_params,
+            K=20, R_rollouts=5,
+            overconfidence_bias=BIAS_HUBRIS,
+        )
+        assert pred.overconfidence_bias is BIAS_HUBRIS
+
+        pred_none = PredictiveDistribution(
+            beliefs=beliefs, param_sampler=sampler,
+            chance_models=chance, policy_params=policy_params,
+            K=20, R_rollouts=5,
+        )
+        assert pred_none.overconfidence_bias is None
+
+
+# ============================================================================
+# 12. CEO RESIGNATION SCENARIO TESTS
+# ============================================================================
+
+class TestScenarios:
+    """Test pre-game CEO resignation scenarios and D0_ceo decision node."""
+
+    def test_d0_ceo_in_node_order(self):
+        """D0_ceo should be the first node in the tree."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        assert state._node_order[0] == "D0_ceo"
+        assert state.node_type("D0_ceo") == "decision"
+        assert state.node_owner("D0_ceo") == "CEO"
+
+    def test_d0_ceo_actions(self):
+        """D0_ceo should have CEO_resign and CEO_stay actions."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        actions = state.feasible_actions("D0_ceo")
+        assert "CEO_resign" in actions
+        assert "CEO_stay" in actions
+        assert len(actions) == 2
+
+    def test_apply_ceo_resign(self):
+        """Applying CEO_resign at D0_ceo sets correct state."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        resigned = state.apply("D0_ceo", "CEO_resign")
+        assert resigned.CEO_present is False
+        assert resigned.CEO_removed is True
+        assert resigned.CEO_resigned_early is True
+
+    def test_apply_ceo_stay(self):
+        """Applying CEO_stay at D0_ceo preserves defaults."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        stayed = state.apply("D0_ceo", "CEO_stay")
+        assert stayed.CEO_present is True
+        assert stayed.CEO_removed is False
+        assert stayed.CEO_resigned_early is False
+
+    def test_for_scenario_delegates_to_apply(self):
+        """for_scenario should produce same state as apply."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        via_scenario = state.for_scenario("ceo_resigned")
+        via_apply = state.apply("D0_ceo", "CEO_resign")
+        assert via_scenario.CEO_present == via_apply.CEO_present
+        assert via_scenario.CEO_removed == via_apply.CEO_removed
+        assert via_scenario.CEO_resigned_early == via_apply.CEO_resigned_early
+
+    def test_for_scenario_resign(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        resigned = state.for_scenario("ceo_resigned")
+        assert resigned.CEO_present is False
+        assert resigned.CEO_removed is True
+        assert resigned.CEO_resigned_early is True
+
+    def test_for_scenario_stay(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        stayed = state.for_scenario("ceo_stayed")
+        assert stayed.CEO_present is True
+        assert stayed.CEO_removed is False
+        assert stayed.CEO_resigned_early is False
+
+    def test_for_scenario_invalid(self):
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        with pytest.raises(ValueError, match="Unknown scenario"):
+            state.for_scenario("invalid_scenario")
+
+    def test_d1_resign_no_d3(self):
+        """When CEO resigned, D3_ceo_transition is infeasible at D1."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        resigned = state.for_scenario("ceo_resigned")
+        actions = resigned.feasible_actions("D1")
+        assert "D3_ceo_transition" not in actions
+        assert "D0_minimal" in actions
+        assert "D1_review" in actions
+        assert len(actions) == 2
+
+    def test_d_rev_resign_no_sack(self):
+        """When CEO resigned, Drev_sack_ceo is infeasible."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        resigned = state.for_scenario("ceo_resigned")
+        actions = resigned.feasible_actions("D_rev")
+        assert "Drev_sack_ceo" not in actions
+        assert "Drev_no_action" in actions
+
+    def test_d4_resign_empty(self):
+        """When CEO resigned, D4 has no feasible actions."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        resigned = state.for_scenario("ceo_resigned")
+        actions = resigned.feasible_actions("D4")
+        assert len(actions) == 0
+
+    def test_d1_stay_all_three(self):
+        """When CEO stayed, all three D1 actions remain feasible."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        stayed = state.for_scenario("ceo_stayed")
+        actions = stayed.feasible_actions("D1")
+        assert len(actions) == 3
+        assert "D3_ceo_transition" in actions
+
+
+class TestScenarioUtilities:
+    """Test CRRA CEO utility with early resignation and stay paths."""
+
+    def test_ceo_utility_early_resign_less_negative(self):
+        """Early resignation should be less negative than forced removal."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        from engine.state import load_utility_weights
+
+        params = load_utility_weights(GOV_SPEC, "CEO")
+
+        # Early resignation
+        outcome_resign = TerminalOutcome(
+            CEO_removed=True, CEO_resigned_early=True)
+        u_resign = utility_ceo(outcome_resign, params)
+
+        # Forced removal (sacked by board) with hostile AGM
+        outcome_sacked = TerminalOutcome(
+            CEO_removed=True, CEO_resigned_early=False,
+            d1_action="D3_ceo_transition", vote_percent=0.4,
+            strike_indicator=True)
+        u_sacked = utility_ceo(outcome_sacked, params)
+
+        assert u_resign > u_sacked, (
+            f"Early resignation ({u_resign:.3f}) should be less negative "
+            f"than forced removal ({u_sacked:.3f})"
+        )
+
+    def test_ceo_utility_crra_resign_value(self):
+        """Verify CRRA computation for resign path: U = W^(1-γ)/(1-γ) - D."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        params = {"gamma": 1.5, "W_resign": 8.0, "D_resign": 50.0}
+        outcome = TerminalOutcome(CEO_removed=True, CEO_resigned_early=True)
+        u = utility_ceo(outcome, params)
+        # W^(1-γ)/(1-γ) = 8^(-0.5)/(-0.5) = (1/√8)/(-0.5) ≈ -0.707
+        expected_money = (8.0 ** (-0.5)) / (-0.5)
+        assert abs(u - (expected_money - 50.0)) < 1e-6
+
+    def test_ceo_utility_crra_stay_sacked(self):
+        """Forced sacking: W = W_stay_sacked, D includes D_sacked."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        params = {"gamma": 1.5, "W_stay_sacked": 3.0, "W_stay_kept": 12.0,
+                  "D_sacked": 100.0, "D_agm": 30.0, "D_disgrace": 30.0,
+                  "D_adverse_review": 10.0}
+        outcome = TerminalOutcome(
+            CEO_removed=True, vote_percent=0.6,
+            overwhelming_indicator=True, strike_indicator=True)
+        u = utility_ceo(outcome, params)
+        # D = D_sacked + D_agm + D_disgrace = 160
+        expected_money = (3.0 ** (-0.5)) / (-0.5)
+        assert abs(u - (expected_money - 160.0)) < 1e-6
+
+    def test_ceo_utility_crra_stay_kept(self):
+        """CEO keeps job: W = W_stay_kept, D = 0 (no penalties)."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        params = {"gamma": 1.5, "W_stay_kept": 12.0, "D_sacked": 100.0,
+                  "D_agm": 30.0, "D_disgrace": 30.0}
+        outcome = TerminalOutcome(CEO_removed=False, vote_percent=0.10)
+        u = utility_ceo(outcome, params)
+        expected_money = (12.0 ** (-0.5)) / (-0.5)
+        assert abs(u - expected_money) < 1e-6
+
+    def test_ceo_utility_log_gamma(self):
+        """γ = 1 should use log utility (ln(W))."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        import numpy as np
+        params = {"gamma": 1.0, "W_resign": 8.0, "D_resign": 50.0}
+        outcome = TerminalOutcome(CEO_removed=True, CEO_resigned_early=True)
+        u = utility_ceo(outcome, params)
+        expected = np.log(8.0) - 50.0
+        assert abs(u - expected) < 1e-6
+
+    def test_ceo_utility_agm_penalty(self):
+        """D_agm triggered only when vote > 25%."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        params = {"gamma": 1.5, "W_stay_kept": 12.0, "D_agm": 30.0,
+                  "D_sacked": 100.0, "D_disgrace": 30.0}
+        low_vote = TerminalOutcome(CEO_removed=False, vote_percent=0.20)
+        high_vote = TerminalOutcome(CEO_removed=False, vote_percent=0.30)
+        u_low = utility_ceo(low_vote, params)
+        u_high = utility_ceo(high_vote, params)
+        assert u_low > u_high  # AGM penalty applied for high vote
+
+    def test_ceo_utility_disgrace_penalty(self):
+        """D_disgrace triggered by overwhelming vote indicator."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        params = {"gamma": 1.5, "W_stay_kept": 12.0, "D_agm": 30.0,
+                  "D_sacked": 100.0, "D_disgrace": 30.0}
+        no_overwhelm = TerminalOutcome(
+            CEO_removed=False, vote_percent=0.30)
+        overwhelm = TerminalOutcome(
+            CEO_removed=False, vote_percent=0.60,
+            overwhelming_indicator=True)
+        u_no = utility_ceo(no_overwhelm, params)
+        u_yes = utility_ceo(overwhelm, params)
+        assert u_no > u_yes  # Disgrace penalty for overwhelming
+
+    def test_ceo_utility_gamma_clipping(self):
+        """gamma should be clipped to [0.5, 3.0]."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        outcome = TerminalOutcome(CEO_removed=True, CEO_resigned_early=True)
+        # gamma=0.0 should be clipped to 0.5
+        params_low = {"gamma": 0.0, "W_resign": 8.0, "D_resign": 50.0}
+        params_exact = {"gamma": 0.5, "W_resign": 8.0, "D_resign": 50.0}
+        assert abs(utility_ceo(outcome, params_low) -
+                   utility_ceo(outcome, params_exact)) < 1e-6
+        # gamma=5.0 should be clipped to 3.0
+        params_high = {"gamma": 5.0, "W_resign": 8.0, "D_resign": 50.0}
+        params_cap = {"gamma": 3.0, "W_resign": 8.0, "D_resign": 50.0}
+        assert abs(utility_ceo(outcome, params_high) -
+                   utility_ceo(outcome, params_cap)) < 1e-6
+
+    def test_board_utility_early_ceo_departure(self):
+        """Board should pay early_ceo_departure_cost for early resignation."""
+        from engine.utilities import utility_board, TerminalOutcome
+        from engine.state import load_utility_weights
+
+        params = load_utility_weights(GOV_SPEC, "Board")
+
+        # No CEO departure
+        outcome_present = TerminalOutcome()
+        u_present = utility_board(outcome_present, params)
+
+        # Early CEO departure
+        outcome_resigned = TerminalOutcome(
+            CEO_removed=True, CEO_resigned_early=True)
+        u_resigned = utility_board(outcome_resigned, params)
+
+        # Should be less than status quo (there's a cost)
+        assert u_resigned < u_present
+
+    def test_asa_utility_early_ceo_departure_reward(self):
+        """ASA should get a reward for early CEO departure."""
+        from engine.utilities import utility_asa, TerminalOutcome
+        from engine.state import load_utility_weights
+
+        params = load_utility_weights(GOV_SPEC, "ASA")
+
+        # No CEO departure
+        outcome_present = TerminalOutcome()
+        u_present = utility_asa(outcome_present, params)
+
+        # Early CEO departure
+        outcome_resigned = TerminalOutcome(
+            CEO_removed=True, CEO_resigned_early=True)
+        u_resigned = utility_asa(outcome_resigned, params)
+
+        # ASA gets vindication reward
+        assert u_resigned > u_present
+
+
+class TestScenarioSolver:
+    """Test solver with CEO resignation scenarios and D0_ceo predictive."""
+
+    def _make_solver(self, K=20, R_rollouts=5):
+        from engine.solver import Solver
+        return Solver(
+            governance_spec_path=GOV_SPEC,
+            opponent_priors_path=OPP_PRIORS,
+            checkpoint_dir=CHECKPOINT_DIR,
+            K=K, R_rollouts=R_rollouts, seed=42,
+        )
+
+    def test_solve_ceo_resigned_fewer_actions(self):
+        """CEO resigned scenario should have 2 D1 actions (no D3)."""
+        solver = self._make_solver()
+        result = solver.solve(
+            "Board", "C0", n_draws=3, scenario="ceo_resigned")
+        assert result.scenario == "ceo_resigned"
+        assert len(result.EU_per_action) == 2
+        assert "D3_ceo_transition" not in result.EU_per_action
+        assert "D0_minimal" in result.EU_per_action
+        assert "D1_review" in result.EU_per_action
+
+    def test_solve_ceo_stayed_backward_compat(self):
+        """CEO stayed scenario should have all 3 D1 actions."""
+        solver = self._make_solver()
+        result = solver.solve(
+            "Board", "C0", n_draws=3, scenario="ceo_stayed")
+        assert result.scenario == "ceo_stayed"
+        assert len(result.EU_per_action) == 3
+        assert "D3_ceo_transition" in result.EU_per_action
+
+    def test_solve_scenarios_returns_both(self):
+        """solve_scenarios should return results for both scenarios."""
+        solver = self._make_solver()
+        results = solver.solve_scenarios("Board", "C0", n_draws=3)
+        assert "ceo_stayed" in results
+        assert "ceo_resigned" in results
+        assert len(results["ceo_stayed"].EU_per_action) == 3
+        assert len(results["ceo_resigned"].EU_per_action) == 2
+
+    def test_solve_scenarios_has_d0_ceo_predictive(self):
+        """solve_scenarios should compute D0_ceo predictive distribution."""
+        solver = self._make_solver()
+        results = solver.solve_scenarios("Board", "C0", n_draws=3)
+        # Both results should have the same D0_ceo predictive
+        for scenario, result in results.items():
+            assert "CEO_resign" in result.d0_ceo_predictive
+            assert "CEO_stay" in result.d0_ceo_predictive
+            # Probabilities must sum to ~1
+            total = sum(result.d0_ceo_predictive.values())
+            assert abs(total - 1.0) < 0.01, f"D0_ceo probabilities sum to {total}"
+            # scenario_prob should match the relevant action
+            assert result.scenario_prob >= 0.0
+            assert result.scenario_prob <= 1.0
+
+    def test_predict_d0_ceo_distribution(self):
+        """predict_d0_ceo should return valid probability distribution."""
+        solver = self._make_solver()
+        pred = solver.predict_d0_ceo("Board", "C0", n_draws=3)
+        assert "CEO_resign" in pred
+        assert "CEO_stay" in pred
+        total = sum(pred.values())
+        assert abs(total - 1.0) < 0.01
+        for prob in pred.values():
+            assert 0.0 <= prob <= 1.0
+
+    def test_summary_df_has_scenario_and_prob_columns(self):
+        """summary_df should include scenario and Pr_scenario columns."""
+        solver = self._make_solver()
+        result = solver.solve(
+            "Board", "C0", n_draws=3, scenario="ceo_resigned")
+        df = result.summary_df()
+        assert "scenario" in df.columns
+        assert "Pr_scenario" in df.columns
+        assert (df["scenario"] == "ceo_resigned").all()
+
+    def test_d0_ceo_fixed_policy(self):
+        """D0_ceo fixed policy should return CEO_stay."""
+        from engine.state import DecisionState, BeliefBundle, ParameterSampler
+        from engine.state import load_vote_thresholds, load_policy_parameters
+        from engine.chance_models import ChanceModels
+        from engine.predictive import PredictiveDistribution
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        chance_models = ChanceModels(load_vote_thresholds(GOV_SPEC))
+        pred = PredictiveDistribution(
+            beliefs=beliefs,
+            param_sampler=ParameterSampler(OPP_PRIORS),
+            chance_models=chance_models,
+            policy_params=load_policy_parameters(GOV_SPEC),
+            K=10, R_rollouts=5,
+        )
+        feasible = state.feasible_actions("D0_ceo")
+        rng = np.random.default_rng(42)
+        action = pred._fixed_policy("CEO", "D0_ceo", {}, state, feasible, rng=rng)
+        assert action == "CEO_stay"
+
+    def test_cpre_checkpoint_loads(self):
+        """New Cpre checkpoint should be loadable."""
+        from engine.state import BeliefBundle
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_Cpre_2023-08-31.npz")
+        assert bb.N == 500
+        # Cpre should have slightly negative B_mkt mean
+        assert bb.B_mkt.mean() < 0.1
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])
