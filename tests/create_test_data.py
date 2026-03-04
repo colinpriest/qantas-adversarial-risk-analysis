@@ -47,7 +47,8 @@ def create_synthetic_checkpoint(
 
     # Vote model parameters
     alpha_vote = rng.normal(-1.5, 0.3, size=N)  # Base log-odds against
-    gamma_A = rng.normal(0.5, 0.2, size=N)      # ASA mobilisation effect
+    gamma_A = rng.normal(0.5, 0.2, size=N)      # ASA mobilisation effect (non-crisis baseline)
+    gamma_AH = rng.normal(0.3, 0.15, size=N)    # ASA headline interaction (additional crisis shift)
     gamma_D = rng.normal(-0.3, 0.1, size=N)     # Governance package dampening
     sigma_vote = np.abs(rng.normal(0.5, 0.1, size=N))  # Vote noise
 
@@ -88,6 +89,7 @@ def create_synthetic_checkpoint(
         B_mgmt=B_mgmt,
         alpha_vote=alpha_vote,
         gamma_A=gamma_A,
+        gamma_AH=gamma_AH,
         gamma_D=gamma_D,
         sigma_vote=sigma_vote,
         review_param_1=review_param_1,

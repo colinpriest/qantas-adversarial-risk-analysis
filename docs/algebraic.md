@@ -1,1016 +1,875 @@
-Here are the **two explicit objective-function blocks** (Board-advice vs ASA-advice), written in the **sequential ARA style**:
+# Algebraic Notation — Qantas ARA Engine
 
-- **Focal actor** optimises.
-- **Other strategic players** are treated as *chance nodes* via **predictive distributions** induced by uncertainty over their utilities/parameters and their own EU-maximisation.
-- **Vote** and **review findings** remain Nature (chance), but endogenous through the Bayesian submodels.
-
-I'll keep notation tight and aligned to your diagram:
-$D_1, D_{\text{rev}}, D_4$ (Board), $A_2$ (ASA), $M_{\text{agm}}, M_{\text{rev}}$ (CEO), $V\equiv V_{2023}$, $R$ (review findings), and feasibility "state flags" $S$.
+This document specifies the mathematical structure implemented in `engine/`.
+Every formula maps to executable code; section headings reference the source module.
 
 ---
 
-# Common structure (used by both blocks)
+## 1. Game tree structure (`state.py`)
 
-## Histories / information sets
+### 1.1 Node order
 
-Let $h_t$ be the history observed at stage $t$. Under your tree this is essentially the sequence of realised earlier moves and chance outcomes.
-
-Examples:
-
-- Before ASA acts: $h_{A}=(D_1, B_0^{mkt}, B_0^{mgmt}, \text{known state flags})$.
-- Before CEO (AGM) acts: $h_{M_{agm}}=(D_1,A_2,V,\ldots)$.
-- Before Board final acts: $h_{D4}=(D_1,A_2,V,D_{\text{rev}},R,M_{\text{rev}},S,\ldots)$.
-
-## Chance models (Bayesian)
-
-These are shared:
+The tree is **not** a fixed linear sequence. Node traversal is conditional on game state, principally on whether the CEO is still present. The base sequence is:
 
 $$
-p(V \mid D_1,A_2,B_0^{mkt},B_0^{mgmt},S,\Theta_V),
-\qquad
-p(R \mid D_{\text{rev}},D_1,S,\Theta_R).
+D_0^{\text{ceo}} \rightarrow D_1 \rightarrow A_2 \rightarrow V \rightarrow M_{\text{agm}} \rightarrow D_4 \rightarrow D_{\text{rev}} \rightarrow R \rightarrow M_{\text{rev}} \rightarrow [\text{conditional } D_4 \rightarrow D_{\text{rev}}] \rightarrow \text{Terminal}
 $$
 
-(And in your implementation, $B_0^{mkt},B_0^{mgmt}$ are Monte Carlo draws from checkpoint `.npz`.)
+**Key ordering principle:** $D_4$ (CEO response) precedes $D_{\text{rev}}$ (Board response). The CEO has initiative to resign before the Board decides whether to act.
 
-## Utilities
+**Post-review conditional round:** After $R$ and $M_{\text{rev}}$, if $\text{review\_adverse} = \text{true}$ AND $\text{CEO\_present} = \text{true}$, a second $D_4 \rightarrow D_{\text{rev}}$ round occurs. Otherwise, the game proceeds directly to Terminal.
 
-Each actor $j\in\{B,A,C\}$ has utility $u_j(Z;\Theta_j)$ over terminal outcome summary $Z$ (CEO status, vote, review outcome, implementation costs, etc.).
+| Node                 | Type     | Owner  | Purpose                                        |
+| -------------------- | -------- | ------ | ---------------------------------------------- |
+| $D_0^{\text{ceo}}$ | Decision | CEO    | Pre-game resignation (05-Sep-2023)             |
+| $D_1$              | Decision | Board  | Governance reform package                      |
+| $A_2$              | Decision | ASA    | Strike recommendation                          |
+| $V$                | Chance   | Nature | Shareholder vote (logit-normal)                |
+| $M_{\text{agm}}$   | Chance   | Nature | Post-AGM market reaction (pass-through)        |
+| $D_4$              | Decision | CEO    | CEO response to AGM outcome                    |
+| $D_{\text{rev}}$   | Decision | Board  | Board review response / CEO removal            |
+| $R$                | Chance   | Nature | Review findings release (Student-$t$)        |
+| $M_{\text{rev}}$   | Chance   | Nature | Post-review market reaction (pass-through)     |
+| $D_4'$             | Decision | CEO    | CEO response to adverse review (conditional)   |
+| $D_{\text{rev}}'$  | Decision | Board  | Board response to adverse review (conditional) |
+| Terminal             | Terminal | —     | Compute utilities                              |
 
-## ARA predictive distribution template
+$M_{\text{agm}}$ and $M_{\text{rev}}$ are pass-through nodes: no sampling or branching occurs.
 
-From focal actor $i$'s perspective, any opponent $j$'s move at node $X$ is a chance variable with predictive distribution
+$D_4'$ and $D_{\text{rev}}'$ share the same action sets and feasibility rules as $D_4$ and $D_{\text{rev}}$ respectively. They are only reached when $\text{review\_adverse} \wedge \text{CEO\_present}$.
+
+### 1.2 Action sets
+
+| Node                                    | Actions                                                           | Feasibility                              |
+| --------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------- |
+| $D_0^{\text{ceo}}$                    | `CEO_resign`, `CEO_stay`                                      | always                                   |
+| $D_1$                                 | `D0_minimal`, `D1_review`, `D3_ceo_transition`              | always (`D3` requires `CEO_present`) |
+| $A_2$                                 | `A2_no_strike`, `A2_rec_strike`                               | always                                   |
+| $D_4$, $D_4'$                       | `D4_stay`, `D4_resign`, `D4_negotiate_exit`                 | `CEO_present`                          |
+| $D_{\text{rev}}$, $D_{\text{rev}}'$ | `Drev_no_action`, `Drev_commission_review`, `Drev_sack_ceo` | see below                                |
+
+Feasibility rules evaluated dynamically on the game state $S$:
+
+| Code                        | Condition                                                                                             |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `always`                  | $\text{true}$                                                                                       |
+| `CEO_present`             | $S.\text{CEO\_present} = \text{true}$                                                               |
+| `CEO_not_removed`         | $S.\text{CEO\_removed} = \text{false}$                                                              |
+| `review_not_commissioned` | $S.\text{review\_commissioned} = \text{false}$                                                      |
+| `review_commissioned`     | $S.\text{review\_commissioned} = \text{true}$                                                       |
+| `review_completed`        | $S.\text{review\_completed} = \text{true}$                                                          |
+| `not_reviewed_yet`        | $S.\text{review\_commissioned} = \text{false} \;\wedge\; S.\text{review\_completed} = \text{false}$ |
+| `post_review_round`       | $S.\text{post\_review\_round} = \text{true}$                                                        |
+| `post_review_round_and_CEO_present` | $S.\text{post\_review\_round} \;\wedge\; S.\text{CEO\_present}$                          |
+| `post_review_round_and_review_not_commissioned` | $S.\text{post\_review\_round} \;\wedge\; S.\text{review\_commissioned} = \text{false}$ |
+
+### 1.3 State transitions
+
+The game state $S$ is an immutable record with fields:
 
 $$
-p_i(X=x \mid h)
-=
-\Pr_{\Theta_j\sim p_i(\Theta_j)}\left[
-x \in \arg\max_{x'\in \mathcal{X}(h)}
-\Psi_j(x';h,\Theta_j)
-\right]
+S = (\text{CEO\_present},\; \text{review\_commissioned},\; \text{review\_completed},\; \text{CEO\_removed},\; \text{CEO\_resigned\_early},\; \text{review\_adverse},\; \text{post\_review\_round},\; \text{headline\_incident},\; \text{checkpoint\_id})
 $$
 
-where opponent $j$'s expected utility for candidate action $x$ is
+The `headline_incident` flag (default `true` for Qantas) indicates whether the company has experienced a high-profile governance or conduct failure. It conditions the vote model's ASA interaction term and structural crisis floor (§3.1).
+
+Applying an action returns a new copy: $S' = \text{apply}(S, n, a)$.
+
+Key transitions:
+
+| Action                                    | Effect                                                                                                                                              |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CEO_resign`                            | $\text{CEO\_present} \leftarrow \text{false},\; \text{CEO\_removed} \leftarrow \text{true},\; \text{CEO\_resigned\_early} \leftarrow \text{true}$ |
+| `D3_ceo_transition`, `Drev_sack_ceo`  | $\text{CEO\_present} \leftarrow \text{false},\; \text{CEO\_removed} \leftarrow \text{true}$                                                       |
+| `D1_review`, `Drev_commission_review` | $\text{review\_commissioned} \leftarrow \text{true}$                                                                                              |
+| `D4_resign`, `D4_negotiate_exit`      | $\text{CEO\_present} \leftarrow \text{false},\; \text{CEO\_removed} \leftarrow \text{true}$                                                       |
+| `adverse` (at $R$)                    | $\text{review\_adverse} \leftarrow \text{true},\; \text{review\_completed} \leftarrow \text{true},\; \text{post\_review\_round} \leftarrow \text{CEO\_present}$ |
+| `no_adverse` (at $R$)                 | $\text{review\_adverse} \leftarrow \text{false},\; \text{review\_completed} \leftarrow \text{true}$                                               |
+
+### 1.4 Scenario branching at $D_0^{\text{ceo}}$
+
+The solver evaluates both pre-game scenarios separately:
 
 $$
-\Psi_j(x;h,\Theta_j)
-=
-\mathbb{E}_{i}\left[u_j(Z;\Theta_j)\mid h, X=x\right],
+\text{scenario} \in \{\text{ceo\_stayed},\; \text{ceo\_resigned}\}
 $$
 
-and the expectation is taken under the focal actor's uncertainty about downstream chance nodes and (if needed) simplified response beliefs for future players (Level-1 ARA).
+The probability of each scenario is computed via ARA predictive distribution over $D_0^{\text{ceo}}$:
 
-That's the "replace opponent decision node with chance node" step.
+$$
+\Pr_i(\text{CEO\_resign}) = p_i(D_0^{\text{ceo}} = \text{resign} \mid \emptyset)
+$$
+
+where $i$ is the focal actor. Each scenario prunes the action space downstream (e.g., `ceo_resigned` makes $D_4$ infeasible because CEO is already gone).
+
+### 1.5 Conditional branching structure
+
+When $D_0^{\text{ceo}} = \text{CEO\_stay}$ and $D_1 \ne \text{D3\_ceo\_transition}$, the full tree unfolds:
+
+$$
+D_1 \rightarrow A_2 \rightarrow V \rightarrow M_{\text{agm}} \rightarrow D_4 \rightarrow D_{\text{rev}} \rightarrow R \rightarrow M_{\text{rev}} \rightarrow \begin{cases} D_4' \rightarrow D_{\text{rev}}' \rightarrow \text{Terminal} & \text{if adverse} \wedge \text{CEO\_present} \\ \text{Terminal} & \text{otherwise} \end{cases}
+$$
+
+When CEO is removed early ($D_0^{\text{ceo}} = \text{CEO\_resign}$ or $D_1 = \text{D3\_ceo\_transition}$):
+
+$$
+D_1 \rightarrow A_2 \rightarrow V \rightarrow M_{\text{agm}} \rightarrow [\text{D4 skip}] \rightarrow D_{\text{rev}} \rightarrow R \rightarrow M_{\text{rev}} \rightarrow \text{Terminal}
+$$
+
+All $D_4$, $D_4'$ nodes are skipped when $\text{CEO\_present} = \text{false}$. $D_{\text{rev}}$ actions are restricted to exclude `Drev_sack_ceo` when CEO is absent.
 
 ---
 
-# Block 1 — Advising the Board (Board is focal optimiser)
+## 2. Belief checkpoint draws (`state.py`)
 
-## Board decisions and objective
+### 2.1 Posterior draws
 
-Board chooses its policy triple
-
-$$
-\pi_B = (d_1, d_{\text{rev}}(\cdot), d_4(\cdot)),
-$$
-
-subject to feasibility flags $S$ (e.g., review can only be commissioned once, CEO may already be gone, etc.).
-
-The Board's decision problem is:
+Each checkpoint $c \in \{C_{\text{pre}}, C_0, C_1, C_2, C_3\}$ contains $N$ draws (typically 500) from upstream Stan models:
 
 $$
-\pi_B^*
-\in
-\arg\max_{\pi_B \in \Pi_B}
-\; EU_B(\pi_B),
+\theta_c^{(i)} = \bigl(B_{\text{mkt}}^{(i)},\; B_{\text{mgmt}}^{(i)},\; \alpha_V^{(i)},\; \gamma_A^{(i)},\; \gamma_{AH}^{(i)},\; \gamma_D^{(i)},\; \sigma_V^{(i)},\; r_1^{(i)},\; r_2^{(i)}\bigr), \quad i = 1,\ldots,N
 $$
 
-with
+All parameters are `float64` arrays indexed by draw $i$. The first seven are consumed by the vote model: $\gamma_A$ is the base ASA mobilisation effect, and $\gamma_{AH}$ is the additional headline-interaction shift (§3.1). The review parameters $r_1, r_2$ (`review_param_1`, `review_param_2`) are loaded from checkpoints but not currently consumed by the review chance model (which samples its own hierarchical parameters).
+
+### 2.2 Opponent parameter priors
+
+The focal actor's uncertainty over opponent $j$'s utility parameters $\Theta_j$ is specified via prior distributions (opponent_priors.xlsx):
 
 $$
-EU_B(\pi_B)
-=
-\mathbb{E}\left[
-u_B(Z;\Theta_B)
-\;\middle|\;
-\pi_B
-\right].
+\Theta_j \sim p_i(\Theta_j), \qquad j \in \{\text{Board}, \text{ASA}, \text{CEO}\} \setminus \{i\}
 $$
 
-### Expanded expectation (what's inside $EU_B$)
+Supported distribution families: Normal, LogNormal, Beta, Uniform, Gamma.
 
-Under Board advice, the random variables are:
+Keyed by `(perspective_actor, target_actor, parameter_name)`.
 
-- ASA move $A_2$ (strategic opponent → predictive distribution $p_B(A_2\mid \cdot)$)
-- CEO moves $M_{\text{agm}}, M_{\text{rev}}$ (strategic opponent → predictive distributions)
-- vote $V$ and review findings $R$ (Nature, Bayesian)
-- priors/latent draws $B_0^{mkt},B_0^{mgmt}$ and uncertain parameters $\Theta$.
+---
 
-So:
+## 3. Chance models (`chance_models.py`)
+
+### 3.1 Vote model — logit-normal with headline interaction and crisis floor
+
+The AGM belief aggregates four components:
+
+$$
+B_{\text{agm}} = B_{\text{mkt}}^{(i)} + \gamma_A^{(i)} \cdot \mathbb{1}[A_2 = \text{rec\_strike}] + \gamma_{AH}^{(i)} \cdot \mathbb{1}[A_2 = \text{rec\_strike}] \cdot \mathbb{1}[\text{headline}] + \gamma_D^{(i)} \cdot f(D_1)
+$$
+
+where:
+- $\gamma_A^{(i)}$ is the base ASA mobilisation effect (non-crisis baseline)
+- $\gamma_{AH}^{(i)}$ is the additional headline-interaction shift: the incremental ASA effect when both a strike is recommended *and* the company has a headline incident. This addresses insufficient ASA differentiation in crisis vs non-crisis cases — a single pooled $\gamma_A$ understates the ASA effect in crises and overstates it in non-crisis cases.
+- $\mathbb{1}[\text{headline}] = S.\text{headline\_incident}$
+
+The governance effect $f(D_1)$ is sampled from a Uniform distribution:
+
+$$
+f(D_1) = \begin{cases}
+0 & D_1 = \text{D0\_minimal} \\
+U(\ell_1, u_1) & D_1 = \text{D1\_review} \\
+U(\ell_3, u_3) & D_1 = \text{D3\_ceo\_transition}
+\end{cases}
+$$
+
+Unbiased bounds: $(\ell_1, u_1) = (0, 1)$, $(\ell_3, u_3) = (-1, 0.5)$.
+
+The D3 (CEO transition) effect uses $U(-1, 0.5)$ with $\mathbb{E}[f] = -0.25$: the four historical CEO-exit observations are confounded with crisis severity, and the data do not rule out a modest dampening effect on protest voting ($f > 0$). The upper bound of $0.5$ allows for the possibility that decisive Board action partially mollifies shareholders.
+
+The vote fraction is drawn from the logit-normal:
+
+$$
+\text{logit}(V) \sim \mathcal{N}\!\bigl(\alpha_V^{(i)} + B_{\text{agm}},\; \sigma_V^{(i)}\bigr)
+$$
+
+$$
+V_{\text{logit}} = \text{expit}\!\bigl(\text{logit}(V)\bigr) = \frac{1}{1 + e^{-\text{logit}(V)}}
+$$
+
+**Structural crisis floor.** In headline-incident cases, a minimum opposition level is imposed:
+
+$$
+V_{\text{floor}} \sim \text{Beta}(50, 150), \quad \mathbb{E}[V_{\text{floor}}] = 0.25, \quad \text{90\% CI} \approx [0.22, 0.28]
+$$
+
+$$
+V_{\text{final}} = \begin{cases}
+\max(V_{\text{logit}},\; V_{\text{floor}}) & \text{if headline\_incident} \\
+V_{\text{logit}} & \text{otherwise}
+\end{cases}
+$$
+
+$V_{\text{floor}}$ is drawn once per belief draw (epistemic: "what is the minimum opposition this crisis generates?") and held fixed across the $M_V$ vote samples within that draw. This prevents the logit-normal from under-producing first strikes in crisis scenarios — without the floor, the model assigns only 3–14% probability mass to $V < 0.25$ even with high median opposition.
+
+Derived indicators (from `vote_thresholds` sheet):
+
+$$
+\text{strike} = \mathbb{1}[V_{\text{final}} \ge 0.25], \qquad \text{overwhelming} = \mathbb{1}[V_{\text{final}} \ge 0.50]
+$$
+
+**Epistemic/aleatoric separation:** Three epistemic quantities are drawn once per belief draw and held fixed across MC vote samples:
+1. The governance effect $f(D_1)$ — "how effective is this reform?"
+2. The crisis floor $V_{\text{floor}}$ — "what is the minimum opposition?"
+3. (When biased) the sigma scale $\kappa_\sigma$ — Board's perceived precision
+
+Vote samples within a draw reflect aleatoric noise (individual voter responses).
+
+### 3.2 Review findings — Student-$t$ hierarchy
+
+If review commissioned:
+
+$$
+\mu_f \sim t_4(-0.05,\; 0.03)
+$$
+
+$$
+\sigma_f \sim |\mathcal{N}(0,\; 0.10)|
+$$
+
+$$
+\text{CAR} \sim t_3(\mu_f,\; \sigma_f)
+$$
+
+$$
+\text{review\_adverse} = \mathbb{1}[\text{CAR} < 0]
+$$
+
+If review not commissioned: $\text{CAR} = 0$, $\text{review\_adverse} = \text{false}$ (deterministic).
+
+Calibrated from ASX governance review case studies (2014–2023):
+Star $-13.95\%$, Westpac $-3.00\%$, CBA $+1.75\%$, Qantas $+0.85\%$.
+
+**Why $t_4$ for $\mu_f$, not Cauchy:** The Cauchy distribution ($t_1$) has no finite mean or variance. With `review_car_weight` $= 15$, a single extreme Cauchy draw (e.g., $\mu_f \approx -0.5$) contributes $15 \times (-0.5) = -7.5$ to Board utility and can dominate the Monte Carlo average, making "commission review" appear far worse than it actually is. $t_4$ is the minimum degrees-of-freedom giving both a finite mean ($\nu > 1$) and finite variance ($\nu > 2$), while still retaining genuinely heavy tails. The outer $\text{CAR} \sim t_3(\mu_f, \sigma_f)$ preserves heavy-tail capability for extreme events (Star $-13.95\%$).
+
+Analytical mean: $\mathbb{E}[\mu_f] = -0.05$ (well-defined since $\nu = 4 > 1$). $\mathbb{E}[\text{CAR}] = \mathbb{E}[\mu_f] = -0.05$.
+
+### 3.3 Review direct cost — Gamma
+
+$$
+C_{\text{direct}} \sim \text{Gamma}(\alpha = 4.55,\; \beta = 4741)
+$$
+
+Properties: mean $\approx 9.6$ bps, SD $\approx 4.5$ bps, mode $\approx 7.5$ bps.
+
+Drawn once per scenario (epistemic) and held fixed across MC review samples.
+
+---
+
+## 4. Board overconfidence bias (`chance_models.py`)
+
+When Board is focal, the engine applies three cognitive biases calibrated from the governance overconfidence literature.
+
+### 4.1 Overestimation on governance effects
+
+Boards overestimate the effectiveness of their governance actions by a factor $\beta \sim U(0.25, 1.0)$. Production midpoint $\beta = 0.625$. This shifts the Uniform bounds for $f(D_1)$:
+
+$$
+f(D_1 = \text{D1\_review}) \sim U(\ell_1^{\text{bias}}, u_1^{\text{bias}}), \quad f(D_1 = \text{D3}) \sim U(\ell_3^{\text{bias}}, u_3^{\text{bias}})
+$$
+
+Default: $(\ell_1^{\text{bias}}, u_1^{\text{bias}}) = (0.63, 1.0)$, $(\ell_3^{\text{bias}}, u_3^{\text{bias}}) = (-0.62, 0.5)$.
+
+Note: the unbiased D3 ceiling is now $0.5$ (not $0$), so the biased Board's overestimation affects only the *floor* (narrowing the range upward from $-1$ to $-0.62$), while the ceiling remains at the unbiased value.
+
+### 4.2 Overprecision on vote uncertainty
+
+Boards perceive $\kappa \sim U(2, 5)$ times more precision than warranted:
+
+$$
+\hat{\sigma}_V = \sigma_V \cdot \kappa_\sigma, \qquad \kappa_\sigma = 1/\sqrt{\kappa}
+$$
+
+Production default: $\kappa = 3.5$, $\kappa_\sigma = 0.53$.
+
+### 4.3 Overestimation on review CAR
+
+Board overestimates governance quality, perceiving findings as more favourable:
+
+$$
+\hat{\mu}_f = \mu_f + \delta_{\text{CAR}}, \qquad \delta_{\text{CAR}} = 0.03
+$$
+
+Board perceives review CAR $\sim 3$ pp more favourable than actuarial.
+
+### 4.4 Bias propagation
+
+Biases are applied consistently:
+
+- In the focal actor's own EU calculation (tree value)
+- In rollout simulations for predictive distributions
+
+This produces self-consistent decision-making under cognitive bias.
+
+---
+
+## 5. Utility functions (`utilities.py`)
+
+### 5.1 Terminal outcome
+
+A terminal outcome $Z$ is the tuple:
+
+$$
+Z = (d_1, a_2, d_{\text{rev}}, d_4, d_4', d_{\text{rev}}', V, \text{strike}, \text{overwhelming}, \text{CAR}, C_{\text{direct}}, \text{adverse}, \text{CEO\_removed}, \text{CEO\_resigned\_early}, \text{review\_commissioned})
+$$
+
+### 5.2 Board utility
+
+Board minimises opposition and disruption:
 
 $$
 \begin{aligned}
-EU_B(\pi_B)
-&=
-\mathbb{E}_{B_0,\Theta}\Bigg[
-\sum_{a_2\in\mathcal{A}_2}
-p_B(a_2 \mid h_A)
-\int p(V\mid d_1,a_2,B_0,S,\Theta_V) \\
-&\qquad \times
-\sum_{m_{agm}\in\mathcal{M}_{agm}}
-p_B(m_{agm}\mid h_{M_{agm}})
-\;\;
-\sum_{d_{rev}\in\mathcal{D}_{rev}(h)}
-\mathbb{I}[d_{rev}=d_{\text{rev}}(h_{D_{rev}})] \\
-&\qquad \times
-\int p(R\mid d_{rev},d_1,S,\Theta_R)\;
-\sum_{m_{rev}\in\mathcal{M}_{rev}}
-p_B(m_{rev}\mid h_{M_{rev}}) \\
-&\qquad \times
-\sum_{d_4\in\mathcal{D}_4(h)}
-\mathbb{I}[d_4=d_4(h_{D4})]
-\;\;
-u_B(Z;\Theta_B)
-\;\; dR \, dV
-\Bigg].
+u_B(Z) &= -w_{\text{early}} \cdot \mathbb{1}[\text{CEO\_resigned\_early}] \\
+&\quad - w_{\text{vote}} \cdot (V - 0.25)_+^2 \\
+&\quad - w_{\text{over}} \cdot \mathbb{1}[\text{overwhelming}] \\
+&\quad - w_{\text{spill}} \cdot V \cdot \mathbb{1}[\text{strike}] \\
+&\quad + w_{\text{CAR}} \cdot \text{CAR} \cdot \mathbb{1}[\text{review\_commissioned}] \\
+&\quad - w_{\text{cost}} \cdot C_{\text{direct}} \cdot \mathbb{1}[\text{review\_commissioned}] \\
+&\quad - w_{\text{impl}} \cdot \bigl(\mathbb{1}[d_1 = \text{D3}] + \mathbb{1}[d_{\text{rev}} = \text{sack}] + \mathbb{1}[d_{\text{rev}}' = \text{sack}]\bigr) \\
+&\quad - w_{\text{loss}} \cdot \mathbb{1}[\text{CEO\_removed} \wedge \neg\text{CEO\_resigned\_early}] \\
+&\quad - w_{\text{rep}} \cdot \mathbb{1}[\text{overwhelming}]
 \end{aligned}
 $$
 
-Interpretation:
+where $(x)_+ = \max(x, 0)$.
 
-- The indicators $\mathbb{I}[\cdot]$ encode that **Board's policy** selects $d_{\text{rev}}$ and $d_4$ deterministically given histories (and feasibility).
-- ASA/CEO choices are integrated as chance variables using predictive distributions induced by their own EU-maximisation under parameter uncertainty.
+Default weights:
 
-## Predictive distributions needed in Board mode
+| Parameter                       | Symbol               | Default |
+| ------------------------------- | -------------------- | ------- |
+| `early_ceo_departure_cost`    | $w_{\text{early}}$ | 0.5     |
+| `vote_penalty_weight`         | $w_{\text{vote}}$  | 2.0     |
+| `overwhelming_penalty_weight` | $w_{\text{over}}$  | 3.0     |
+| `spill_risk_weight`           | $w_{\text{spill}}$ | 2.5     |
+| `review_car_weight`           | $w_{\text{CAR}}$   | 15.0    |
+| `review_direct_cost_weight`   | $w_{\text{cost}}$  | 15.0    |
+| `implementation_cost_sack`    | $w_{\text{impl}}$  | 1.0     |
+| `ceo_loss_cost`               | $w_{\text{loss}}$  | 1.5     |
+| `reputational_spill_weight`   | $w_{\text{rep}}$   | 1.0     |
 
-### ASA predictive distribution (from Board's view)
+### 5.3 ASA utility
 
-$$
-p_B(A_2=a \mid h_A)
-=
-\Pr_{\Theta_A\sim p_B(\Theta_A)}
-\left[
-a\in\arg\max_{a'} \Psi_A(a';h_A,\Theta_A)
-\right]
-$$
-
-with
-
-$$
-\Psi_A(a;h_A,\Theta_A)=
-\mathbb{E}_B[u_A(Z;\Theta_A)\mid h_A, A_2=a].
-$$
-
-### CEO predictive distributions (from Board's view)
-
-Similarly at AGM:
-
-$$
-p_B(M_{\text{agm}}=m \mid h_{M_{agm}})
-=
-\Pr_{\Theta_C\sim p_B(\Theta_C)}
-\left[
-m\in\arg\max_{m'} \Psi_C^{agm}(m';h_{M_{agm}},\Theta_C)
-\right]
-$$
-
-and post-review:
-
-$$
-p_B(M_{\text{rev}}=m \mid h_{M_{rev}})
-=
-\Pr_{\Theta_C\sim p_B(\Theta_C)}
-\left[
-m\in\arg\max_{m'} \Psi_C^{rev}(m';h_{M_{rev}},\Theta_C)
-\right].
-$$
-
-That fully specifies the Board-advice ARA objective: **Board is not an adversary**; it's the optimiser.
-
----
-
-# Block 2 — Advising ASA (ASA is focal optimiser)
-
-Now swap the focal actor.
-
-ASA chooses a mobilisation policy
-
-$$
-\pi_A = a_2(\cdot)
-$$
-
-(or just a single $a_2$ if ASA acts only once in your tree).
-
-ASA's decision problem:
-
-$$
-\pi_A^* \in \arg\max_{\pi_A\in \Pi_A}\; EU_A(\pi_A),
-\qquad
-EU_A(\pi_A)=\mathbb{E}\left[u_A(Z;\Theta_A)\mid \pi_A\right].
-$$
-
-### Expanded expectation (ASA mode)
-
-Random variables now include:
-
-- Board actions $D_1, D_{\text{rev}}, D_4$ as *opponent* moves **unless** you choose "Board policy model" mode.
-- CEO moves $M_{\text{agm}}, M_{\text{rev}}$ as opponent moves.
-- Vote $V$ and review $R$ as chance nodes.
-- Priors/latent draws and parameters.
-
-So the "full ARA Board opponent" version is:
+ASA maximises accountability and opposition:
 
 $$
 \begin{aligned}
-EU_A(\pi_A)
-&=
-\mathbb{E}_{B_0,\Theta}\Bigg[
-\sum_{d_1\in\mathcal{D}_1}
-p_A(d_1\mid h_{D1})
-\sum_{a_2\in\mathcal{A}_2}
-\mathbb{I}[a_2=\pi_A(h_A)] \\
-&\qquad\times
-\int p(V\mid d_1,a_2,B_0,S,\Theta_V)
-\sum_{m_{agm}\in\mathcal{M}_{agm}} p_A(m_{agm}\mid h_{M_{agm}}) \\
-&\qquad\times
-\sum_{d_{rev}\in\mathcal{D}_{rev}} p_A(d_{rev}\mid h_{D_{rev}})
-\int p(R\mid d_{rev},d_1,S,\Theta_R) \\
-&\qquad\times
-\sum_{m_{rev}\in\mathcal{M}_{rev}} p_A(m_{rev}\mid h_{M_{rev}})
-\sum_{d_4\in\mathcal{D}_4} p_A(d_4\mid h_{D4}) \\
-&\qquad\times
-u_A(Z;\Theta_A)\; dR\, dV
-\Bigg].
+u_A(Z) &= w_{\text{early}}^A \cdot \mathbb{1}[\text{CEO\_resigned\_early}] \\
+&\quad + w_{\text{vote}}^A \cdot V \\
+&\quad + w_{\text{over}}^A \cdot \mathbb{1}[\text{overwhelming}] \\
+&\quad + w_{\text{removal}}^A \cdot \mathbb{1}[\text{CEO\_removed} \wedge \neg\text{CEO\_resigned\_early}] \\
+&\quad - w_{\text{CAR}}^A \cdot \text{CAR} \cdot \mathbb{1}[\text{review\_commissioned}] \\
+&\quad - w_{\text{mob}}^A \cdot \mathbb{1}[a_2 = \text{rec\_strike}] \\
+&\quad + w_{\text{rep}}^A \cdot (V - 0.25)_+
 \end{aligned}
 $$
 
-Key differences vs Board mode:
+Default weights:
 
-- Board's decisions appear as **predictive distributions** $p_A(\cdot)$ because Board is now an adversary (unless you switch it off).
-- ASA's own action is fixed by policy $\pi_A$ via the indicator.
+| Parameter                      | Symbol                   | Default |
+| ------------------------------ | ------------------------ | ------- |
+| `early_ceo_departure_reward` | $w_{\text{early}}^A$   | 2.0     |
+| `vote_reward_weight`         | $w_{\text{vote}}^A$    | 2.0     |
+| `overwhelming_reward_weight` | $w_{\text{over}}^A$    | 2.0     |
+| `ceo_removal_reward`         | $w_{\text{removal}}^A$ | 3.0     |
+| `review_car_weight`          | $w_{\text{CAR}}^A$     | 15.0    |
+| `mobilisation_cost`          | $w_{\text{mob}}^A$     | 0.3     |
+| `reputational_gain_weight`   | $w_{\text{rep}}^A$     | 1.0     |
 
-## Predictive distributions needed in ASA mode
-
-### Board predictive distributions (from ASA's view) — if Board is full ARA opponent
-
-At $D_1$:
-
-$$
-p_A(D_1=d\mid h_{D1})
-=
-\Pr_{\Theta_B\sim p_A(\Theta_B)}
-\left[
-d\in\arg\max_{d'} \Psi_B^{(A)}(d';h_{D1},\Theta_B)
-\right]
-$$
-
-where $\Psi_B^{(A)}$ is *ASA's model* of Board's expected utility (Board optimises its own $u_B$, but ASA is uncertain about Board's parameters/beliefs).
-
-Similarly for $D_{\text{rev}}$ and $D_4$ given their histories.
-
-### CEO predictive distributions (from ASA's view)
-
-Same form as before, but using ASA's beliefs about CEO parameters:
+### 5.4 CEO utility — reference-dependent CRRA with loss aversion
 
 $$
-p_A(M_{\text{agm}}=\cdot\mid h) \text{ induced by } \Theta_C\sim p_A(\Theta_C),
+u_C(Z) = U_{\text{money}}(W) - \lambda_D \cdot D_{\text{raw}}
 $$
 
-and similarly for $M_{\text{rev}}$.
-
-## Optional simplification: "Board is policy model" in ASA mode
-
-If you choose to *not* model Board as full ARA, then replace
+where the CRRA function is:
 
 $$
-p_A(D_1\mid h_{D1}),\;p_A(D_{\text{rev}}\mid h),\;p_A(D_4\mid h)
+\text{CRRA}(W) = \begin{cases}
+\dfrac{W^{1-\gamma}}{1-\gamma} & \gamma \ne 1 \\[6pt]
+\ln(W) & \gamma = 1
+\end{cases}
 $$
 
-with a calibrated policy model
+with risk-aversion parameter $\gamma \in [0.5, 3.0]$ (default 1.5).
+
+Monetary utility uses Kahneman–Tversky loss aversion around a reference point $W_{\text{ref}}$ (pre-crisis expected compensation):
 
 $$
-q_A(D_1\mid h_{D1}),\;q_A(D_{\text{rev}}\mid h),\;q_A(D_4\mid h)
+U_{\text{money}}(W) = \begin{cases}
+\text{CRRA}(W) & W \ge W_{\text{ref}} \\[6pt]
+\lambda \cdot \text{CRRA}(W) - (\lambda - 1) \cdot \text{CRRA}(W_{\text{ref}}) & W < W_{\text{ref}}
+\end{cases}
 $$
 
-(e.g., logistic choice on vote pressure, deference, review findings, etc.). Algebra stays identical—just swap $p_A$ for $q_A$.
+where $\lambda = 2.25$ per Tversky & Kahneman (1992) cumulative prospect theory estimates. Losses below the reference point are amplified by $\lambda$.
 
----
+Non-monetary penalties $D_{\text{raw}}$ are also scaled by $\lambda_D$ (defaults to $\lambda$): an executive with a large ego evaluates reputational losses relative to their expected status as a powerful CEO, making sacking, public disgrace, and AGM humiliation feel disproportionately worse.
 
-# Summary in one line each (what you can paste into the paper)
-
-**Board-advice ARA objective:**
+**Resign path** ($D_0^{\text{ceo}} = \text{CEO\_resign}$):
 
 $$
-\pi_B^* \in \arg\max_{\pi_B}\;
-\mathbb{E}\Big[u_B(Z)\Big],
-\quad
-\text{where } A_2,M_{\text{agm}},M_{\text{rev}}\text{ are integrated using }p_B(\cdot)
-\text{ induced by opponents' EU-max under uncertainty.}
+W = W_{\text{resign}}, \qquad D_{\text{raw}} = D_{\text{resign}}
 $$
 
-**ASA-advice ARA objective:**
+**Stay path** ($D_0^{\text{ceo}} = \text{CEO\_stay}$):
+
+Wealth depends on departure mode. Let $\tilde{d}_4$ be the effective CEO departure action (the last non-stay $D_4$ action, with $d_4'$ overriding $d_4$ if the CEO acted post-review):
 
 $$
-\pi_A^* \in \arg\max_{\pi_A}\;
-\mathbb{E}\Big[u_A(Z)\Big],
-\quad
-\text{where } D_1,D_{\text{rev}},D_4,M_{\text{agm}},M_{\text{rev}}\text{ are integrated using }p_A(\cdot)
-\text{ (or }q_A(\cdot)\text{ if Board is reduced-form).}
+W = \begin{cases}
+W_{\text{stay\_kept}} & \text{CEO not removed} \\
+\frac{1}{2}(W_{\text{stay\_sacked}} + W_{\text{stay\_kept}}) & \tilde{d}_4 = \text{negotiate\_exit} \\
+1.3 \cdot W_{\text{stay\_sacked}} & \tilde{d}_4 = \text{resign} \\
+W_{\text{stay\_sacked}} & \text{otherwise (forced removal)}
+\end{cases}
 $$
 
----
+$W$ values are calibrated for ACCC-era pay erosion (frozen LTIs, reserved clawbacks, legal costs).
 
-Below is the same pair of problems (Board-advice vs ASA-advice), but written as **tree-node indexed Bellman-style recursions**, i.e. a value function per node in the extensive-form tree, with:
-
-- **Decision nodes owned by the focal actor**: take a **max** over feasible actions.
-- **Decision nodes owned by an opponent**: take an **expectation** w.r.t. the focal actor's **ARA predictive distribution** for that opponent's move.
-- **Chance nodes** (vote $V$, review findings $R$, plus your checkpoint beliefs/parameters): take an **expectation / integral** under the Bayesian submodel.
-
-I'll use the node ordering that matches your tree:
+Disutility starts at a baseline crisis cost and is additive over outcome components:
 
 $$
-D_1 \rightarrow A_2 \rightarrow V \rightarrow M_{\text{agm}} \rightarrow D_{\text{rev}} \rightarrow R \rightarrow M_{\text{rev}} \rightarrow D_4 \rightarrow \text{Terminal}.
+D_{\text{raw}} = D_{\text{stay}} + D_{\text{sacked}} \cdot \mathbb{1}[\text{CEO\_removed}] + D_{\text{agm}} \cdot \mathbb{1}[V > 0.25] + D_{\text{disgrace}} \cdot \mathbb{1}[\text{overwhelming}] + D_{\text{adverse\_review}} \cdot \mathbb{1}[\text{review\_commissioned} \wedge \text{adverse}]
 $$
 
-I'll denote:
+Safety bound: $W \leftarrow \max(W, 0.01)$, $W_{\text{ref}} \leftarrow \max(W_{\text{ref}}, 0.01)$.
 
-- histories $h$ (everything observed up to the node),
-- feasibility flags $S(h)$,
-- terminal outcome summary $Z(h)$ once the game ends.
+Default parameters:
+
+| Parameter                      | Symbol                          | Default |
+| ------------------------------ | ------------------------------- | ------- |
+| Risk aversion                  | $\gamma$                      | 1.5     |
+| Loss aversion (monetary)       | $\lambda$                     | 2.25    |
+| Loss aversion (non-monetary)   | $\lambda_D$                   | 2.25    |
+| Reference wealth               | $W_{\text{ref}}$              | 16.0    |
+| Resign wealth                  | $W_{\text{resign}}$           | 8.0     |
+| Stay wealth (kept)             | $W_{\text{stay\_kept}}$       | 7.0     |
+| Stay wealth (sacked)           | $W_{\text{stay\_sacked}}$     | 1.5     |
+| Resign disutility              | $D_{\text{resign}}$           | 40.0    |
+| Stay baseline disutility       | $D_{\text{stay}}$             | 25.0    |
+| Sacked disutility              | $D_{\text{sacked}}$           | 100.0   |
+| AGM humiliation                | $D_{\text{agm}}$              | 30.0    |
+| Public disgrace                | $D_{\text{disgrace}}$         | 30.0    |
+| Adverse review                 | $D_{\text{adverse\_review}}$  | 10.0    |
 
 ---
 
-# Common node-indexed operators
+## 6. ARA predictive distributions (`predictive.py`)
 
-## Feasible action sets
+### 6.1 General form
 
-Each decision node has a feasible set depending on state flags:
-
-$$
-\mathcal{D}_1(h),\;\mathcal{A}_2(h),\;\mathcal{M}_{agm}(h),\;\mathcal{D}_{rev}(h),\;\mathcal{M}_{rev}(h),\;\mathcal{D}_4(h).
-$$
-
-## Chance kernels
-
-- Vote kernel:
-
-$$
-p(V=v \mid h) \equiv p(v \mid D_1,A_2,B_0^{mkt},B_0^{mgmt},S,\Theta_V).
-$$
-
-- Review kernel:
-
-$$
-p(R=r \mid h) \equiv p(r \mid D_{rev},D_1,S,\Theta_R),
-$$
-
-with degenerate mass at "NoReview" if $D_{rev}=\text{NoReview}$.
-
-## ARA predictive distributions (node-local)
-
-At an opponent decision node $X$ with history $h$, focal actor $i$ uses:
-
-$$
-p_i(X=x\mid h)
-=
-\Pr_{\Theta_{owner(X)}\sim p_i(\Theta_{owner(X)})}\left[
-x \in \arg\max_{x'\in\mathcal{X}(h)} \Psi_{owner(X)}(x';h,\Theta_{owner(X)})
-\right],
-$$
-
-where the inner $\Psi$ is that opponent's expected utility under the focal actor's model (Level-1 ARA).
-
-I will write these predictive distributions as:
-
-- $p_B(A_2\mid h)$, $p_B(M_{\text{agm}}\mid h)$, $p_B(M_{\text{rev}}\mid h)$ in Board-advice mode.
-- $p_A(D_1\mid h)$, $p_A(D_{\text{rev}}\mid h)$, $p_A(D_4\mid h)$, $p_A(M_{\text{agm}}\mid h)$, $p_A(M_{\text{rev}}\mid h)$ in ASA-advice mode (or $q_A(\cdot)$ for reduced-form Board).
-
----
-
-# 1) Board-advice: node-indexed value recursion
-
-Define Board's value function at each node $n$ as:
-
-$$
-U_B^{(n)}(h) = \mathbb{E}_B\left[u_B(Z)\mid \text{at node }n,\text{ history }h\right].
-$$
-
-## Terminal node
-
-At a terminal history $h_T$:
-
-$$
-U_B^{(T)}(h_T) = u_B(Z(h_T)).
-$$
-
-## Node $D_4$ (Board decision)
-
-History $h_{D4}=(D_1,A_2,V,M_{\text{agm}},D_{\text{rev}},R,M_{\text{rev}},S,\ldots)$.
-
-$$
-U_B^{(D4)}(h_{D4})
-=
-\max_{d_4\in \mathcal{D}_4(h_{D4})}
-U_B^{(T)}(h_{D4}\cup\{D_4=d_4\}).
-$$
-
-## Node $M_{\text{rev}}$ (CEO decision treated as chance from Board view)
-
-History $h_{Mrev}=(D_1,A_2,V,M_{\text{agm}},D_{\text{rev}},R,S,\ldots)$.
-
-$$
-U_B^{(Mrev)}(h_{Mrev})
-=
-\sum_{m\in \mathcal{M}_{rev}(h_{Mrev})}
-U_B^{(D4)}(h_{Mrev}\cup\{M_{\text{rev}}=m\})\;
-p_B(M_{\text{rev}}=m\mid h_{Mrev}).
-$$
-
-## Node $R$ (review findings chance node)
-
-History $h_R=(D_1,A_2,V,M_{\text{agm}},D_{\text{rev}},S,\ldots)$.
-
-$$
-U_B^{(R)}(h_R)
-=
-\int
-U_B^{(Mrev)}(h_R\cup\{R=r\})\;
-p(R=r\mid h_R)\;dr.
-$$
-
-(Replace the integral by a sum if $R$ is discrete/ordinal.)
-
-## Node $D_{\text{rev}}$ (Board decision)
-
-History $h_{Drev}=(D_1,A_2,V,M_{\text{agm}},S,\ldots)$.
-
-$$
-U_B^{(Drev)}(h_{Drev})
-=
-\max_{d\in\mathcal{D}_{rev}(h_{Drev})}
-U_B^{(R)}(h_{Drev}\cup\{D_{\text{rev}}=d\}).
-$$
-
-## Node $M_{\text{agm}}$ (CEO decision treated as chance from Board view)
-
-History $h_{Magm}=(D_1,A_2,V,S,\ldots)$.
-
-$$
-U_B^{(Magm)}(h_{Magm})
-=
-\sum_{m\in \mathcal{M}_{agm}(h_{Magm})}
-U_B^{(Drev)}(h_{Magm}\cup\{M_{\text{agm}}=m\})\;
-p_B(M_{\text{agm}}=m\mid h_{Magm}).
-$$
-
-## Node $V$ (vote chance node)
-
-History $h_V=(D_1,A_2,B_0^{mkt},B_0^{mgmt},S,\ldots)$.
-
-$$
-U_B^{(V)}(h_V)
-=
-\int
-U_B^{(Magm)}(h_V\cup\{V=v\})\;
-p(V=v\mid h_V)\;dv.
-$$
-
-## Node $A_2$ (ASA decision treated as chance from Board view)
-
-History $h_A=(D_1,B_0^{mkt},B_0^{mgmt},S,\ldots)$.
-
-$$
-U_B^{(A2)}(h_A)
-=
-\sum_{a\in\mathcal{A}_2(h_A)}
-U_B^{(V)}(h_A\cup\{A_2=a\})\;
-p_B(A_2=a\mid h_A).
-$$
-
-## Root node $D_1$ (Board decision)
-
-History $h_{D1}=(B_0^{mkt},B_0^{mgmt},S_0,\ldots)$.
-
-$$
-U_B^{(D1)}(h_{D1})
-=
-\max_{d_1\in\mathcal{D}_1(h_{D1})}
-U_B^{(A2)}(h_{D1}\cup\{D_1=d_1\}).
-$$
-
-## Board's optimal initial action
-
-Given checkpoint draws/priors at the root:
-
-$$
-d_1^* \in \arg\max_{d_1\in\mathcal{D}_1}\;
-\mathbb{E}_{B_0,\Theta}\left[U_B^{(A2)}(h_{D1}\cup\{D_1=d_1\})\right].
-$$
-
-That's the Board-advice tree recursion in explicit node form.
-
----
-
-# 2) ASA-advice: node-indexed value recursion
-
-Define ASA's value function at each node $n$:
-
-$$
-U_A^{(n)}(h) = \mathbb{E}_A\left[u_A(Z)\mid \text{at node }n,\text{ history }h\right].
-$$
-
-Everything is identical structurally, except:
-
-- **ASA's own decision node $A_2$** is now a **max** node.
-- **Board decision nodes** become **expectations** under $p_A(\cdot\mid h)$ (unless reduced-form $q_A$).
-- CEO decision nodes remain expectations (CEO is still full ARA opponent).
-
-## Terminal
-
-$$
-U_A^{(T)}(h_T)=u_A(Z(h_T)).
-$$
-
-## Node $D_4$ (Board decision as chance from ASA view)
-
-History $h_{D4}=(D_1,A_2,V,M_{\text{agm}},D_{\text{rev}},R,M_{\text{rev}},S,\ldots)$.
-
-$$
-U_A^{(D4)}(h_{D4})
-=
-\sum_{d_4\in\mathcal{D}_4(h_{D4})}
-U_A^{(T)}(h_{D4}\cup\{D_4=d_4\})\;
-p_A(D_4=d_4\mid h_{D4}).
-$$
-
-## Node $M_{\text{rev}}$ (CEO decision as chance)
-
-$$
-U_A^{(Mrev)}(h_{Mrev})
-=
-\sum_{m\in\mathcal{M}_{rev}(h_{Mrev})}
-U_A^{(D4)}(h_{Mrev}\cup\{M_{\text{rev}}=m\})\;
-p_A(M_{\text{rev}}=m\mid h_{Mrev}).
-$$
-
-## Node $R$ (review findings chance)
-
-$$
-U_A^{(R)}(h_R)
-=
-\int
-U_A^{(Mrev)}(h_R\cup\{R=r\})\;
-p(R=r\mid h_R)\;dr.
-$$
-
-## Node $D_{\text{rev}}$ (Board decision as chance from ASA view)
-
-$$
-U_A^{(Drev)}(h_{Drev})
-=
-\sum_{d\in\mathcal{D}_{rev}(h_{Drev})}
-U_A^{(R)}(h_{Drev}\cup\{D_{\text{rev}}=d\})\;
-p_A(D_{\text{rev}}=d\mid h_{Drev}).
-$$
-
-## Node $M_{\text{agm}}$ (CEO decision as chance)
-
-$$
-U_A^{(Magm)}(h_{Magm})
-=
-\sum_{m\in\mathcal{M}_{agm}(h_{Magm})}
-U_A^{(Drev)}(h_{Magm}\cup\{M_{\text{agm}}=m\})\;
-p_A(M_{\text{agm}}=m\mid h_{Magm}).
-$$
-
-## Node $V$ (vote chance)
-
-$$
-U_A^{(V)}(h_V)
-=
-\int
-U_A^{(Magm)}(h_V\cup\{V=v\})\;
-p(V=v\mid h_V)\;dv.
-$$
-
-## Node $A_2$ (ASA decision — focal maximisation)
-
-History $h_A=(D_1,B_0^{mkt},B_0^{mgmt},S,\ldots)$ — **note**: ASA observes $D_1$ before acting in your tree, so $D_1$ is inside $h_A$.
-
-$$
-U_A^{(A2)}(h_A)
-=
-\max_{a\in\mathcal{A}_2(h_A)}
-U_A^{(V)}(h_A\cup\{A_2=a\}).
-$$
-
-## Root node $D_1$ (Board move before ASA acts — chance from ASA view)
-
-History $h_{D1}=(B_0^{mkt},B_0^{mgmt},S_0,\ldots)$.
-
-$$
-U_A^{(D1)}(h_{D1})
-=
-\sum_{d_1\in\mathcal{D}_1(h_{D1})}
-U_A^{(A2)}(h_{D1}\cup\{D_1=d_1\})\;
-p_A(D_1=d_1\mid h_{D1}).
-$$
-
-## ASA optimal policy / recommendation
-
-Given checkpoint draws/priors:
-
-$$
-a_2^*(d_1)
-\in
-\arg\max_{a_2\in\mathcal{A}_2}\;
-\mathbb{E}_{B_0,\Theta}\left[
-U_A^{(V)}(h_A\cup\{A_2=a_2\})
-\right],
-\quad h_A=(h_{D1},D_1=d_1).
-$$
-
-So ASA's recommended action is conditional on observed $D_1$ (because ASA moves after Board).
-
----
-
-# Reduced-form Board option in ASA mode (one-line substitution)
-
-If you decide Board is **not** full ARA opponent when advising ASA, replace:
-
-$$
-p_A(D_1\mid h),\;p_A(D_{\text{rev}}\mid h),\;p_A(D_4\mid h)
-$$
-
-with a calibrated policy model:
-
-$$
-q_A(D_1\mid h),\;q_A(D_{\text{rev}}\mid h),\;q_A(D_4\mid h).
-$$
-
-All recursion equations remain identical.
-
----
-
-# What this buys you (practically)
-
-- In Board mode: the solver is **max–sum–integral** with max at $D_1,D_{\text{rev}},D_4$.
-- In ASA mode: it's **sum–max–sum–integral** with max at $A_2$, and Board nodes summed under the Board predictive distribution.
-
-Excellent — this is the core of the ARA machinery.
-
-Below I define the **predictive distributions node-by-node**, separately for:
-
-- **Board-advice mode** → $p_B(\cdot \mid h)$
-- **ASA-advice mode** → $p_A(\cdot \mid h)$
-
-At each opponent decision node $X$, the predictive distribution is induced by:
-
-1. Uncertainty over that opponent's parameters $\Theta_j$
-2. That opponent solving its own EU-maximisation problem (Level-1 ARA)
-3. Integration over downstream chance nodes and simplified beliefs about other players
-
-Throughout, let:
-
-- $h$ = history observed at that node
-- $\mathcal{X}(h)$ = feasible action set
-- $u_j(Z; \Theta_j)$ = utility of actor $j$
-- $Z$ = terminal outcome
-- $\Psi_j(x; h, \Theta_j)$ = opponent $j$'s expected utility for action $x$
-
----
-
-# PART I — Predictive distributions in **Board-advice mode**
-
-Board is focal optimiser.
-Opponents: ASA and CEO.
-
-So we must define:
-
-- $p_B(A_2 \mid h)$
-- $p_B(M_{\text{agm}} \mid h)$
-- $p_B(M_{\text{rev}} \mid h)$
-
-Board decisions are **not predictive** here — they are max nodes.
-
----
-
-## 1. ASA node $A_2$
-
-History:
-
-$$
-h_A = (D_1, B_0^{mkt}, B_0^{mgmt}, S)
-$$
-
-Feasible actions:
-
-$$
-\mathcal{A}_2(h_A)=\{\text{DoNothing}, \text{RecStrike}\}
-$$
-
-### Step 1 — ASA's expected utility for candidate action $a$
-
-From Board's perspective:
-
-$$
-\Psi_A(a; h_A, \Theta_A)
-=
-\mathbb{E}_B\left[
-u_A(Z; \Theta_A)
-\mid h_A, A_2=a
-\right]
-$$
-
-The expectation integrates over:
-
-- Vote $V\sim p(V\mid D_1,a,\cdot)$
-- CEO behaviour $M_{\text{agm}},M_{\text{rev}}$
-  (Board may assume CEO uses a simple policy inside ASA's model — Level-1 ARA)
-- Board review/final decisions
-  (ASA's model of Board behaviour — can be simplified)
-
----
-
-### Step 2 — Induced predictive distribution
-
-Board is uncertain about ASA's parameters $\Theta_A \sim p_B(\Theta_A)$.
-
-$$
-p_B(A_2=a\mid h_A)
-=
-\Pr_{\Theta_A \sim p_B(\Theta_A)}
-\Big[
-a \in
-\arg\max_{a' \in \mathcal{A}_2(h_A)}
-\Psi_A(a'; h_A, \Theta_A)
-\Big]
-$$
-
-Equivalent softmax form (optional):
-
-$$
-p_B(A_2=a\mid h_A)
-=
-\int
-\frac{\exp\{\lambda_A \Psi_A(a;h_A,\Theta_A)\}}
-{\sum_{a'}\exp\{\lambda_A \Psi_A(a';h_A,\Theta_A)\}}
-\; p_B(\Theta_A)\; d\Theta_A
-$$
-
----
-
-## 2. CEO node $M_{\text{agm}}$
-
-History:
-
-$$
-h_{Magm} = (D_1, A_2, V, S)
-$$
-
-Feasible actions:
-
-$$
-\mathcal{M}_{agm}(h)=\{\text{Stay},\text{Resign}\}
-$$
-
-### CEO expected utility (AGM stage)
-
-$$
-\Psi_C^{agm}(m; h_{Magm}, \Theta_C)
-=
-\mathbb{E}_B\left[
-u_C(Z; \Theta_C)
-\mid h_{Magm}, M_{\text{agm}}=m
-\right]
-$$
-
-Expectation integrates over:
-
-- Board review decision (Board policy)
-- Review findings $R$
-- Final board action $D_4$
-
-### Predictive distribution
-
-$$
-p_B(M_{\text{agm}}=m \mid h_{Magm})
-=
-\Pr_{\Theta_C\sim p_B(\Theta_C)}
-\Big[
-m \in
-\arg\max_{m'} \Psi_C^{agm}(m'; h_{Magm}, \Theta_C)
-\Big]
-$$
-
----
-
-## 3. CEO node $M_{\text{rev}}$
-
-History:
-
-$$
-h_{Mrev}=(D_1,A_2,V,M_{\text{agm}},D_{\text{rev}},R,S)
-$$
-
-### CEO expected utility (post-review stage)
-
-$$
-\Psi_C^{rev}(m; h_{Mrev}, \Theta_C)
-=
-\mathbb{E}_B\left[
-u_C(Z; \Theta_C)
-\mid h_{Mrev}, M_{\text{rev}}=m
-\right]
-$$
-
-Expectation integrates over:
-
-- Final board decision $D_4$
-
-### Predictive distribution
-
-$$
-p_B(M_{\text{rev}}=m \mid h_{Mrev})
-=
-\Pr_{\Theta_C\sim p_B(\Theta_C)}
-\Big[
-m \in
-\arg\max_{m'} \Psi_C^{rev}(m'; h_{Mrev}, \Theta_C)
-\Big]
-$$
-
----
-
-# PART II — Predictive distributions in **ASA-advice mode**
-
-ASA is focal optimiser.
-Opponents: Board and CEO.
-
-Now we must define:
-
-- $p_A(D_1\mid h)$
-- $p_A(D_{\text{rev}}\mid h)$
-- $p_A(D_4\mid h)$
-- $p_A(M_{\text{agm}}\mid h)$
-- $p_A(M_{\text{rev}}\mid h)$
-
----
-
-## 1. Board initial node $D_1$
-
-History:
-
-$$
-h_{D1}=(B_0^{mkt}, B_0^{mgmt}, S_0)
-$$
-
-Feasible:
-
-$$
-\mathcal{D}_1(h_{D1})=\{D0,D1,D2\}
-$$
-
-### Board expected utility (from ASA's perspective)
-
-$$
-\Psi_B^{D1}(d; h_{D1}, \Theta_B)
-=
-\mathbb{E}_A\left[
-u_B(Z; \Theta_B)
-\mid h_{D1}, D_1=d
-\right]
-$$
-
-Expectation integrates over:
-
-- ASA future action (ASA assumes it will play optimally)
-- Vote $V$
-- CEO reactions
-- Review & final board stage
-
-### Predictive distribution
-
-$$
-p_A(D_1=d\mid h_{D1})
-=
-\Pr_{\Theta_B\sim p_A(\Theta_B)}
-\Big[
-d \in \arg\max_{d'} \Psi_B^{D1}(d'; h_{D1}, \Theta_B)
-\Big]
-$$
-
----
-
-## 2. Board review node $D_{\text{rev}}$
-
-History:
-
-$$
-h_{Drev}=(D_1,A_2,V,M_{\text{agm}},S)
-$$
-
-$$
-\Psi_B^{rev}(d; h_{Drev}, \Theta_B)
-=
-\mathbb{E}_A\left[
-u_B(Z; \Theta_B)
-\mid h_{Drev}, D_{\text{rev}}=d
-\right]
-$$
-
-$$
-p_A(D_{\text{rev}}=d\mid h_{Drev})
-=
-\Pr_{\Theta_B\sim p_A(\Theta_B)}
-\Big[
-d \in \arg\max_{d'} \Psi_B^{rev}(d'; h_{Drev}, \Theta_B)
-\Big]
-$$
-
----
-
-## 3. Board final node $D_4$
-
-History:
-
-$$
-h_{D4}=(D_1,A_2,V,M_{\text{agm}},D_{\text{rev}},R,M_{\text{rev}},S)
-$$
-
-$$
-\Psi_B^{D4}(d; h_{D4}, \Theta_B)
-=
-u_B(Z(h_{D4},D_4=d); \Theta_B)
-$$
-
-$$
-p_A(D_4=d\mid h_{D4})
-=
-\Pr_{\Theta_B\sim p_A(\Theta_B)}
-\Big[
-d \in \arg\max_{d'} \Psi_B^{D4}(d'; h_{D4}, \Theta_B)
-\Big]
-$$
-
----
-
-## 4. CEO nodes in ASA mode
-
-Identical structure to Board mode, but using ASA's beliefs about CEO parameters:
-
-### AGM stage
-
-$$
-p_A(M_{\text{agm}}=m\mid h)
-=
-\Pr_{\Theta_C\sim p_A(\Theta_C)}
-\Big[
-m \in \arg\max_{m'} \Psi_C^{agm}(m';h,\Theta_C)
-\Big]
-$$
-
-### Post-review stage
-
-$$
-p_A(M_{\text{rev}}=m\mid h)
-=
-\Pr_{\Theta_C\sim p_A(\Theta_C)}
-\Big[
-m \in \arg\max_{m'} \Psi_C^{rev}(m';h,\Theta_C)
-\Big]
-$$
-
----
-
-# Structural summary
-
-For **any opponent node $X$** owned by player $j$, from focal $i$'s perspective:
+At an opponent decision node $X$ owned by player $j$, from focal actor $i$'s perspective:
 
 $$
 \boxed{
-p_i(X=x\mid h)
-=
-\int
-\mathbb{I}\left[
-x \in \arg\max_{x'} \Psi_j(x';h,\Theta_j)
-\right]
-\; p_i(\Theta_j)\; d\Theta_j
+p_i(X = x \mid h) = \frac{1}{K} \sum_{k=1}^{K} \mathbb{1}\!\left[x \in \arg\max_{x' \in \mathcal{X}(h)} \Psi_j(x'; h, \Theta_j^{(k)})\right]
 }
 $$
 
-with
+where:
+
+- $K = 200$ opponent parameter samples from $\Theta_j^{(k)} \sim p_i(\Theta_j)$
+- $\Psi_j(x; h, \Theta_j)$ is opponent $j$'s expected utility for action $x$
+
+### 6.2 Expected utility via stochastic rollout
 
 $$
-\Psi_j(x;h,\Theta_j)
-=
-\mathbb{E}_i
-\left[
-u_j(Z;\Theta_j)
-\mid h, X=x
-\right].
+\Psi_j(x; h, \Theta_j) = \frac{1}{R} \sum_{r=1}^{R} u_j\!\left(Z^{(r)}; \Theta_j\right)
 $$
 
-This is the exact ARA predictive step — opponent choice uncertainty induced by parameter uncertainty and EU-maximisation.
+where $R = 20$ and each $Z^{(r)}$ is a terminal outcome obtained by:
+
+1. Forcing action $x$ at node $X$
+2. Simulating forward to terminal using fixed policies for other actors
+3. Sampling chance nodes from the focal actor's (possibly biased) model of Nature
+
+### 6.3 Fixed policies (Level-1 fallbacks)
+
+Used within rollouts for non-ARA actors:
+
+**Board at $D_1$:**
+
+$$
+\pi_B^{\text{fix}}(D_1) = \text{D0\_minimal}
+$$
+
+**Board at $D_{\text{rev}}$ (and $D_{\text{rev}}'$):**
+
+$$
+\pi_B^{\text{fix}}(D_{\text{rev}} \mid h) = \begin{cases}
+\text{Drev\_sack\_ceo} & V_\% \ge 0.50 \;\wedge\; \text{CEO\_present} \\
+\text{Drev\_commission\_review} & V_\% \ge 0.25 \;\wedge\; \text{review\_not\_commissioned} \\
+\text{Drev\_no\_action} & \text{otherwise}
+\end{cases}
+$$
+
+**ASA at $A_2$ — informative Beta prior (headline-incident conditioning):**
+
+Source: `ranked_voting_recommendations.csv`, restricted to `headline_incident = 1` (Qantas excluded). Pooled observed rate: 14/15 = 0.933.
+
+ASA recommendation is near-automatic given a headline incident. The data provide no statistical evidence for a board-action effect at the recommendation stage; the three Beta distributions are nearly identical and separation is a modelling convention (monotonic decreasing by board accountability level):
+
+| Board action level | Condition                              | Posterior               | Mean $p_{\text{strike}}$ |
+| ------------------- | -------------------------------------- | ----------------------- | -------------------------- |
+| 0 — Do nothing      | $D_1 = \text{D0\_minimal}$          | $\text{Beta}(46, 4)$  | 0.920                      |
+| 1 — Review / CEO resigns | $D_1 = \text{D1\_review}$ or CEO resigned early | $\text{Beta}(44, 4)$ | 0.917 |
+| 2 — Sack CEO        | $D_1 = \text{D3\_ceo\_transition}$  | $\text{Beta}(43, 4)$  | 0.914                      |
+
+All 90% credible intervals are entirely above 0.84.
+
+$$
+p_{\text{strike}} \sim \text{Beta}(\alpha_d, \beta_d), \qquad A_2 = \begin{cases} \text{rec\_strike} & \text{w.p. } p_{\text{strike}} \\ \text{no\_strike} & \text{w.p. } 1 - p_{\text{strike}} \end{cases}
+$$
+
+**CEO at $D_0^{\text{ceo}}$:**
+
+$$
+\pi_C^{\text{fix}}(D_0^{\text{ceo}}) = \text{CEO\_stay}
+$$
+
+**CEO at $D_4$ (and $D_4'$):**
+
+$$
+\pi_C^{\text{fix}}(D_4 \mid h) = \begin{cases}
+\text{D4\_resign} & V_\% \ge 0.40 \;\wedge\; \text{feasible} \\
+\text{D4\_stay} & \text{otherwise}
+\end{cases}
+$$
+
+### 6.4 Level-2 recursion
+
+When `level >= 2` and opponent $j$ has a strategic counterpart $j'$:
+
+$$
+p_i^{(L)}(X = x \mid h) \quad\text{where}\quad
+\Psi_j^{(L)}(x; h, \Theta_j) \text{ uses } p_j^{(L-1)}(\cdot) \text{ for counterpart } j'
+$$
+
+The level decrements on each recursive call, preventing infinite recursion.
 
 ---
+
+## 7. Tree evaluation (`tree.py`)
+
+### 7.1 Value function
+
+Define $U_i^{(n)}(h)$ as focal actor $i$'s expected utility at node $n$ with history $h$:
+
+$$
+U_i^{(n)}(h) = \mathbb{E}_i\!\left[u_i(Z) \mid \text{node } n,\; h\right]
+$$
+
+### 7.2 Terminal node
+
+$$
+U_i^{(\text{Terminal})}(h) = u_i\!\left(Z(h, S)\right)
+$$
+
+### 7.3 Focal decision node — maximisation
+
+If node $n$ is owned by focal actor $i$:
+
+$$
+U_i^{(n)}(h) = \max_{a \in \mathcal{A}_n(S)} U_i^{(\text{next}(n))}(h \cup \{n \mapsto a\})
+$$
+
+### 7.4 Opponent decision node — predictive expectation
+
+If node $n$ is owned by opponent $j \ne i$:
+
+**ARA model:**
+
+$$
+U_i^{(n)}(h) = \sum_{a \in \mathcal{A}_n(S)} p_i(n = a \mid h) \cdot U_i^{(\text{next}(n))}(h \cup \{n \mapsto a\})
+$$
+
+**Policy model:**
+
+$$
+U_i^{(n)}(h) = U_i^{(\text{next}(n))}(h \cup \{n \mapsto \pi_j^{\text{fix}}(n, h, \omega)\})
+$$
+
+where $\omega$ is a random seed. Board and CEO fixed policies are deterministic (the action depends only on $h$). The ASA fixed policy at $A_2$ is stochastic: a single action is drawn from a Beta-Binomial posterior and treated as deterministic for that evaluation (see Section 6.3).
+
+### 7.5 Vote chance node — Monte Carlo integration
+
+Three epistemic quantities are drawn once per belief draw and held fixed across the $M_V$ vote samples:
+
+1. $f(D_1) \sim U(\ell, u)$ — governance effect
+2. $V_{\text{floor}} \sim \text{Beta}(50, 150)$ — crisis floor (only if `headline_incident`)
+3. $\kappa_\sigma$ — sigma scale (only if overconfidence bias is active)
+
+Vote samples are drawn $M_V$ times (aleatoric, default $M_V = 50$):
+
+$$
+U_i^{(V)}(h) = \frac{1}{M_V} \sum_{m=1}^{M_V} U_i^{(\text{next}(V))}(h \cup \{V_\% \mapsto v_m^{\text{final}},\; \text{strike}_m,\; \text{overwhelming}_m\})
+$$
+
+where each $v_m^{\text{logit}} \sim \text{LogitNormal}(\alpha_V + B_{\text{agm}}, \sigma_V)$ with $B_{\text{agm}}$ conditioned on the pre-drawn governance effect, and:
+
+$$
+v_m^{\text{final}} = \begin{cases}
+\max(v_m^{\text{logit}},\; V_{\text{floor}}) & \text{if headline\_incident} \\
+v_m^{\text{logit}} & \text{otherwise}
+\end{cases}
+$$
+
+When Board is focal with overconfidence bias:
+
+- Governance effect uses biased bounds $(\ell^{\text{bias}}, u^{\text{bias}})$
+- $\sigma_V$ is scaled by $\kappa_\sigma$
+
+### 7.6 Review chance node — Monte Carlo integration
+
+If review not commissioned: deterministic pass-through ($\text{CAR} = 0$, $\text{adverse} = \text{false}$, $C_{\text{direct}} = 0$).
+
+If commissioned, direct cost $C_{\text{direct}}$ is drawn once (epistemic). Findings are sampled $M_R$ times (default $M_R = 20$):
+
+$$
+U_i^{(R)}(h) = \frac{1}{M_R} \sum_{m=1}^{M_R} U_i^{(\text{next}(R))}(h \cup \{\text{CAR}_m, \text{adverse}_m, C_{\text{direct}}\})
+$$
+
+where each $\text{CAR}_m \sim t_3(\mu_f, \sigma_f)$ with hierarchical parameters.
+
+### 7.7 Pass-through nodes ($M_{\text{agm}}, M_{\text{rev}}$)
+
+$$
+U_i^{(M)}(h) = U_i^{(\text{next}(M))}(h)
+$$
+
+---
+
+## 8. Full node-indexed recursion — Board-advice mode
+
+Board is focal. Opponents: ASA (ARA or Policy), CEO (ARA or Policy).
+
+### Node sequence (ceo\_stayed scenario, D4 before D\_rev)
+
+$$
+U_B^{(D_1)}(h_0) = \max_{d_1 \in \mathcal{D}_1} U_B^{(A_2)}(h_0 \cup \{D_1 = d_1\})
+$$
+
+$$
+U_B^{(A_2)}(h) = \sum_{a \in \mathcal{A}_2} p_B(A_2 = a \mid h) \cdot U_B^{(V)}(h \cup \{A_2 = a\})
+$$
+
+$$
+U_B^{(V)}(h) = \frac{1}{M_V} \sum_{m} U_B^{(D_4)}(h \cup \{V_m\})
+$$
+
+$M_{\text{agm}}$ is a pass-through.
+
+**CEO responds to AGM outcome** (opponent — predictive or skip if CEO absent):
+
+$$
+U_B^{(D_4)}(h) = \begin{cases}
+\displaystyle\sum_{d_4 \in \mathcal{D}_4(S)} p_B(D_4 = d_4 \mid h) \cdot U_B^{(D_{\text{rev}})}(h \cup \{D_4 = d_4\}) & \text{if CEO\_present} \\[6pt]
+U_B^{(D_{\text{rev}})}(h) & \text{if CEO absent (skip)}
+\end{cases}
+$$
+
+**Board responds** (focal — maximise, or limited actions if CEO absent):
+
+$$
+U_B^{(D_{\text{rev}})}(h) = \max_{d \in \mathcal{D}_{\text{rev}}(S)} U_B^{(R)}(h \cup \{D_{\text{rev}} = d\})
+$$
+
+**Review findings:**
+
+$$
+U_B^{(R)}(h) = \frac{1}{M_R} \sum_{m} U_B^{(\text{post-review})}(h \cup \{R_m, C_{\text{direct}}\})
+$$
+
+$M_{\text{rev}}$ is a pass-through.
+
+**Post-review conditional round** (if adverse AND CEO present, another $D_4 \rightarrow D_{\text{rev}}$):
+
+$$
+U_B^{(\text{post-review})}(h) = \begin{cases}
+U_B^{(D_4')}(h) & \text{if review\_adverse} \wedge \text{CEO\_present} \\
+U_B^{(\text{Terminal})}(h) & \text{otherwise}
+\end{cases}
+$$
+
+$$
+U_B^{(D_4')}(h) = \sum_{d_4 \in \mathcal{D}_4(S)} p_B(D_4 = d_4 \mid h) \cdot U_B^{(D_{\text{rev}}')}(h \cup \{D_4 = d_4\})
+$$
+
+$$
+U_B^{(D_{\text{rev}}')}(h) = \max_{d \in \mathcal{D}_{\text{rev}}(S)} U_B^{(\text{Terminal})}(h \cup \{D_{\text{rev}} = d\})
+$$
+
+$$
+U_B^{(\text{Terminal})}(h) = u_B(Z(h, S))
+$$
+
+### Board optimal action
+
+$$
+d_1^* \in \arg\max_{d_1 \in \mathcal{D}_1} \frac{1}{N} \sum_{i=1}^{N} U_B^{(A_2)}(h_0 \cup \{D_1 = d_1\}; \theta^{(i)})
+$$
+
+### Predictive distributions needed
+
+- $p_B(A_2 \mid h)$: ARA predictive over ASA strike recommendation
+- $p_B(D_4 \mid h)$: ARA predictive over CEO response (post-AGM)
+- $p_B(D_4' \mid h)$: ARA predictive over CEO response (post-review, same model)
+
+---
+
+## 9. Full node-indexed recursion — ASA-advice mode
+
+ASA is focal. Opponents: Board (ARA or Policy), CEO (ARA or Policy).
+
+### Node sequence (ceo\_stayed scenario, D4 before D\_rev)
+
+$$
+U_A^{(D_1)}(h_0) = \sum_{d_1 \in \mathcal{D}_1} p_A(D_1 = d_1 \mid h_0) \cdot U_A^{(A_2)}(h_0 \cup \{D_1 = d_1\})
+$$
+
+$$
+U_A^{(A_2)}(h) = \max_{a \in \mathcal{A}_2} U_A^{(V)}(h \cup \{A_2 = a\})
+$$
+
+$$
+U_A^{(V)}(h) = \frac{1}{M_V} \sum_{m} U_A^{(D_4)}(h \cup \{V_m\})
+$$
+
+**CEO responds to AGM outcome** (opponent — predictive or skip):
+
+$$
+U_A^{(D_4)}(h) = \begin{cases}
+\displaystyle\sum_{d_4 \in \mathcal{D}_4(S)} p_A(D_4 = d_4 \mid h) \cdot U_A^{(D_{\text{rev}})}(h \cup \{D_4 = d_4\}) & \text{if CEO\_present} \\[6pt]
+U_A^{(D_{\text{rev}})}(h) & \text{if CEO absent (skip)}
+\end{cases}
+$$
+
+**Board responds** (opponent — predictive):
+
+$$
+U_A^{(D_{\text{rev}})}(h) = \sum_{d \in \mathcal{D}_{\text{rev}}(S)} p_A(D_{\text{rev}} = d \mid h) \cdot U_A^{(R)}(h \cup \{D_{\text{rev}} = d\})
+$$
+
+$$
+U_A^{(R)}(h) = \frac{1}{M_R} \sum_{m} U_A^{(\text{post-review})}(h \cup \{R_m, C_{\text{direct}}\})
+$$
+
+**Post-review conditional round:**
+
+$$
+U_A^{(\text{post-review})}(h) = \begin{cases}
+U_A^{(D_4')}(h) & \text{if review\_adverse} \wedge \text{CEO\_present} \\
+U_A^{(\text{Terminal})}(h) & \text{otherwise}
+\end{cases}
+$$
+
+$$
+U_A^{(D_4')}(h) = \sum_{d_4 \in \mathcal{D}_4(S)} p_A(D_4 = d_4 \mid h) \cdot U_A^{(D_{\text{rev}}')}(h \cup \{D_4 = d_4\})
+$$
+
+$$
+U_A^{(D_{\text{rev}}')}(h) = \sum_{d \in \mathcal{D}_{\text{rev}}(S)} p_A(D_{\text{rev}} = d \mid h) \cdot U_A^{(\text{Terminal})}(h \cup \{D_{\text{rev}} = d\})
+$$
+
+### ASA optimal action
+
+$$
+a_2^*(d_1) \in \arg\max_{a \in \mathcal{A}_2} \frac{1}{N} \sum_{i=1}^{N} U_A^{(V)}(h \cup \{A_2 = a\}; \theta^{(i)})
+$$
+
+ASA's recommendation is conditional on the observed $D_1$.
+
+### Predictive distributions needed
+
+- $p_A(D_1 \mid h)$: ARA predictive over Board initial governance reform
+- $p_A(D_4 \mid h)$: ARA predictive over CEO response (post-AGM)
+- $p_A(D_{\text{rev}} \mid h)$: ARA predictive over Board review response
+- $p_A(D_4' \mid h)$: ARA predictive over CEO response (post-review)
+- $p_A(D_{\text{rev}}' \mid h)$: ARA predictive over Board response (post-review)
+
+### Reduced-form Board option
+
+If Board uses fixed policy instead of ARA:
+
+$$
+p_A(D_1 \mid h) \;\longrightarrow\; \mathbb{1}[D_1 = \pi_B^{\text{fix}}(D_1, h)]
+$$
+
+All recursion equations remain identical; only the predictive distribution is replaced by a point mass.
+
+---
+
+## 10. Solver orchestration (`solver.py`)
+
+### 10.1 Pipeline
+
+For a given focal actor $i$, checkpoint $c$, scenario $s$:
+
+1. Load $\text{BeliefBundle}(c)$, $\text{ParameterSampler}$, utility weights, policy parameters, overconfidence bias.
+2. Construct engine: $\text{ChanceModels}$, $\text{PredictiveDistribution}(K, R)$, $\text{TreeEvaluator}(M_V, M_R)$.
+3. Set initial state: $S_0 = \text{for\_scenario}(s)$.
+4. For each initial action $a \in \mathcal{A}_{D_1}(S_0)$:
+   - For each draw $i = 1, \ldots, N$:
+     - $v_{a,i} = U_i^{(\text{next}(D_1))}(\{D_1 = a\}; \theta^{(i)})$
+   - $\text{EU}(a) = \frac{1}{N} \sum_i v_{a,i}$
+5. $a^* = \arg\max_a \text{EU}(a)$
+
+### 10.2 Scenario solver
+
+`solve_scenarios()` runs both scenarios and attaches D0\_ceo predictive:
+
+1. $p_i(D_0^{\text{ceo}}) = \text{predict\_d0\_ceo}(i, c)$
+2. For each $s \in \{\text{ceo\_stayed}, \text{ceo\_resigned}\}$:
+   - $\text{result}_s = \text{solve}(i, c, s)$
+   - $\text{result}_s.\text{scenario\_prob} = p_i(D_0^{\text{ceo}} = \text{action}(s))$
+
+### 10.3 Parallelisation
+
+Each $(a, i)$ pair is submitted as an independent task to `ProcessPoolExecutor`. Workers reconstruct all engine components from serialisable arguments.
+
+---
+
+## 11. Mode configurations (`modes.py`)
+
+| Mode               | Focal | ASA model  | Board model | CEO model | Level |
+| ------------------ | ----- | ---------- | ----------- | --------- | ----- |
+| Board Mode         | Board | ARA        | — (focal)  | ARA       | 1     |
+| ASA Mode           | ASA   | — (focal) | ARA         | ARA       | 1     |
+| Board L2           | Board | ARA        | — (focal)  | ARA       | 2     |
+| ASA L2             | ASA   | — (focal) | ARA         | ARA       | 2     |
+| Board (ASA=Policy) | Board | Policy     | — (focal)  | ARA       | 1     |
+| ASA (Board=Policy) | ASA   | — (focal) | Policy      | ARA       | 1     |
+
+Level-2 strategic counterparts:
+
+- Board L2: ASA models Board, CEO models Board
+- ASA L2: Board models ASA, CEO models Board
+
+---
+
+## 12. Summary of the recursion pattern
+
+At every node:
+
+| Node type                                   | Owned by          | Operation                                    |
+| ------------------------------------------- | ----------------- | -------------------------------------------- |
+| Decision                                    | Focal actor       | $\max$ over feasible actions               |
+| Decision                                    | Opponent (ARA)    | $\sum$ weighted by predictive distribution |
+| Decision                                    | Opponent (Policy) | Deterministic fixed policy                   |
+| Chance ($V$)                              | Nature            | MC average over$M_V$ vote samples          |
+| Chance ($R$)                              | Nature            | MC average over$M_R$ review samples        |
+| Chance ($M_{\text{agm}}, M_{\text{rev}}$) | Nature            | Pass-through                                 |
+| Terminal                                    | —                | Compute$u_i(Z)$                            |
+
+---
+
+## 13. Computational budget
+
+| Parameter                  | Symbol  | Default                | Purpose                                    |
+| -------------------------- | ------- | ---------------------- | ------------------------------------------ |
+| Belief draws               | $N$   | 500 (or `--n_draws`) | Posterior samples per checkpoint           |
+| Opponent parameter samples | $K$   | 200                    | Draws from$p_i(\Theta_j)$ per predictive |
+| Stochastic rollouts        | $R$   | 20                     | Forward simulations per$(K, a)$ pair     |
+| Vote MC samples            | $M_V$ | 50                     | Samples per vote node evaluation           |
+| Review MC samples          | $M_R$ | 20                     | Samples per review node evaluation         |
+
+Total tree evaluations per solve: $|\mathcal{A}_{D_1}| \times N$.
+Total rollouts per predictive call: $K \times |\mathcal{A}| \times R$.

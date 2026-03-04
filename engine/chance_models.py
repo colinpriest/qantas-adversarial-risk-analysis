@@ -73,15 +73,15 @@ class OverconfidenceBias:
         review CAR ~3pp more favourable than actuarial (-2% vs -5%).
 
     Production defaults use midpoints (β=0.625, κ=3.5):
-        D1 ~ U(0.63, 1.0), D3 ~ U(-0.62, 0.0), sigma_scale = 0.53,
+        D1 ~ U(0.63, 1.0), D3 ~ U(-0.62, 0.5), sigma_scale = 0.53,
         review_car_bias = 0.03
     """
     # D1 review effect bounds: unbiased = U(0, 1)
     d1_floor: float = 0.0
     d1_ceiling: float = 1.0
-    # D3 CEO exit effect bounds: unbiased = U(-1, 0)
+    # D3 CEO exit effect bounds: unbiased = U(-1, 0.5)
     d3_floor: float = -1.0
-    d3_ceiling: float = 0.0
+    d3_ceiling: float = 0.5
     # Sigma scale: multiplier on sigma_vote in biased EU calculation.
     # = 1/√κ where κ ~ U(2,5) is the overprecision factor.
     sigma_scale: float = 1.0
@@ -98,20 +98,20 @@ BIAS_NONE = OverconfidenceBias()
 
 BIAS_OVERESTIMATION = OverconfidenceBias(
     d1_floor=0.50, d1_ceiling=1.0,    # β=0.5: D1 mean 0.75 vs true 0.5
-    d3_floor=-0.67, d3_ceiling=0.0,   # β=0.5: D3 mean -0.33 vs true -0.5
+    d3_floor=-0.67, d3_ceiling=0.5,   # β=0.5: D3 mean -0.085 vs true -0.25
     review_car_bias=0.025,            # β=0.5: Board perceives CAR ~2.5pp higher
 )
 
 BIAS_OVERPRECISION = OverconfidenceBias(
     d1_floor=0.63, d1_ceiling=1.0,    # β=0.625 (midpoint)
-    d3_floor=-0.62, d3_ceiling=0.0,   # β=0.625 (midpoint)
+    d3_floor=-0.62, d3_ceiling=0.5,   # β=0.625 (midpoint)
     sigma_scale=0.45,                 # κ=5: strong overprecision (1/√5)
     review_car_bias=0.03,             # β=0.625: Board perceives CAR ~3pp higher
 )
 
 BIAS_HUBRIS = OverconfidenceBias(
     d1_floor=0.63, d1_ceiling=1.0,    # β=0.625: midpoint overestimation
-    d3_floor=-0.62, d3_ceiling=0.0,   # β=0.625: midpoint overestimation
+    d3_floor=-0.62, d3_ceiling=0.5,   # β=0.625: midpoint overestimation
     sigma_scale=0.53,                 # κ=3.5: midpoint overprecision (1/√3.5)
     review_car_bias=0.03,             # β=0.625: Board perceives CAR ~3pp higher
 )
@@ -129,21 +129,27 @@ def _expit(x: float) -> float:
 
 class VoteModel:
     """
-    Endogenous vote model.
+    Endogenous vote model (v2).
 
     Computes:
-        B_agm = B_mkt[i] + gamma_A[i] * 1{A2=RecStrike} + gamma_D[i] * f(D1)
+        B_agm = B_mkt[i]
+              + gamma_A[i] * 1{A2=RecStrike}
+              + gamma_AH[i] * 1{A2=RecStrike} * 1{headline=1}
+              + gamma_D[i] * f(D1)
         logit(V) ~ N(alpha_vote[i] + B_agm, sigma_vote[i])
+
+    When headline_incident=1, a structural floor is applied:
+        V_final = max(V_logit_normal, V_floor)
+        V_floor ~ Beta(50, 150)  (mean 0.25, drawn once per belief draw)
 
     Governance effects — empirical priors from ranked_voting_recommendations.csv:
         The data shows a NON-MONOTONIC relationship:
           D0 (No Action):  +32.8% avg voting diff  — baseline anchor = 0
           D1 (Review):     +14.9% avg voting diff  — most effective mitigation
-          D3 (CEO Exit):   +46.7% avg voting diff  — signals crisis, increases protest
+          D3 (CEO Exit):   +46.7% avg voting diff  — ambiguous, confounded with severity
 
         D1 REDUCES protest (positive effect × negative gamma_D → lower B_agm).
-        D3 INCREASES protest (negative effect × negative gamma_D → higher B_agm).
-        Magnitudes are uncertain: D1 ~ +U(0,1), D3 ~ -U(0,1).
+        D3 effect is AMBIGUOUS: U(-1, 0.5) allows both amplification and mitigation.
         The overall scale is controlled by gamma_D (from the posterior).
     """
 
@@ -160,6 +166,7 @@ class VoteModel:
         rng: np.random.Generator,
         governance_effect: Optional[float] = None,
         sigma_scale: Optional[float] = None,
+        crisis_floor: Optional[float] = None,
     ) -> VoteOutcome:
         """Sample a vote outcome for a given belief draw and game history.
 
@@ -172,15 +179,20 @@ class VoteModel:
             sigma_scale: Multiplier on sigma_vote. When < 1, the Board
                 underestimates vote uncertainty (overprecision). Used only
                 in the focal actor's biased EU calculation.
+            crisis_floor: Pre-drawn structural floor V_floor ~ Beta(50, 150).
+                When headline_incident=1, V_final = max(V_logit_normal, V_floor).
+                Drawn ONCE per belief draw (epistemic), not per vote sample.
         """
         params = beliefs.get_draw(draw_i)
 
         # Construct AGM belief
         B_agm = params["B_mkt"]
 
-        # ASA mobilisation effect
+        # ASA mobilisation effect (base + headline interaction)
         if history.get("A2") == "A2_rec_strike":
             B_agm += params["gamma_A"]
+            if state.headline_incident:
+                B_agm += params["gamma_AH"]
 
         # Governance package effect
         d1_action = history.get("D1", "D0_minimal")
@@ -195,6 +207,10 @@ class VoteModel:
             sigma *= sigma_scale
         logit_v = rng.normal(logit_mean, max(sigma, 1e-6))
         vote_percent = _expit(logit_v)
+
+        # Structural floor for crisis scenarios (shareholder-vote-V2.md §1.4)
+        if crisis_floor is not None:
+            vote_percent = max(vote_percent, crisis_floor)
 
         return VoteOutcome(
             vote_percent=vote_percent,
@@ -212,17 +228,19 @@ class VoteModel:
         """Return expected vote percent (no sampling, uses E[effect] for each action).
 
         Expected governance effects (mean of Uniform distributions):
-          D0 = 0, D1 = +0.5 (reduces protest), D3 = -0.5 (signals crisis)
+          D0 = 0, D1 = +0.5 (reduces protest), D3 = -0.25 (ambiguous, E[U(-1,0.5)])
         """
         params = beliefs.get_draw(draw_i)
         B_agm = params["B_mkt"]
 
         if history.get("A2") == "A2_rec_strike":
             B_agm += params["gamma_A"]
+            if state.headline_incident:
+                B_agm += params["gamma_AH"]
 
         d1_action = history.get("D1", "D0_minimal")
-        # Non-monotonic: D1 mitigates, D3 escalates
-        effect = {"D0_minimal": 0.0, "D1_review": 0.5, "D3_ceo_transition": -0.5}
+        # Non-monotonic: D1 mitigates, D3 ambiguous (E[U(-1,0.5)] = -0.25)
+        effect = {"D0_minimal": 0.0, "D1_review": 0.5, "D3_ceo_transition": -0.25}
         B_agm += params["gamma_D"] * effect.get(d1_action, 0.0)
 
         logit_mean = params["alpha_vote"] + B_agm
@@ -240,14 +258,16 @@ class VoteModel:
 
         D0 = 0  (anchor: no action, baseline)
         D1 ~ +U(floor, ceiling)  (review REDUCES protest)
-        D3 ~ U(floor, ceiling)   (CEO exit INCREASES protest)
+        D3 ~ U(floor, ceiling)   (CEO exit effect AMBIGUOUS)
 
-        Unbiased: D1 ~ U(0, 1), D3 ~ U(-1, 0)
+        Unbiased: D1 ~ U(0, 1), D3 ~ U(-1, 0.5)
         With overconfidence bias: floors/ceilings shift per the bias config.
 
         When multiplied by gamma_D (negative from posterior):
           D1: positive * negative → lowers B_agm → lowers protest vote
-          D3: negative * negative → raises B_agm → raises protest vote
+          D3: negative f → raises B_agm; positive f → lowers B_agm
+              Asymmetric bounds (-1 to 0.5) encode prior that amplification
+              is ~3x more likely than mitigation (shareholder-vote-V2.md §1.3).
         """
         if d1_action == "D0_minimal":
             return 0.0
@@ -257,7 +277,7 @@ class VoteModel:
             return float(rng.uniform(lo, hi))
         elif d1_action == "D3_ceo_transition":
             lo = bias.d3_floor if bias else -1.0
-            hi = bias.d3_ceiling if bias else 0.0
+            hi = bias.d3_ceiling if bias else 0.5
             return float(rng.uniform(lo, hi))
         else:
             return 0.0
@@ -265,31 +285,71 @@ class VoteModel:
 
 class ReviewModel:
     """
-    Review findings CAR model.
+    Review findings model: outcome rating + CAR.
 
-    Calibrated from ASX governance review case studies 2014–2023
-    (board-background/governance-review-case-studies.md).
+    Two components:
 
-    If review not commissioned: deterministic CAR = 0.
-    If commissioned, the findings release window CAR is sampled from:
+    1. **Outcome rating** (adverse vs positive):
+       Grounded in external-governance-review-Bayesian-distribution.md.
+       The Qantas review is non-regulatory (board-initiated), so the
+       outcome follows Dirichlet(5, 5, 5) over {Negative, Neutral, Positive}.
+       Grouping negative + neutral as "adverse":
 
-        μ_f ~ Cauchy(-0.05, 0.03)     Location: centered on -5% drop
-        σ_f ~ Half-Normal(0.10)       Scale: high volatility
-        AR  ~ Student-t(ν=3, μ_f, σ_f)  Heavy tails for black swan events
+           p_adverse ~ Beta(10, 5),  mean = 2/3
 
-    This captures the extreme asymmetry observed empirically:
-        Star -13.95%, Westpac -3.00%, CBA +1.75%, Qantas +0.85%.
-    The ν=3 degrees of freedom produce heavy tails that accommodate
-    existential events (Star) while allowing relief rallies (CBA, Qantas).
+       Drawn ONCE per belief draw (epistemic uncertainty about the review
+       process), then each MC sample draws adverse ~ Bernoulli(p_adverse).
 
-    review_adverse is derived from CAR < 0 (for state transitions).
+    2. **CAR** (market reaction to findings release):
+       Student-t hierarchy calibrated from ASX governance review case
+       studies 2014–2023 (board-background/governance-review-case-studies.md):
+
+           μ_f ~ Student-t(ν=4, -0.05, 0.03)
+           σ_f ~ Half-Normal(0.10)
+           CAR ~ Student-t(ν=3, μ_f, σ_f)
+
+       The CAR captures the market's quantitative reaction. It is
+       separate from the qualitative outcome rating: a "positive" review
+       could still produce a mildly negative CAR (market expected more),
+       and an "adverse" review could produce a mildly positive CAR
+       (market had already priced in the bad news).
     """
 
-    # Distribution hyperparameters (from case study calibration)
-    NU = 3              # Degrees of freedom: heavy tails
-    MU_LOC = -0.05      # Cauchy location for μ_f: centered on -5%
-    MU_SCALE = 0.03     # Cauchy scale for μ_f: broad uncertainty
+    # CAR distribution hyperparameters (from case study calibration)
+    NU = 3              # Degrees of freedom for CAR: heavy tails
+    MU_NU = 4           # Degrees of freedom for μ_f: finite mean + variance
+    MU_LOC = -0.05      # Location for μ_f: centred on -5% drop
+    MU_SCALE = 0.03     # Scale for μ_f: uncertainty about market read
     SIGMA_SCALE = 0.10  # Half-Normal scale for σ_f: high volatility
+
+    # Outcome rating: Dirichlet(5, 5, 5) → Beta(10, 5) for adverse
+    # See external-governance-review-Bayesian-distribution.md §4.2
+    ADVERSE_ALPHA = 10  # negative (5) + neutral (5)
+    POSITIVE_ALPHA = 5  # positive (5)
+
+    def draw_adverse_probability(
+        self,
+        rng: np.random.Generator,
+        bias: Optional[OverconfidenceBias] = None,
+    ) -> float:
+        """Draw p_adverse ~ Beta(α, β) — once per belief draw (epistemic).
+
+        Returns the probability that the review outcome is adverse
+        (negative or neutral). Based on Dirichlet(5, 5, 5) for
+        non-regulatory reviews, grouping negative + neutral.
+        Unbiased: Beta(10, 5), mean = 2/3.
+
+        When bias is set, the Board overestimates governance quality
+        and believes positive outcomes are more likely. The positive
+        pseudo-count is inflated proportional to review_car_bias:
+            β_biased = POSITIVE_ALPHA × (1 + 10 × review_car_bias)
+        With default bias (0.03): Beta(10, 6.5) → mean ≈ 0.606 (vs 0.667).
+        """
+        alpha = self.ADVERSE_ALPHA
+        beta = self.POSITIVE_ALPHA
+        if bias is not None and bias.review_car_bias > 0:
+            beta = beta * (1.0 + 10.0 * bias.review_car_bias)
+        return float(rng.beta(alpha, beta))
 
     def sample(
         self,
@@ -299,18 +359,22 @@ class ReviewModel:
         state: DecisionState,
         rng: np.random.Generator,
         bias: Optional[OverconfidenceBias] = None,
+        p_adverse: Optional[float] = None,
     ) -> ReviewOutcome:
-        """Sample a review CAR from the Student-t hierarchy.
+        """Sample a review outcome (adverse rating + CAR).
 
         Args:
             bias: If set, shifts the location parameter μ_f upward
                 (Board thinks findings will be more favourable).
+            p_adverse: Pre-drawn adverse probability from Beta(10, 5).
+                Drawn ONCE per belief draw via draw_adverse_probability().
+                If None, falls back to CAR < 0 for adverse determination.
         """
         if not state.review_commissioned:
             return ReviewOutcome(review_adverse=False, review_car=0.0)
 
-        # Sample hierarchical parameters
-        mu_f = self.MU_LOC + self.MU_SCALE * rng.standard_cauchy()
+        # Sample hierarchical CAR parameters
+        mu_f = self.MU_LOC + self.MU_SCALE * rng.standard_t(self.MU_NU)
         sigma_f = abs(rng.normal(0, self.SIGMA_SCALE))
 
         # Board overconfidence: believes findings will be more favourable
@@ -320,8 +384,14 @@ class ReviewModel:
         # Sample CAR from Student-t
         car = mu_f + max(sigma_f, 1e-6) * rng.standard_t(self.NU)
 
+        # Outcome rating: Dirichlet-based or CAR-sign fallback
+        if p_adverse is not None:
+            adverse = bool(rng.random() < p_adverse)
+        else:
+            adverse = car < 0
+
         return ReviewOutcome(
-            review_adverse=car < 0,
+            review_adverse=adverse,
             review_car=float(car),
         )
 
@@ -330,11 +400,10 @@ class ReviewModel:
         state: DecisionState,
         bias: Optional[OverconfidenceBias] = None,
     ) -> float:
-        """Return expected CAR (location of the distribution, no sampling).
+        """Return expected CAR (analytical mean of the distribution).
 
-        Uses the Cauchy location parameter as a point estimate for the
-        expected CAR. Cauchy has no defined mean, but the location is the
-        center of the distribution.
+        E[CAR] = E[μ_f] = MU_LOC (since E[t(ν)] = 0 for ν > 1).
+        With t(4) for μ_f, the mean is well-defined and equals MU_LOC.
         """
         if not state.review_commissioned:
             return 0.0
@@ -405,11 +474,13 @@ class ChanceModels:
         rng: np.random.Generator,
         governance_effect: Optional[float] = None,
         sigma_scale: Optional[float] = None,
+        crisis_floor: Optional[float] = None,
     ) -> VoteOutcome:
         return self.vote.sample(
             draw_i, beliefs, history, state, rng,
             governance_effect=governance_effect,
             sigma_scale=sigma_scale,
+            crisis_floor=crisis_floor,
         )
 
     def sample_review(
@@ -417,8 +488,12 @@ class ChanceModels:
         history: dict, state: DecisionState,
         rng: np.random.Generator,
         bias: Optional[OverconfidenceBias] = None,
+        p_adverse: Optional[float] = None,
     ) -> ReviewOutcome:
-        return self.review.sample(draw_i, beliefs, history, state, rng, bias=bias)
+        return self.review.sample(
+            draw_i, beliefs, history, state, rng,
+            bias=bias, p_adverse=p_adverse,
+        )
 
     def sample_review_direct_cost(self, rng: np.random.Generator) -> float:
         """Sample direct cost of review in decimal CAR (positive value)."""

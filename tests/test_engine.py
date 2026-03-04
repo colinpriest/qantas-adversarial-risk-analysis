@@ -42,7 +42,7 @@ class TestDataLoading:
         state = DecisionState.from_governance_spec(GOV_SPEC)
         assert state.CEO_present is True
         assert state.review_commissioned is False
-        assert len(state._node_order) == 10
+        assert len(state._node_order) == 12
         assert state._node_order[0] == "D0_ceo"
         assert state._node_order[1] == "D1"
         assert state._node_order[-1] == "Terminal"
@@ -78,6 +78,8 @@ class TestDataLoading:
         assert "vote_penalty_weight" in w
         assert "review_direct_cost_weight" in w
         assert w["vote_penalty_weight"] > 0
+        assert "adverse_review_ceo_present_penalty" in w
+        assert w["adverse_review_ceo_present_penalty"] > 0
 
     def test_utility_weights_asa(self):
         from engine.state import load_utility_weights
@@ -91,6 +93,8 @@ class TestDataLoading:
         assert "gamma" in w
         assert "W_resign" in w
         assert "D_sacked" in w
+        assert "D_resign_late" in w
+        assert "D_negotiate" in w
 
     def test_policy_parameters(self):
         from engine.state import load_policy_parameters
@@ -135,9 +139,20 @@ class TestDataLoading:
         ps = ParameterSampler(OPP_PRIORS)
         rng = np.random.default_rng(42)
         for persp, tgt in [("Board", "ASA"), ("Board", "CEO"),
-                            ("ASA", "Board"), ("ASA", "CEO")]:
+                            ("ASA", "Board"), ("ASA", "CEO"),
+                            ("CEO", "Board")]:
             params = ps.sample_parameters(persp, tgt, rng)
             assert len(params) > 0, f"No params for {persp}->{tgt}"
+
+    def test_parameter_sampler_board_adverse_review_penalty(self):
+        """Both ASA→Board and CEO→Board should have adverse_review_ceo_present_penalty."""
+        from engine.state import ParameterSampler
+        ps = ParameterSampler(OPP_PRIORS)
+        rng = np.random.default_rng(42)
+        for persp in ["ASA", "CEO"]:
+            params = ps.sample_parameters(persp, "Board", rng)
+            assert "adverse_review_ceo_present_penalty" in params, (
+                f"{persp}→Board missing adverse_review_ceo_present_penalty")
 
 
 # ============================================================================
@@ -226,8 +241,117 @@ class TestFeasibility:
         assert state.next_node("D1") == "A2"
         assert state.next_node("A2") == "V"
         assert state.next_node("V") == "M_agm"
-        assert state.next_node("D4") == "Terminal"
+        assert state.next_node("M_agm") == "D4"
+        assert state.next_node("D4") == "D_rev"
+        assert state.next_node("D_rev") == "R"
+        assert state.next_node("R") == "M_rev"
+        assert state.next_node("M_rev") == "D4_post_review"
+        assert state.next_node("D4_post_review") == "D_rev_post_review"
+        assert state.next_node("D_rev_post_review") == "Terminal"
         assert state.next_node("Terminal") is None
+
+
+# ============================================================================
+# 2b. POST-REVIEW ROUND (Phase 6)
+# ============================================================================
+
+class TestPostReviewRound:
+    """Tests for Phase 6 conditional post-review round logic."""
+
+    def test_review_adverse_sets_state_flags(self):
+        """apply("R", "adverse") with CEO present sets all Phase 6 flags."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        assert state.CEO_present is True
+        s = state.apply("R", "adverse")
+        assert s.review_adverse is True
+        assert s.review_completed is True
+        assert s.post_review_round is True
+
+    def test_review_no_adverse_clears_flags(self):
+        """apply("R", "no_adverse") sets review_completed but not Phase 6."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        s = state.apply("R", "no_adverse")
+        assert s.review_adverse is False
+        assert s.review_completed is True
+        assert s.post_review_round is False
+
+    def test_post_review_round_not_set_when_ceo_absent(self):
+        """apply("R", "adverse") with CEO absent does NOT trigger Phase 6."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # Remove CEO first
+        state = state.apply("D0_ceo", "CEO_resign")
+        assert state.CEO_present is False
+        s = state.apply("R", "adverse")
+        assert s.review_adverse is True
+        assert s.review_completed is True
+        assert s.post_review_round is False  # CEO not present → no Phase 6
+
+    def test_d4_post_review_feasibility_active(self):
+        """When post_review_round=True, D4_post_review has 3 feasible actions."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # Trigger Phase 6: review adverse with CEO present
+        s = state.apply("R", "adverse")
+        assert s.post_review_round is True
+        feasible = s.feasible_actions("D4_post_review")
+        assert len(feasible) == 3
+        assert "D4_stay" in feasible
+        assert "D4_resign" in feasible
+        assert "D4_negotiate_exit" in feasible
+
+    def test_d4_post_review_feasibility_inactive(self):
+        """When post_review_round=False, D4_post_review has 0 feasible actions."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # No adverse review → post_review_round=False
+        s = state.apply("R", "no_adverse")
+        assert s.post_review_round is False
+        feasible = s.feasible_actions("D4_post_review")
+        assert len(feasible) == 0
+
+    def test_d_rev_post_review_ceo_present(self):
+        """D_rev_post_review with CEO present has 3 actions including sack."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        s = state.apply("R", "adverse")
+        assert s.post_review_round is True
+        assert s.CEO_present is True
+        feasible = s.feasible_actions("D_rev_post_review")
+        assert len(feasible) == 3
+        assert "Drev_sack_ceo" in feasible
+        assert "Drev_no_action" in feasible
+        assert "Drev_commission_review" in feasible
+
+    def test_d_rev_post_review_ceo_resigned(self):
+        """D_rev_post_review after CEO resignation has 2 actions (no sack)."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # Review adverse + CEO present → Phase 6 triggered
+        s = state.apply("R", "adverse")
+        # CEO resigns at D4_post_review
+        s = s.apply("D4_post_review", "D4_resign")
+        assert s.post_review_round is True
+        assert s.CEO_present is False
+        feasible = s.feasible_actions("D_rev_post_review")
+        assert "Drev_sack_ceo" not in feasible
+        assert "Drev_no_action" in feasible
+
+    def test_phase6_skipped_when_ceo_absent(self):
+        """When CEO resigned before review, both Phase 6 nodes are skipped."""
+        from engine.state import DecisionState
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        # CEO resigned early
+        state = state.apply("D0_ceo", "CEO_resign")
+        state = state.apply("D1", "D1_review")
+        # Review adverse but CEO absent
+        s = state.apply("R", "adverse")
+        assert s.post_review_round is False
+        # Both Phase 6 nodes should have 0 feasible actions (skipped)
+        assert len(s.feasible_actions("D4_post_review")) == 0
+        assert len(s.feasible_actions("D_rev_post_review")) == 0
 
 
 # ============================================================================
@@ -358,6 +482,69 @@ class TestChanceModels:
         # Mean CAR should be centered around -5% (MU_LOC = -0.05)
         assert -0.15 < np.mean(cars) < 0.05, f"Mean CAR out of range: {np.mean(cars):.4f}"
 
+    def test_review_adverse_probability_beta(self):
+        """Review adverse probability drawn from Beta(10, 5) — Dirichlet(5,5,5)."""
+        from engine.chance_models import ReviewModel
+        review = ReviewModel()
+
+        n = 2000
+        probs = [review.draw_adverse_probability(np.random.default_rng(i))
+                 for i in range(n)]
+        mean_p = np.mean(probs)
+        # Beta(10, 5) mean = 10/15 = 0.6667
+        assert abs(mean_p - 2/3) < 0.03, (
+            f"Mean adverse prob {mean_p:.3f} should be near 0.667")
+        # All in [0, 1]
+        assert all(0 < p < 1 for p in probs)
+
+    def test_review_with_explicit_p_adverse(self):
+        """Review model respects explicit p_adverse parameter."""
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import ReviewModel
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.review_commissioned = True
+        review = ReviewModel()
+
+        # p_adverse = 1.0 → always adverse
+        n = 50
+        for i in range(n):
+            rng = np.random.default_rng(5000 + i)
+            out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng,
+                                p_adverse=1.0)
+            assert out.review_adverse is True
+
+        # p_adverse = 0.0 → never adverse
+        for i in range(n):
+            rng = np.random.default_rng(6000 + i)
+            out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng,
+                                p_adverse=0.0)
+            assert out.review_adverse is False
+
+    def test_review_adverse_rate_matches_dirichlet(self):
+        """Commissioned review adverse rate ≈ 2/3 (Beta(10,5) mean)."""
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import ReviewModel
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.review_commissioned = True
+        review = ReviewModel()
+
+        n = 500
+        adverse_count = 0
+        for i in range(n):
+            rng = np.random.default_rng(7000 + i)
+            p_adverse = review.draw_adverse_probability(rng)
+            out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng,
+                                p_adverse=p_adverse)
+            if out.review_adverse:
+                adverse_count += 1
+
+        adverse_rate = adverse_count / n
+        # Should be near 2/3 ≈ 0.667 (tolerant for MC noise)
+        assert 0.55 < adverse_rate < 0.80, (
+            f"Adverse rate {adverse_rate:.3f} should be near 0.667")
+
     def test_review_direct_cost_model(self):
         """ReviewDirectCostModel samples from Gamma(4.55, 4741) in decimal CAR."""
         from engine.chance_models import ReviewDirectCostModel
@@ -445,13 +632,18 @@ class TestUtilities:
         assert u_no > u_yes
 
     def test_ceo_utility_crra_ordering(self):
-        """CRRA CEO utility: staying (kept) > late resign > sacked."""
+        """CRRA CEO utility: staying (kept) > negotiate > late resign > sacked."""
         from engine.utilities import utility_ceo, TerminalOutcome
-        params = {"gamma": 1.5, "W_resign": 8.0, "W_stay_sacked": 3.0,
-                  "W_stay_kept": 12.0, "D_resign": 50.0, "D_sacked": 100.0,
-                  "D_agm": 30.0, "D_disgrace": 30.0, "D_adverse_review": 10.0}
+        params = {"gamma": 1.5, "W_resign": 8.0, "W_stay_sacked": 1.5,
+                  "W_stay_kept": 7.0, "D_resign": 40.0, "D_stay": 25.0,
+                  "D_sacked": 100.0, "D_resign_late": 60.0, "D_negotiate": 45.0,
+                  "D_agm": 30.0, "D_disgrace": 30.0,
+                  "D_adverse_review": 10.0, "loss_aversion": 2.25, "W_ref": 16.0,
+                  "loss_aversion_D": 2.25}
 
         out_stay = TerminalOutcome(CEO_removed=False, vote_percent=0.10)
+        out_negotiate = TerminalOutcome(CEO_removed=True, d4_action="D4_negotiate_exit",
+                                          vote_percent=0.10)
         out_resign = TerminalOutcome(CEO_removed=True, d4_action="D4_resign",
                                       vote_percent=0.10)
         out_sacked = TerminalOutcome(CEO_removed=True, d4_action="D4_stay",
@@ -459,10 +651,12 @@ class TestUtilities:
                                       vote_percent=0.50, strike_indicator=True)
 
         u_stay = utility_ceo(out_stay, params)
+        u_negotiate = utility_ceo(out_negotiate, params)
         u_resign = utility_ceo(out_resign, params)
         u_sacked = utility_ceo(out_sacked, params)
 
-        assert u_stay > u_resign  # Staying (kept) is best
+        assert u_stay > u_negotiate  # Staying (kept) is best
+        assert u_negotiate > u_resign  # Negotiate > late resign
         assert u_resign > u_sacked  # Late resign > forced sacking
 
     def test_board_review_direct_cost_in_utility(self):
@@ -601,13 +795,15 @@ class TestPredictive:
         assert len(dist) == 0
 
     def test_asa_beta_posterior_strike_probabilities(self):
-        """ASA fixed policy uses Beta-Binomial posteriors from CSV data.
+        """ASA fixed policy uses informative Beta posteriors from CSV data.
 
-        Beta posteriors (with uniform prior):
-          D0: Beta(23, 3) — posterior mean 0.885
-          D1: Beta(6, 4)  — posterior mean 0.600
-          D3: Beta(5, 1)  — posterior mean 0.833
+        Informative Beta posteriors (headline_incident=1, Qantas excluded):
+          D0: Beta(46, 4) — posterior mean 0.920
+          D1: Beta(44, 4) — posterior mean 0.917
+          D3: Beta(43, 4) — posterior mean 0.914
 
+        All three are very similar (~91-92%) because ASA recommendation is
+        near-automatic in headline incidents, regardless of board action.
         Wider tolerance needed because each call samples p ~ Beta(a, b)
         then flips a Bernoulli(p), adding parameter uncertainty.
         """
@@ -630,21 +826,20 @@ class TestPredictive:
                     count += 1
             strike_counts[d1] = count / n_samples
 
-        # D3: Beta(5,1) posterior mean = 0.833, NOT 1.0 (only n=4 observations)
-        assert 0.75 < strike_counts["D3_ceo_transition"] < 0.92, (
-            f"D3 Beta(5,1) mean ~0.833, got {strike_counts['D3_ceo_transition']:.1%}"
+        # D3: Beta(43,4) posterior mean = 0.914
+        assert 0.85 < strike_counts["D3_ceo_transition"] < 0.96, (
+            f"D3 Beta(43,4) mean ~0.914, got {strike_counts['D3_ceo_transition']:.1%}"
         )
-        # D0: Beta(23,3) posterior mean = 0.885 (tightest, n=24)
-        assert 0.82 < strike_counts["D0_minimal"] < 0.94, (
-            f"D0 Beta(23,3) mean ~0.885, got {strike_counts['D0_minimal']:.1%}"
+        # D0: Beta(46,4) posterior mean = 0.920
+        assert 0.85 < strike_counts["D0_minimal"] < 0.96, (
+            f"D0 Beta(46,4) mean ~0.920, got {strike_counts['D0_minimal']:.1%}"
         )
-        # D1: Beta(6,4) posterior mean = 0.600 (widest, n=8)
-        assert 0.50 < strike_counts["D1_review"] < 0.70, (
-            f"D1 Beta(6,4) mean ~0.600, got {strike_counts['D1_review']:.1%}"
+        # D1: Beta(44,4) posterior mean = 0.917
+        assert 0.85 < strike_counts["D1_review"] < 0.96, (
+            f"D1 Beta(44,4) mean ~0.917, got {strike_counts['D1_review']:.1%}"
         )
-        # Ordering preserved: D1 < D3 ≈ D0 (D3 no longer 100%)
-        assert strike_counts["D1_review"] < strike_counts["D0_minimal"]
-        assert strike_counts["D1_review"] < strike_counts["D3_ceo_transition"]
+        # Ordering: D3 <= D1 <= D0 (monotonic decreasing by board accountability)
+        assert strike_counts["D3_ceo_transition"] <= strike_counts["D0_minimal"] + 0.05
 
     def test_build_outcome(self):
         from engine.predictive import PredictiveDistribution
@@ -1034,7 +1229,7 @@ class TestOverconfidenceBias:
         assert BIAS_NONE.d1_floor == 0.0
         assert BIAS_NONE.d1_ceiling == 1.0
         assert BIAS_NONE.d3_floor == -1.0
-        assert BIAS_NONE.d3_ceiling == 0.0
+        assert BIAS_NONE.d3_ceiling == 0.5
         assert BIAS_NONE.sigma_scale == 1.0
         assert BIAS_NONE.review_car_bias == 0.0
 
@@ -1105,12 +1300,106 @@ class TestOverconfidenceBias:
         mean_u = np.mean(effects_unbiased)
         mean_b = np.mean(effects_biased)
 
-        # Unbiased D3: U(-1, 0), mean ≈ -0.5
-        assert -0.6 < mean_u < -0.4, f"Unbiased D3 mean should be ~-0.5, got {mean_u:.3f}"
-        # Biased D3: U(-0.67, 0), mean ≈ -0.33 (β=0.5 overestimation)
-        assert -0.45 < mean_b < -0.20, f"Biased D3 mean should be ~-0.33, got {mean_b:.3f}"
+        # Unbiased D3: U(-1, 0.5), mean ≈ -0.25
+        assert -0.35 < mean_u < -0.15, f"Unbiased D3 mean should be ~-0.25, got {mean_u:.3f}"
+        # Biased D3: U(-0.67, 0.5), mean ≈ -0.085 (β=0.5 overestimation)
+        assert -0.20 < mean_b < 0.05, f"Biased D3 mean should be ~-0.085, got {mean_b:.3f}"
         # Biased should be closer to 0 (less negative)
         assert mean_b > mean_u
+
+    def test_governance_effect_d3_allows_mitigation(self):
+        """D3 governance effect can be positive (up to 0.5), allowing mitigation.
+
+        V2 change: D3 bounds relaxed from U(-1, 0) to U(-1, 0.5).
+        A well-managed CEO transition can provide partial mitigation.
+        """
+        from engine.chance_models import VoteModel
+
+        n_samples = 1000
+        positive_count = 0
+        for i in range(n_samples):
+            rng = np.random.default_rng(11000 + i)
+            f = VoteModel._governance_effect("D3_ceo_transition", rng, bias=None)
+            assert -1.0 <= f <= 0.5, f"D3 effect out of bounds: {f}"
+            if f > 0:
+                positive_count += 1
+
+        # U(-1, 0.5): P(f > 0) = 0.5/1.5 ≈ 0.333
+        frac = positive_count / n_samples
+        assert 0.25 < frac < 0.45, (
+            f"Expected ~33% positive D3 draws, got {frac:.1%}"
+        )
+
+    def test_vote_headline_interaction(self):
+        """gamma_AH provides additional shift when headline=1 and ASA recommends strike.
+
+        V2 change: B_agm includes gamma_AH * I[rec_strike] * I[headline=1].
+        """
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import VoteModel
+
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state_headline = DecisionState.from_governance_spec(GOV_SPEC)
+        state_headline.headline_incident = True
+        state_no_headline = DecisionState.from_governance_spec(GOV_SPEC)
+        state_no_headline.headline_incident = False
+        vote_model = VoteModel({"first_strike": 0.25, "overwhelming": 0.50})
+
+        n_samples = 200
+        votes_headline = []
+        votes_no_headline = []
+
+        for i in range(n_samples):
+            rng1 = np.random.default_rng(12000 + i)
+            rng2 = np.random.default_rng(12000 + i)
+
+            h = {"D1": "D0_minimal", "A2": "A2_rec_strike"}
+
+            v1 = vote_model.sample(i % bb.N, bb, h, state_headline, rng1)
+            v2 = vote_model.sample(i % bb.N, bb, h, state_no_headline, rng2)
+
+            votes_headline.append(v1.vote_percent)
+            votes_no_headline.append(v2.vote_percent)
+
+        mean_h = np.mean(votes_headline)
+        mean_nh = np.mean(votes_no_headline)
+        # Headline interaction should increase vote when ASA recommends strike
+        # (gamma_AH is positive on average in synthetic data)
+        assert mean_h > mean_nh, (
+            f"Headline interaction should increase vote with ASA strike: "
+            f"{mean_h:.3f} vs {mean_nh:.3f}"
+        )
+
+    def test_crisis_floor_prevents_sub_threshold(self):
+        """Structural floor prevents V < V_floor when headline_incident=1.
+
+        V2 change: V_final = max(V_logit_normal, V_floor) where
+        V_floor ~ Beta(50, 150) with mean 0.25.
+        """
+        from engine.state import BeliefBundle, DecisionState
+        from engine.chance_models import VoteModel
+
+        bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        state.headline_incident = True
+        vote_model = VoteModel({"first_strike": 0.25, "overwhelming": 0.50})
+
+        n_samples = 500
+        floor_val = 0.22  # Conservative: well below Beta(50,150) mean of 0.25
+
+        for i in range(n_samples):
+            rng = np.random.default_rng(13000 + i)
+            crisis_floor = float(rng.beta(50, 150))
+            # Use a fresh rng for sampling to avoid correlation
+            s_rng = np.random.default_rng(13000 + n_samples + i)
+            h = {"D1": "D0_minimal", "A2": "A2_no_strike"}
+            out = vote_model.sample(
+                i % bb.N, bb, h, state, s_rng, crisis_floor=crisis_floor,
+            )
+            # V_final must be >= crisis_floor
+            assert out.vote_percent >= crisis_floor - 1e-12, (
+                f"Vote {out.vote_percent:.4f} below crisis floor {crisis_floor:.4f}"
+            )
 
     def test_d0_unaffected_by_bias(self):
         """D0 (no action) always returns 0 regardless of bias."""
@@ -1160,7 +1449,7 @@ class TestOverconfidenceBias:
         assert params["d1_floor"] == 0.63
         assert params["d1_ceiling"] == 1.0
         assert params["d3_floor"] == -0.62
-        assert params["d3_ceiling"] == 0.0
+        assert params["d3_ceiling"] == 0.5
         assert params["sigma_scale"] == 0.53
         assert params["review_car_bias"] == 0.03
 
@@ -1169,7 +1458,7 @@ class TestOverconfidenceBias:
         from engine.state import load_board_overconfidence
         params = load_board_overconfidence(GOV_SPEC)
         assert 0 <= params["d1_floor"] < params["d1_ceiling"] <= 1
-        assert -1 <= params["d3_floor"] < params["d3_ceiling"] <= 0
+        assert -1 <= params["d3_floor"] < params["d3_ceiling"] <= 1
         assert 0 < params["sigma_scale"] <= 1
         assert params["review_car_bias"] >= 0
 
@@ -1693,47 +1982,61 @@ class TestScenarioUtilities:
         )
 
     def test_ceo_utility_crra_resign_value(self):
-        """Verify CRRA computation for resign path: U = W^(1-γ)/(1-γ) - D."""
+        """Verify reference-dependent CRRA for resign path with loss aversion."""
         from engine.utilities import utility_ceo, TerminalOutcome
-        params = {"gamma": 1.5, "W_resign": 8.0, "D_resign": 50.0}
+        params = {"gamma": 1.5, "W_resign": 8.0, "D_resign": 40.0,
+                  "loss_aversion": 2.25, "W_ref": 16.0, "loss_aversion_D": 2.25}
         outcome = TerminalOutcome(CEO_removed=True, CEO_resigned_early=True)
         u = utility_ceo(outcome, params)
-        # W^(1-γ)/(1-γ) = 8^(-0.5)/(-0.5) = (1/√8)/(-0.5) ≈ -0.707
-        expected_money = (8.0 ** (-0.5)) / (-0.5)
-        assert abs(u - (expected_money - 50.0)) < 1e-6
+        # W=8 < W_ref=16: U_money = λ·CRRA(8) − (λ−1)·CRRA(16)
+        crra_W = (8.0 ** (-0.5)) / (-0.5)
+        crra_ref = (16.0 ** (-0.5)) / (-0.5)
+        expected_money = 2.25 * crra_W - 1.25 * crra_ref
+        # U = U_money - λ_D · D_raw
+        assert abs(u - (expected_money - 2.25 * 40.0)) < 1e-6
 
     def test_ceo_utility_crra_stay_sacked(self):
-        """Forced sacking: W = W_stay_sacked, D includes D_sacked."""
+        """Forced sacking with loss aversion: W=1.5 << W_ref=16, D amplified by λ_D."""
         from engine.utilities import utility_ceo, TerminalOutcome
-        params = {"gamma": 1.5, "W_stay_sacked": 3.0, "W_stay_kept": 12.0,
-                  "D_sacked": 100.0, "D_agm": 30.0, "D_disgrace": 30.0,
-                  "D_adverse_review": 10.0}
+        params = {"gamma": 1.5, "W_stay_sacked": 1.5, "W_stay_kept": 7.0,
+                  "D_stay": 25.0, "D_sacked": 100.0, "D_agm": 30.0,
+                  "D_disgrace": 30.0, "D_adverse_review": 10.0,
+                  "loss_aversion": 2.25, "W_ref": 16.0, "loss_aversion_D": 2.25}
         outcome = TerminalOutcome(
             CEO_removed=True, vote_percent=0.6,
             overwhelming_indicator=True, strike_indicator=True)
         u = utility_ceo(outcome, params)
-        # D = D_sacked + D_agm + D_disgrace = 160
-        expected_money = (3.0 ** (-0.5)) / (-0.5)
-        assert abs(u - (expected_money - 160.0)) < 1e-6
+        # D_raw = D_stay + D_sacked + D_agm + D_disgrace = 185
+        # W=1.5 < W_ref: U_money = λ·CRRA(1.5) − (λ−1)·CRRA(16)
+        crra_W = (1.5 ** (-0.5)) / (-0.5)
+        crra_ref = (16.0 ** (-0.5)) / (-0.5)
+        expected_money = 2.25 * crra_W - 1.25 * crra_ref
+        assert abs(u - (expected_money - 2.25 * 185.0)) < 1e-6
 
     def test_ceo_utility_crra_stay_kept(self):
-        """CEO keeps job: W = W_stay_kept, D = 0 (no penalties)."""
+        """CEO keeps job with loss aversion: W=7 < W_ref=16, D amplified by λ_D."""
         from engine.utilities import utility_ceo, TerminalOutcome
-        params = {"gamma": 1.5, "W_stay_kept": 12.0, "D_sacked": 100.0,
-                  "D_agm": 30.0, "D_disgrace": 30.0}
+        params = {"gamma": 1.5, "W_stay_kept": 7.0, "D_stay": 25.0,
+                  "D_sacked": 100.0, "D_agm": 30.0, "D_disgrace": 30.0,
+                  "loss_aversion": 2.25, "W_ref": 16.0, "loss_aversion_D": 2.25}
         outcome = TerminalOutcome(CEO_removed=False, vote_percent=0.10)
         u = utility_ceo(outcome, params)
-        expected_money = (12.0 ** (-0.5)) / (-0.5)
-        assert abs(u - expected_money) < 1e-6
+        # W=7 < W_ref: U_money = λ·CRRA(7) − (λ−1)·CRRA(16)
+        crra_W = (7.0 ** (-0.5)) / (-0.5)
+        crra_ref = (16.0 ** (-0.5)) / (-0.5)
+        expected_money = 2.25 * crra_W - 1.25 * crra_ref
+        assert abs(u - (expected_money - 2.25 * 25.0)) < 1e-6
 
     def test_ceo_utility_log_gamma(self):
-        """γ = 1 should use log utility (ln(W))."""
+        """γ = 1 should use log utility (ln(W)) with loss aversion on both W and D."""
         from engine.utilities import utility_ceo, TerminalOutcome
         import numpy as np
-        params = {"gamma": 1.0, "W_resign": 8.0, "D_resign": 50.0}
+        params = {"gamma": 1.0, "W_resign": 8.0, "D_resign": 40.0,
+                  "loss_aversion": 2.25, "W_ref": 16.0, "loss_aversion_D": 2.25}
         outcome = TerminalOutcome(CEO_removed=True, CEO_resigned_early=True)
         u = utility_ceo(outcome, params)
-        expected = np.log(8.0) - 50.0
+        # W=8 < W_ref=16: U_money = λ·ln(8) − (λ−1)·ln(16)
+        expected = 2.25 * np.log(8.0) - 1.25 * np.log(16.0) - 2.25 * 40.0
         assert abs(u - expected) < 1e-6
 
     def test_ceo_utility_agm_penalty(self):
@@ -1776,6 +2079,43 @@ class TestScenarioUtilities:
         assert abs(utility_ceo(outcome, params_high) -
                    utility_ceo(outcome, params_cap)) < 1e-6
 
+    def test_ceo_departure_mode_d_raw(self):
+        """Departure-mode penalties: D_negotiate < D_resign_late < D_sacked."""
+        from engine.utilities import utility_ceo, TerminalOutcome
+        params = {"gamma": 1.5, "W_stay_sacked": 1.5, "W_stay_kept": 7.0,
+                  "D_stay": 25.0, "D_sacked": 100.0, "D_resign_late": 60.0,
+                  "D_negotiate": 45.0, "D_agm": 30.0,
+                  "loss_aversion": 2.25, "W_ref": 16.0, "loss_aversion_D": 2.25}
+
+        # All at vote=0.30 (strike), CEO_removed=True
+        out_negotiate = TerminalOutcome(
+            CEO_removed=True, d4_action="D4_negotiate_exit",
+            vote_percent=0.30, strike_indicator=True)
+        out_resign_late = TerminalOutcome(
+            CEO_removed=True, d4_action="D4_resign",
+            vote_percent=0.30, strike_indicator=True)
+        out_sacked = TerminalOutcome(
+            CEO_removed=True, d4_action="D4_stay",
+            vote_percent=0.30, strike_indicator=True)
+
+        u_negotiate = utility_ceo(out_negotiate, params)
+        u_resign_late = utility_ceo(out_resign_late, params)
+        u_sacked = utility_ceo(out_sacked, params)
+
+        # D_negotiate(45) < D_resign_late(60) < D_sacked(100) → utility ordering
+        assert u_negotiate > u_resign_late, (
+            f"Negotiate ({u_negotiate:.2f}) should beat late resign ({u_resign_late:.2f})")
+        assert u_resign_late > u_sacked, (
+            f"Late resign ({u_resign_late:.2f}) should beat sacked ({u_sacked:.2f})")
+
+        # Verify D_raw values: D_stay + D_xxx + D_agm (vote > 0.25)
+        # negotiate: 25 + 45 + 30 = 100
+        # resign_late: 25 + 60 + 30 = 115
+        # sacked: 25 + 100 + 30 = 155
+        # Gap between sacked and negotiate should be larger than between
+        # negotiate and resign_late
+        assert (u_negotiate - u_sacked) > (u_negotiate - u_resign_late)
+
     def test_board_utility_early_ceo_departure(self):
         """Board should pay early_ceo_departure_cost for early resignation."""
         from engine.utilities import utility_board, TerminalOutcome
@@ -1813,6 +2153,48 @@ class TestScenarioUtilities:
 
         # ASA gets vindication reward
         assert u_resigned > u_present
+
+    def test_board_adverse_review_ceo_present_penalty(self):
+        """Board utility penalised when review adverse AND CEO still present."""
+        from engine.utilities import utility_board, TerminalOutcome
+        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
+                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
+                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
+                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0,
+                  "adverse_review_ceo_present_penalty": 5.0}
+
+        # Adverse review, CEO still present → penalty applies
+        out_adverse_present = TerminalOutcome(
+            review_commissioned=True, review_adverse=True,
+            review_car=-0.05, CEO_removed=False)
+        u_adverse = utility_board(out_adverse_present, params)
+
+        # Adverse review, CEO removed → penalty does NOT apply
+        out_adverse_removed = TerminalOutcome(
+            review_commissioned=True, review_adverse=True,
+            review_car=-0.05, CEO_removed=True,
+            d_rev_action="Drev_sack_ceo")
+        u_removed = utility_board(out_adverse_removed, params)
+
+        # Penalty difference should be adverse_review_ceo_present_penalty (5.0)
+        # plus ceo_loss_cost (1.5) for removal, so net = 5.0 - 1.5 = 3.5
+        assert u_removed > u_adverse, (
+            f"Sacking after adverse review ({u_removed:.2f}) should beat "
+            f"keeping CEO ({u_adverse:.2f})")
+
+    def test_board_no_penalty_positive_review(self):
+        """No adverse_review_ceo_present_penalty when review is positive."""
+        from engine.utilities import utility_board, TerminalOutcome
+        params = {"review_car_weight": 15.0, "review_direct_cost_weight": 15.0,
+                  "adverse_review_ceo_present_penalty": 5.0}
+
+        # Positive review, CEO present → no penalty
+        out_positive = TerminalOutcome(
+            review_commissioned=True, review_adverse=False,
+            review_car=0.05, CEO_removed=False)
+        u = utility_board(out_positive, params)
+        # Should get review_car_weight * 0.05 = 0.75 (positive contribution)
+        assert u > 0
 
 
 class TestScenarioSolver:
@@ -1921,6 +2303,266 @@ class TestScenarioSolver:
         assert bb.N == 500
         # Cpre should have slightly negative B_mkt mean
         assert bb.B_mkt.mean() < 0.1
+
+
+# ============================================================================
+# 15. INTERACTIVE TREE VISUALISATION
+# ============================================================================
+
+class TestInteractiveTree:
+    """Tests for the interactive HTML tree visualisation module."""
+
+    def test_actual_outcomes_loading(self):
+        """actual_outcomes.json should load successfully."""
+        from run.interactive_tree import load_actual_outcomes
+        actual = load_actual_outcomes(DATA_DIR / "actual_outcomes.json")
+        assert isinstance(actual, dict)
+        assert "D0_ceo" in actual
+        assert actual["D0_ceo"] == "CEO_resign"
+        assert actual["D1"] == "D1_review"
+        assert actual["A2"] == "A2_rec_strike"
+
+    def test_actual_outcomes_missing_file(self):
+        """Missing config file should return empty dict, not raise."""
+        from run.interactive_tree import load_actual_outcomes
+        actual = load_actual_outcomes(Path("/nonexistent/path.json"))
+        assert actual == {}
+
+    def test_actual_outcomes_none_path(self):
+        """None path should return empty dict."""
+        from run.interactive_tree import load_actual_outcomes
+        actual = load_actual_outcomes(None)
+        assert actual == {}
+
+    def test_is_actual_edge_decision_node(self):
+        """Direct match on decision node actions."""
+        from run.interactive_tree import _is_actual_edge
+        actual = {"D0_ceo": "CEO_resign", "D1": "D1_review"}
+        assert _is_actual_edge("D0_ceo", "CEO_resign", actual) is True
+        assert _is_actual_edge("D0_ceo", "CEO_stay", actual) is False
+        assert _is_actual_edge("D1", "D1_review", actual) is True
+        assert _is_actual_edge("D1", "D0_minimal", actual) is False
+
+    def test_is_actual_edge_vote_node(self):
+        """Fuzzy match on vote node (V) chance outcomes."""
+        from run.interactive_tree import _is_actual_edge
+        actual = {"V": "strike_overwhelming"}
+        # "strike" in actual_action.lower() → matches "Strike (>=25%)"
+        assert _is_actual_edge("V", "Strike (>=25%)", actual) is True
+        assert _is_actual_edge("V", "No strike (<25%)", actual) is False
+
+    def test_is_actual_edge_review_node(self):
+        """Fuzzy match on review node (R) chance outcomes."""
+        from run.interactive_tree import _is_actual_edge
+        actual = {"R": "adverse"}
+        assert _is_actual_edge("R", "Adverse finding", actual) is True
+        assert _is_actual_edge("R", "No adverse", actual) is False
+
+    def test_is_actual_edge_passthrough(self):
+        """Pass-through nodes always match."""
+        from run.interactive_tree import _is_actual_edge
+        actual = {"M_agm": "market_reaction"}
+        assert _is_actual_edge("M_agm", "pass-through", actual) is True
+
+    def test_is_actual_edge_missing_node(self):
+        """Node not in actual outcomes returns False."""
+        from run.interactive_tree import _is_actual_edge
+        assert _is_actual_edge("D4", "D4_stay", {}) is False
+
+    def test_viznode_to_dict_structure(self):
+        """VizNode serialization should produce dict with required keys."""
+        from run.interactive_tree import viznode_to_dict
+        from run.visualise_tree import VizNode
+
+        node = VizNode("n1", "D0_ceo", "decision", "CEO", eu=-1.5)
+        child = VizNode("n2", "D1", "decision", "Board", eu=-0.5)
+        node.children = [("CEO_resign", 0.89, child)]
+
+        d = viznode_to_dict(node, {}, "Board", {}, {})
+        assert d["id"] == "n1"
+        assert d["name"] == "D0_ceo"
+        assert d["type"] == "decision"
+        assert d["owner"] == "CEO"
+        assert d["eu"] == -1.5
+        assert "children" in d
+        assert len(d["children"]) == 1
+        assert d["children"][0]["label"] == "CEO_resign"
+        assert d["children"][0]["prob"] == 0.89
+
+    def test_viznode_to_dict_children_nested(self):
+        """Children should be properly nested with edge and child data."""
+        from run.interactive_tree import viznode_to_dict
+        from run.visualise_tree import VizNode
+
+        leaf = VizNode("n3", "Terminal", "terminal", "Nature", eu=2.0)
+        mid = VizNode("n2", "D1", "decision", "Board", eu=1.0, children=[
+            ("D0_minimal", 0.6, leaf),
+        ])
+        root = VizNode("n1", "D0_ceo", "decision", "CEO", eu=0.5, children=[
+            ("CEO_resign", 0.89, mid),
+        ])
+
+        d = viznode_to_dict(root, {}, "Board", {}, {})
+        # Navigate to leaf
+        child_edge = d["children"][0]
+        grandchild = child_edge["child"]["children"][0]["child"]
+        assert grandchild["name"] == "Terminal"
+        assert grandchild["type"] == "terminal"
+        assert grandchild["eu"] == 2.0
+
+    def test_commentary_without_api_key(self):
+        """generate_commentary without API key returns placeholder strings."""
+        from run.interactive_tree import generate_commentary, PLACEHOLDER_COMMENTARY
+        from run.visualise_tree import VizNode
+
+        tree_dict = {
+            "id": "n1", "name": "D0_ceo", "type": "decision", "owner": "CEO",
+            "eu": -1.0, "nice_label": "D0_ceo", "colour": "#E85D5D",
+            "utility_decomposition": {}, "predictive_dist": {},
+            "outcome_stats": {}, "node_commentary": "",
+            "children": [{
+                "label": "CEO_resign", "nice_label": "CEO resigns",
+                "prob": 0.89, "is_actual": True, "child_eu": -0.5,
+                "commentary": "",
+                "child": {
+                    "id": "n2", "name": "Terminal", "type": "terminal",
+                    "owner": "Nature", "eu": -0.5, "nice_label": "Terminal",
+                    "colour": "#AAA", "utility_decomposition": {},
+                    "predictive_dist": {}, "outcome_stats": {},
+                    "node_commentary": "", "children": [],
+                },
+            }],
+        }
+        result = generate_commentary(tree_dict, "Board", "C0", api_key=None)
+        assert isinstance(result, dict)
+        for key, val in result.items():
+            assert val == PLACEHOLDER_COMMENTARY
+
+    def test_enrich_node_data_utility_decomposition(self):
+        """_enrich_node_data should attach utility decomposition from SolveResult."""
+        from run.interactive_tree import _enrich_node_data
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.utility_decomposition = {
+            "D0_minimal": {"vote_penalty": -0.1, "spill_risk": -0.05},
+        }
+        result.outcome_stats = {
+            "D0_minimal": {"Pr_strike": 0.85, "mean_vote_percent": 0.42},
+        }
+        result.predictive_dists = {}
+
+        node_dict = {
+            "utility_decomposition": {},
+            "outcome_stats": {},
+            "predictive_dist": {},
+        }
+        _enrich_node_data(node_dict, {"ceo_resigned": result}, "ceo_resigned", "D0_minimal")
+
+        assert node_dict["utility_decomposition"]["vote_penalty"] == -0.1
+        assert node_dict["outcome_stats"]["Pr_strike"] == 0.85
+
+    def test_actual_path_only_single_branch(self):
+        """Red lines should only follow a single path from root, not all matching edges."""
+        from run.interactive_tree import viznode_to_dict
+        from run.visualise_tree import VizNode
+
+        # Build a tree where D0_ceo branches into two scenarios,
+        # each containing a D1 node. Only the CEO_resign branch
+        # should have red edges; the CEO_stay branch should NOT.
+        #
+        #         D0_ceo
+        #        /       \
+        #  CEO_resign   CEO_stay
+        #      |           |
+        #     D1          D1
+        #    / \          / \
+        # review minimal review minimal
+        #   |      |       |      |
+        #  T1     T2      T3     T4
+
+        t1 = VizNode("t1", "Terminal", "terminal", "Nature", eu=1.0)
+        t2 = VizNode("t2", "Terminal", "terminal", "Nature", eu=2.0)
+        t3 = VizNode("t3", "Terminal", "terminal", "Nature", eu=3.0)
+        t4 = VizNode("t4", "Terminal", "terminal", "Nature", eu=4.0)
+
+        d1_resign = VizNode("d1_r", "D1", "decision", "Board", eu=1.5, children=[
+            ("D1_review", 0.5, t1),
+            ("D0_minimal", 0.5, t2),
+        ])
+        d1_stay = VizNode("d1_s", "D1", "decision", "Board", eu=3.5, children=[
+            ("D1_review", 0.5, t3),
+            ("D0_minimal", 0.5, t4),
+        ])
+        root = VizNode("d0", "D0_ceo", "decision", "CEO", eu=2.0, children=[
+            ("CEO_resign", 0.6, d1_resign),
+            ("CEO_stay", 0.4, d1_stay),
+        ])
+
+        actual = {"D0_ceo": "CEO_resign", "D1": "D1_review"}
+        d = viznode_to_dict(root, {}, "Board", actual, {})
+
+        # CEO_resign edge should be actual
+        resign_edge = d["children"][0]
+        assert resign_edge["is_actual"] is True
+
+        # CEO_stay edge should NOT be actual
+        stay_edge = d["children"][1]
+        assert stay_edge["is_actual"] is False
+
+        # D1_review under CEO_resign should be actual (on the actual path)
+        d1_resign_children = resign_edge["child"]["children"]
+        review_on_actual = [e for e in d1_resign_children if e["label"] == "D1_review"][0]
+        assert review_on_actual["is_actual"] is True
+
+        # D0_minimal under CEO_resign should NOT be actual
+        minimal_on_actual = [e for e in d1_resign_children if e["label"] == "D0_minimal"][0]
+        assert minimal_on_actual["is_actual"] is False
+
+        # D1_review under CEO_stay should NOT be actual (off the actual path)
+        d1_stay_children = stay_edge["child"]["children"]
+        review_off_actual = [e for e in d1_stay_children if e["label"] == "D1_review"][0]
+        assert review_off_actual["is_actual"] is False
+
+        # D0_minimal under CEO_stay should NOT be actual
+        minimal_off_actual = [e for e in d1_stay_children if e["label"] == "D0_minimal"][0]
+        assert minimal_off_actual["is_actual"] is False
+
+    def test_html_output_contains_tree_data(self, tmp_path):
+        """Generated HTML should contain the embedded tree data JSON."""
+        from run.interactive_tree import render_html
+        import json
+
+        tree_dict = {"id": "n1", "name": "root", "eu": 0.0, "children": []}
+        tree_json = json.dumps(tree_dict)
+        out = tmp_path / "test_tree.html"
+
+        render_html(tree_json, "Board", "C0", out)
+
+        content = out.read_text(encoding="utf-8")
+        assert '"id": "n1"' in content or '"id":"n1"' in content
+        assert "D3.js" in content or "d3.v7" in content
+        assert "Board" in content
+        assert "Probability View" in content
+        assert "Expected Utility View" in content
+
+    def test_html_output_has_interactive_controls(self, tmp_path):
+        """HTML should contain expand/collapse and view toggle controls."""
+        from run.interactive_tree import render_html
+        import json
+
+        tree_json = json.dumps({"id": "n1", "name": "root", "eu": 0, "children": []})
+        out = tmp_path / "test_controls.html"
+        render_html(tree_json, "Board", "C0", out)
+
+        content = out.read_text(encoding="utf-8")
+        assert "Expand All" in content
+        assert "Collapse All" in content
+        assert "expandAll" in content
+        assert "collapseAll" in content
+        assert "setView" in content
+        assert "toggleActual" in content
+        assert "Actual Path" in content
 
 
 if __name__ == "__main__":

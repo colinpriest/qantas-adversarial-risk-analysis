@@ -33,6 +33,10 @@ FEASIBILITY_RULES = {
     "review_commissioned": lambda s: s.review_commissioned,
     "review_completed": lambda s: s.review_completed,
     "not_reviewed_yet": lambda s: not s.review_commissioned and not s.review_completed,
+    # Phase 6: conditional post-review round (review_adverse AND CEO was present at review)
+    "post_review_round": lambda s: s.post_review_round,
+    "post_review_round_and_CEO_present": lambda s: s.post_review_round and s.CEO_present,
+    "post_review_round_and_review_not_commissioned": lambda s: s.post_review_round and not s.review_commissioned,
 }
 
 
@@ -49,6 +53,9 @@ class DecisionState:
     review_completed: bool = False
     CEO_removed: bool = False
     CEO_resigned_early: bool = False  # CEO resigned before game tree (pre-game scenario)
+    review_adverse: bool = False      # Review findings were adverse (CAR < 0)
+    post_review_round: bool = False   # Phase 6 active: review adverse AND CEO present at review
+    headline_incident: bool = True    # Headline governance incident (activates gamma_AH + crisis floor)
     checkpoint_id: str = "C0"
 
     # Loaded from governance_spec - maps (node_name, action_name) -> feasibility_code
@@ -110,6 +117,16 @@ class DecisionState:
         elif action == "CEO_stay":
             pass  # CEO stays — default state
 
+        # Review outcome transitions (set by R chance node)
+        elif action == "adverse":
+            new.review_adverse = True
+            new.review_completed = True
+            if new.CEO_present:
+                new.post_review_round = True
+        elif action == "no_adverse":
+            new.review_adverse = False
+            new.review_completed = True
+
         return new
 
     def next_node(self, current_node: str) -> Optional[str]:
@@ -149,6 +166,25 @@ class DecisionState:
         if scenario not in action_map:
             raise ValueError(f"Unknown scenario: {scenario!r}")
         return self.apply("D0_ceo", action_map[scenario])
+
+    def to_init_dict(self) -> dict:
+        """Serialize initialization metadata for cross-process transfer."""
+        return {
+            "action_rules": dict(self._action_rules),
+            "node_order": list(self._node_order),
+            "node_owners": dict(self._node_owners),
+            "node_types": dict(self._node_types),
+        }
+
+    @classmethod
+    def from_init_dict(cls, data: dict, checkpoint_id: str = "C0") -> "DecisionState":
+        """Reconstruct from pre-loaded data without file I/O."""
+        state = cls(checkpoint_id=checkpoint_id)
+        state._action_rules = data["action_rules"]
+        state._node_order = data["node_order"]
+        state._node_owners = data["node_owners"]
+        state._node_types = data["node_types"]
+        return state
 
     @classmethod
     def from_governance_spec(cls, path: str | Path, checkpoint_id: str = "C0") -> DecisionState:
@@ -324,9 +360,9 @@ def load_board_overconfidence(path: str | Path) -> dict[str, float]:
             f"d1 bounds must satisfy 0 <= floor < ceiling <= 1, "
             f"got [{params['d1_floor']}, {params['d1_ceiling']}]"
         )
-    if not (-1 <= params["d3_floor"] < params["d3_ceiling"] <= 0):
+    if not (-1 <= params["d3_floor"] < params["d3_ceiling"] <= 1):
         raise ValueError(
-            f"d3 bounds must satisfy -1 <= floor < ceiling <= 0, "
+            f"d3 bounds must satisfy -1 <= floor < ceiling <= 1, "
             f"got [{params['d3_floor']}, {params['d3_ceiling']}]"
         )
     if not (0 < params["sigma_scale"] <= 1):
@@ -363,6 +399,7 @@ class BeliefBundle:
         # Load vote model parameters (may or may not exist in all checkpoints)
         self.alpha_vote = data["alpha_vote"] if "alpha_vote" in data else np.zeros(self.N)
         self.gamma_A = data["gamma_A"] if "gamma_A" in data else np.zeros(self.N)
+        self.gamma_AH = data["gamma_AH"] if "gamma_AH" in data else np.zeros(self.N)
         self.gamma_D = data["gamma_D"] if "gamma_D" in data else np.zeros(self.N)
         self.sigma_vote = data["sigma_vote"] if "sigma_vote" in data else np.ones(self.N) * 0.5
 
@@ -381,7 +418,7 @@ class BeliefBundle:
 
         # Validate lengths
         arrays = [self.B_mkt, self.B_mgmt, self.alpha_vote,
-                  self.gamma_A, self.gamma_D, self.sigma_vote,
+                  self.gamma_A, self.gamma_AH, self.gamma_D, self.sigma_vote,
                   self.review_param_1, self.review_param_2]
         for arr in arrays:
             if len(arr) != self.N:
@@ -398,11 +435,44 @@ class BeliefBundle:
             "B_mgmt": float(self.B_mgmt[i]),
             "alpha_vote": float(self.alpha_vote[i]),
             "gamma_A": float(self.gamma_A[i]),
+            "gamma_AH": float(self.gamma_AH[i]),
             "gamma_D": float(self.gamma_D[i]),
             "sigma_vote": float(self.sigma_vote[i]),
             "review_param_1": float(self.review_param_1[i]),
             "review_param_2": float(self.review_param_2[i]),
         }
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for cross-process transfer (no file I/O on deserialize)."""
+        return {
+            "B_mkt": self.B_mkt,
+            "B_mgmt": self.B_mgmt,
+            "alpha_vote": self.alpha_vote,
+            "gamma_A": self.gamma_A,
+            "gamma_AH": self.gamma_AH,
+            "gamma_D": self.gamma_D,
+            "sigma_vote": self.sigma_vote,
+            "review_param_1": self.review_param_1,
+            "review_param_2": self.review_param_2,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BeliefBundle":
+        """Reconstruct from dict without file I/O."""
+        obj = object.__new__(cls)
+        obj.B_mkt = data["B_mkt"]
+        obj.B_mgmt = data["B_mgmt"]
+        obj.N = len(obj.B_mkt)
+        obj.alpha_vote = data["alpha_vote"]
+        obj.gamma_A = data["gamma_A"]
+        obj.gamma_AH = data["gamma_AH"]
+        obj.gamma_D = data["gamma_D"]
+        obj.sigma_vote = data["sigma_vote"]
+        obj.review_param_1 = data["review_param_1"]
+        obj.review_param_2 = data["review_param_2"]
+        obj.metadata = data.get("metadata", {})
+        return obj
 
 
 # ---------------------------------------------------------------------------
@@ -479,3 +549,14 @@ class ParameterSampler:
             pname for (persp, tgt, pname) in self._priors
             if persp == perspective_actor and tgt == target_actor
         ]
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for cross-process transfer."""
+        return {"priors": self._priors}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ParameterSampler":
+        """Reconstruct from dict without file I/O."""
+        obj = object.__new__(cls)
+        obj._priors = data["priors"]
+        return obj

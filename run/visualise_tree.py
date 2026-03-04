@@ -1,12 +1,18 @@
 """
 Visualise the ARA game tree with annotations from solver results.
 
-Generates two left-to-right tree diagrams:
+Generates two left-to-right tree diagrams from a SINGLE unified tree
+starting at D0_ceo (CEO resign/stay decision):
   1. Probability tree  — edge labels show split probabilities
   2. Expected utility tree — node labels show EU values
 
+The D0_ceo root branches into CEO_resign and CEO_stay, each with the
+full sub-game rooted at D1.  Edge probabilities at D0_ceo come from
+the Bayesian prior Beta(12, 1.5) by default (mean = 88.9% resign),
+or from the full Level-2 ARA prediction with --compute-d0.
+
 Strategy:
-  - Run the solver with small K/R to get EU per initial action quickly
+  - Run the solver for BOTH scenarios to get EU per initial action
   - Build the visual tree by walking game structure with:
     * Fixed policies for decision-node probabilities (instant)
     * Cheap MC sampling for chance-node probabilities
@@ -19,6 +25,7 @@ Node colours:  Board = blue,  ASA = green,  CEO = red,  Nature = grey
 Usage:
     python -m run.visualise_tree --checkpoint C0 --n_draws 5
     python -m run.visualise_tree --checkpoint C3 --focal ASA --n_draws 10
+    python -m run.visualise_tree --compute-d0 --n_draws 5
 """
 
 from __future__ import annotations
@@ -70,10 +77,12 @@ NICE_NODE = {
     "A2": "A2\nASA\nStrike Rec.",
     "V": "V\nShareholder\nVote",
     "M_agm": "M_agm\nMarket (AGM)",
+    "D4": "D4\nCEO\nResponse",
     "D_rev": "D_rev\nBoard\nReview Resp.",
     "R": "R\nReview\nFindings",
     "M_rev": "M_rev\nMarket (Rev.)",
-    "D4": "D4\nCEO\nResponse",
+    "D4_post_review": "D4'\nCEO\nPost-Review",
+    "D_rev_post_review": "D_rev'\nBoard\nPost-Review",
     "Terminal": "Terminal",
 }
 NICE_EDGE = {
@@ -159,7 +168,7 @@ def _terminal_eu(history, state, focal, weights):
     return compute_utility(focal, outcome, weights)
 
 
-# ── Tree builder (uses fixed policies — no ARA recursion) ──────────
+# ── Subtree builder (uses fixed policies — no ARA recursion) ────────
 
 def _sample_policy_probs(pred, owner, node_name, history, state, feasible,
                          n, seed):
@@ -175,16 +184,41 @@ def _sample_policy_probs(pred, owner, node_name, history, state, feasible,
         a: 1.0 / len(feasible) for a in feasible}
 
 
-def build_viz_tree(
+def _sample_ara_probs(pred, node_name, history, state, focal, mode, n, seed):
+    """Compute path-conditioned ARA predictive distribution.
+
+    For post-chance opponent nodes (D4, D_rev, etc.), the ARA predictive
+    depends on the vote result which is in history. Averages over n
+    belief draws for a representative estimate.
+    """
+    agg = {}
+    for i in range(min(n, 5)):
+        rng = np.random.default_rng(seed + i + 5000)
+        d_i = pred.predict(
+            node_name, history, state, i, focal, mode,
+            mode.level, rng,
+        )
+        for a, p in d_i.items():
+            agg[a] = agg.get(a, 0.0) + p
+    total = sum(agg.values())
+    if total == 0:
+        feasible = state.feasible_actions(node_name)
+        return {a: 1.0 / len(feasible) for a in feasible}
+    return {a: v / total for a, v in agg.items()}
+
+
+def _build_scenario_subtree(
     solver: Solver,
     result: SolveResult,
     focal: str,
     checkpoint_id: str,
     mode: ModeConfig,
     bias: Optional[OverconfidenceBias],
-    n_mc: int = 200,
-    scenario: str = "ceo_stayed",
+    n_mc: int,
+    scenario: str,
+    ctr: list[int],
 ) -> VizNode:
+    """Build the subtree from D1 onward for a single scenario."""
     cp_path = solver._find_checkpoint(checkpoint_id)
     beliefs = BeliefBundle(cp_path)
     chance = ChanceModels(solver.vote_thresholds)
@@ -201,19 +235,16 @@ def build_viz_tree(
         K=20, R_rollouts=5, overconfidence_bias=bias,
     )
 
-    # Index solver predictive dists: result.predictive_dists is
-    #   {d1_action: {"A2 (ASA)": {action: prob}, "D4 (CEO)": ...}}
-    # Flatten to {(d1_action, node_name_prefix): {action: prob}}
+    # Index solver predictive dists
     _solver_preds = {}
     for d1_act, node_dists in result.predictive_dists.items():
         for node_label, dist in node_dists.items():
-            # node_label is e.g. "A2 (ASA)" — extract "A2"
             node_key = node_label.split(" ")[0]
             _solver_preds[(d1_act, node_key)] = dist
 
-    _ctr = [0]
     def _nid():
-        _ctr[0] += 1; return f"n{_ctr[0]}"
+        ctr[0] += 1
+        return f"n{ctr[0]}"
 
     def _walk(node_name, history, state, depth):
         ntype = state.node_type(node_name) if node_name else "terminal"
@@ -228,12 +259,12 @@ def build_viz_tree(
         if ntype == "decision":
             feasible = state.feasible_actions(node_name)
             if not feasible:
-                child = _walk(state.next_node(node_name), history, state, depth)
-                nd.children.append(("(skip)", 1.0, child))
-                return nd
+                # No feasible actions (e.g. D4 when CEO already resigned/sacked)
+                # Skip this node entirely and proceed to next
+                return _walk(state.next_node(node_name), history, state, depth)
 
             if node_name == "D1" and depth == 0:
-                # Root: use solver EU values directly
+                # Root of subtree: use solver EU values directly
                 best = result.optimal_action
                 for a in feasible:
                     h = dict(history); h[node_name] = a
@@ -244,16 +275,23 @@ def build_viz_tree(
                 nd.eu = result.optimal_EU
 
             elif not mode.is_focal(owner):
-                # Opponent node: use solver's predictive distributions
-                # if available, otherwise sample the fixed policy many times
                 d1_act = history.get("D1", "D0_minimal")
-                solver_dist = _solver_preds.get((d1_act, node_name))
+                # Pre-chance nodes (D0_ceo, A2): use solver predictive dists
+                # (unconditional on vote/review outcomes — valid before V).
+                # Post-chance nodes (D4, D_rev, etc.): use path-conditioned
+                # ARA predictive — the correct answer depends on the vote
+                # result which is in the history at this point.
+                _pre_chance_nodes = {"D0_ceo", "A2"}
+                solver_dist = None
+                if node_name in _pre_chance_nodes:
+                    solver_dist = _solver_preds.get((d1_act, node_name))
                 if solver_dist:
                     probs = solver_dist
                 else:
-                    probs = _sample_policy_probs(
-                        pred, owner, node_name, history, state,
-                        feasible, n_mc, seed)
+                    # Path-conditioned ARA predictive: K=30, R=5 for speed
+                    probs = _sample_ara_probs(
+                        pred, node_name, history, state,
+                        focal, mode, n_mc, seed)
                 for a in feasible:
                     h = dict(history); h[node_name] = a
                     s = state.apply(node_name, a)
@@ -261,15 +299,20 @@ def build_viz_tree(
                     nd.children.append((a, probs.get(a, 0.0), child))
 
             else:
-                # Deeper focal node: sample fixed policy many times
-                probs = _sample_policy_probs(
-                    pred, owner, node_name, history, state,
-                    feasible, n_mc, seed)
+                # Focal decision node: build children first, then assign
+                # 100% probability to the action with the highest EU.
+                child_data = []
                 for a in feasible:
                     h = dict(history); h[node_name] = a
                     s = state.apply(node_name, a)
                     child = _walk(s.next_node(node_name), h, s, depth + 1)
-                    nd.children.append((a, probs.get(a, 0.0), child))
+                    child_data.append((a, child))
+
+                # Find action with best EU among children
+                best_action = max(child_data, key=lambda x: x[1].eu)[0]
+                for a, child in child_data:
+                    p = 1.0 if a == best_action else 0.0
+                    nd.children.append((a, p, child))
 
         elif ntype == "chance":
             if node_name in ("M_agm", "M_rev"):
@@ -299,7 +342,6 @@ def build_viz_tree(
                     h["R"] = "review"; h["R_adverse"] = False
                     h["R_car"] = 0.0
                     sc = state.apply("R", "no_adverse")
-                    sc.review_completed = True
                     child = _walk(state.next_node("R"), h, sc, depth + 1)
                     nd.children.append(("No review", 1.0, child))
                 else:
@@ -316,7 +358,6 @@ def build_viz_tree(
                         h["R_car"] = car
                         s = state.apply(
                             "R", "adverse" if adv else "no_adverse")
-                        s.review_completed = True
                         child = _walk(
                             state.next_node("R"), h, s, depth + 1)
                         nd.children.append((lbl, pr, child))
@@ -329,15 +370,29 @@ def build_viz_tree(
     def _bp(nd):
         if not nd.children:
             return nd.eu
-        total = 0.0
+        # Recurse into all children first so their EUs are correct
         for _, p, ch in nd.children:
             _bp(ch)
-            total += p * ch.eu
-        if nd.node_name == "D1":
-            # Keep solver EU at root
-            pass
-        elif nd.eu == 0.0:
-            nd.eu = total
+
+        # Focal decision nodes (except D1 root): reassign probabilities
+        # based on now-correct child EUs.  _walk() couldn't do this because
+        # child EUs were still 0.0 at tree-construction time.
+        if (nd.node_type == "decision" and mode.is_focal(nd.owner)
+                and nd.node_name != "D1"):
+            best_idx = max(range(len(nd.children)),
+                           key=lambda i: nd.children[i][2].eu)
+            nd.children = [
+                (label, 1.0 if i == best_idx else 0.0, child)
+                for i, (label, _, child) in enumerate(nd.children)
+            ]
+            nd.eu = nd.children[best_idx][2].eu
+        else:
+            total = sum(p * ch.eu for _, p, ch in nd.children)
+            if nd.node_name == "D1":
+                pass  # Keep solver EU at root
+            elif nd.eu == 0.0:
+                nd.eu = total
+
         return nd.eu
     _bp(root)
 
@@ -345,6 +400,61 @@ def build_viz_tree(
     for action, _, child in root.children:
         if action in result.EU_per_action:
             child.eu = result.EU_per_action[action]
+
+    return root
+
+
+def build_unified_tree(
+    solver: Solver,
+    results: dict[str, SolveResult],
+    focal: str,
+    checkpoint_id: str,
+    mode: ModeConfig,
+    bias: Optional[OverconfidenceBias],
+    n_mc: int = 200,
+    d0_probs: Optional[dict[str, float]] = None,
+) -> VizNode:
+    """Build a unified tree starting at D0_ceo with both scenario subtrees."""
+    ctr = [0]
+
+    def _nid():
+        ctr[0] += 1
+        return f"n{ctr[0]}"
+
+    # D0_ceo root
+    root = VizNode(_nid(), "D0_ceo", "decision", "CEO")
+
+    # D0_ceo edge probabilities
+    if d0_probs is None:
+        alpha = solver.ceo_departure_prior_alpha
+        beta = solver.ceo_departure_prior_beta
+        d0_probs = {
+            "CEO_resign": alpha / (alpha + beta),
+            "CEO_stay": beta / (alpha + beta),
+        }
+
+    # Build subtree for each scenario
+    scenario_map = {
+        "CEO_resign": "ceo_resigned",
+        "CEO_stay": "ceo_stayed",
+    }
+
+    for action in ["CEO_resign", "CEO_stay"]:
+        scenario = scenario_map[action]
+        result = results.get(scenario)
+        if result is None:
+            continue
+
+        subtree = _build_scenario_subtree(
+            solver, result, focal, checkpoint_id, mode, bias,
+            n_mc, scenario, ctr,
+        )
+
+        prob = d0_probs.get(action, 0.5)
+        root.children.append((action, prob, subtree))
+
+    # D0_ceo EU = weighted sum of subtree EUs
+    root.eu = sum(p * ch.eu for _, p, ch in root.children)
 
     return root
 
@@ -400,10 +510,14 @@ def main():
     p.add_argument("--n_mc", type=int, default=200,
                    help="MC samples for chance-node probabilities")
     p.add_argument("--no-bias", action="store_true")
-    p.add_argument("--scenario", default="both",
-                   choices=["ceo_stayed", "ceo_resigned", "both"],
-                   help="Pre-game CEO resignation scenario (default: both)")
+    p.add_argument("--compute-d0", action="store_true",
+                   help="Compute D0_ceo probabilities via full Level-2 ARA "
+                        "(slow). Default: use Bayesian prior Beta(12, 1.5).")
     p.add_argument("--format", default="png", choices=["png", "svg", "pdf"])
+    p.add_argument("--interactive", action="store_true",
+                   help="Generate interactive HTML tree (D3.js)")
+    p.add_argument("--actual-outcomes", type=str, default=None,
+                   help="Path to actual outcomes JSON config (for red lines in interactive mode)")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
@@ -425,41 +539,80 @@ def main():
     )
     bias = None if args.no_bias else solver.overconfidence_bias
 
-    scenarios = (["ceo_stayed", "ceo_resigned"] if args.scenario == "both"
-                 else [args.scenario])
-
-    for scenario in scenarios:
-        # Step 1: run solver (fast with policy mode + small K/R)
+    # Solve both scenarios
+    results = {}
+    for scenario in ["ceo_stayed", "ceo_resigned"]:
         logger.info(f"Solving: {args.focal}, {args.checkpoint}, scenario={scenario}, n={args.n_draws}")
         result = solver.solve(
             focal_actor=args.focal, checkpoint_id=args.checkpoint,
             mode=mode, n_draws=args.n_draws, overconfidence_bias=bias,
             scenario=scenario,
         )
+        results[scenario] = result
         result.print_diagnostics()
 
-        # Step 2: build visual tree (instant — fixed policies + MC)
-        logger.info("Building visual tree…")
-        root = build_viz_tree(
-            solver, result, args.focal, args.checkpoint, mode, bias,
-            n_mc=args.n_mc, scenario=scenario,
+    # D0_ceo probabilities
+    d0_probs = None
+    if args.compute_d0:
+        logger.info("Computing D0_ceo via Level-2 ARA (this takes a while)...")
+        d0_probs = solver.predict_d0_ceo(
+            focal_actor=args.focal,
+            checkpoint_id=args.checkpoint,
+            n_draws=args.n_draws,
+            overconfidence_bias=bias,
+        )
+        logger.info(f"D0_ceo ARA prediction: {d0_probs}")
+    else:
+        alpha = solver.ceo_departure_prior_alpha
+        beta = solver.ceo_departure_prior_beta
+        d0_probs = {
+            "CEO_resign": alpha / (alpha + beta),
+            "CEO_stay": beta / (alpha + beta),
+        }
+        logger.info(
+            f"D0_ceo from Bayesian prior Beta({alpha},{beta}): "
+            f"resign={d0_probs['CEO_resign']:.1%}, stay={d0_probs['CEO_stay']:.1%}"
         )
 
-        tag = f"{args.focal}_{args.checkpoint}_{scenario}"
+    # Build unified tree
+    logger.info("Building unified tree from D0_ceo...")
+    root = build_unified_tree(
+        solver, results, args.focal, args.checkpoint, mode, bias,
+        n_mc=args.n_mc, d0_probs=d0_probs,
+    )
 
-        # Step 3: render
-        render_tree(root,
-                    title=f"Game Tree — Probabilities  ({args.focal}, {args.checkpoint}, {scenario})",
-                    diagram_mode="prob",
-                    output_path=str(out / f"tree_prob_{tag}"), fmt=args.format)
-        render_tree(root,
-                    title=f"Game Tree — Expected Utility  ({args.focal}, {args.checkpoint}, {scenario})",
-                    diagram_mode="eu",
-                    output_path=str(out / f"tree_eu_{tag}"), fmt=args.format)
+    tag = f"{args.focal}_{args.checkpoint}"
 
-        print(f"\nDone. Diagrams for scenario '{scenario}' in {out}/")
-        print(f"  tree_prob_{tag}.{args.format}")
-        print(f"  tree_eu_{tag}.{args.format}")
+    # Render
+    render_tree(root,
+                title=f"Game Tree — Probabilities  ({args.focal}, {args.checkpoint})",
+                diagram_mode="prob",
+                output_path=str(out / f"tree_prob_{tag}"), fmt=args.format)
+    render_tree(root,
+                title=f"Game Tree — Expected Utility  ({args.focal}, {args.checkpoint})",
+                diagram_mode="eu",
+                output_path=str(out / f"tree_eu_{tag}"), fmt=args.format)
+
+    print(f"\nDone. Diagrams in {out}/")
+    print(f"  tree_prob_{tag}.{args.format}")
+    print(f"  tree_eu_{tag}.{args.format}")
+
+    # Interactive HTML
+    if args.interactive:
+        from run.interactive_tree import render_interactive_tree
+        actual_path = args.actual_outcomes or str(data / "actual_outcomes.json")
+        html_path = render_interactive_tree(
+            root=root,
+            results=results,
+            focal=args.focal,
+            checkpoint_id=args.checkpoint,
+            actual_outcomes_path=actual_path,
+            output_dir=out,
+            d0_probs=d0_probs,
+        )
+        print(f"  {html_path.name}")
+
+    print(f"\nD0_ceo: resign={d0_probs['CEO_resign']:.1%}, stay={d0_probs['CEO_stay']:.1%}")
 
 
 if __name__ == "__main__":

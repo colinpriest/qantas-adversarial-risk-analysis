@@ -1,0 +1,23 @@
+{
+    "_comment": "Actual historical outcomes from the 2023 Qantas AGM governance crisis",
+    "_source": "Public records: ASX announcements, media reports, AGM minutes",
+    "D0_ceo": "CEO_resign",
+    "D1": "D1_review",
+    "A2": "A2_rec_strike",
+    "V": "strike_overwhelming",
+    "V_details": {
+        "vote_percent": 0.8293,
+        "strike_indicator": true,
+        "overwhelming_indicator": true
+    },
+    "M_agm": "market_reaction",
+    "D_rev": "Drev_no_action",
+    "R": "adverse",
+    "R_details": {
+        "review_adverse": true
+    },
+    "M_rev": "market_reaction",
+    "D4": null,
+    "D4_post_review": null,
+    "D_rev_post_review": null
+}

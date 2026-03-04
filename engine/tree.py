@@ -47,9 +47,10 @@ class TreeEvaluator:
             n_vote_samples: Monte Carlo samples for vote integration.
             n_review_samples: Monte Carlo samples for review integration.
             overconfidence_bias: Optional bias on governance effect estimates.
-                When set, the focal actor's EU calculation uses biased
-                governance effects (overestimation/overprecision), while
-                rollout simulations use unbiased effects.
+                When set, both the focal actor's EU calculation and
+                rollout simulations in the predictive distribution use
+                biased governance effects (overestimation/overprecision),
+                producing self-consistent decision-making under cognitive bias.
         """
         self.beliefs = beliefs
         self.chance_models = chance_models
@@ -265,6 +266,14 @@ class TreeEvaluator:
         if self.overconfidence_bias is not None:
             bias_sigma_scale = self.overconfidence_bias.sigma_scale
 
+        # Structural floor for crisis scenarios (shareholder-vote-V2.md §1.4).
+        # Drawn ONCE per belief draw (epistemic): represents the minimum
+        # opposition that a headline incident generates, not per-vote noise.
+        # V_floor ~ Beta(50, 150): mean 0.25, 90% mass in [0.22, 0.28].
+        crisis_floor = None
+        if state.headline_incident:
+            crisis_floor = float(rng.beta(50, 150))
+
         total = 0.0
         for _ in range(self.n_vote_samples):
             s_rng = np.random.default_rng(rng.integers(0, 2**32))
@@ -272,6 +281,7 @@ class TreeEvaluator:
                 draw_i, self.beliefs, history, state, s_rng,
                 governance_effect=gov_effect,
                 sigma_scale=bias_sigma_scale,
+                crisis_floor=crisis_floor,
             )
 
             h = dict(history)
@@ -313,7 +323,6 @@ class TreeEvaluator:
             h["R_car"] = 0.0
             h["R_direct_cost"] = 0.0
             s_copy = state.apply("R", "no_adverse")
-            s_copy.review_completed = True
             next_node = state.next_node("R")
             return self.value(next_node, h, s_copy, draw_i, mode, rng, utility_target)
 
@@ -321,12 +330,20 @@ class TreeEvaluator:
         # Gamma(4.55, 4741) in decimal CAR — fees, distraction, internal resources.
         review_direct_cost = self.chance_models.sample_review_direct_cost(rng)
 
+        # Draw adverse probability ONCE per belief draw (epistemic).
+        # p_adverse ~ Beta(10, 5) from Dirichlet(5,5,5) grouping neg+neutral.
+        # See external-governance-review-Bayesian-distribution.md §4.2.
+        p_adverse = self.chance_models.review.draw_adverse_probability(
+            rng, bias=self.overconfidence_bias
+        )
+
         total = 0.0
         for _ in range(self.n_review_samples):
             s_rng = np.random.default_rng(rng.integers(0, 2**32))
             review_out = self.chance_models.sample_review(
                 draw_i, self.beliefs, history, state, s_rng,
                 bias=self.overconfidence_bias,
+                p_adverse=p_adverse,
             )
 
             h = dict(history)
@@ -336,7 +353,6 @@ class TreeEvaluator:
             h["R_direct_cost"] = review_direct_cost
 
             s = state.apply("R", "adverse" if review_out.review_adverse else "no_adverse")
-            s.review_completed = True
 
             next_node = state.next_node("R")
             total += self.value(next_node, h, s, draw_i, mode, s_rng, utility_target)

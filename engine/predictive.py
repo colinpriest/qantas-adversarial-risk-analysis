@@ -40,6 +40,8 @@ class PredictiveDistribution:
         K: int = 200,
         R_rollouts: int = 20,
         overconfidence_bias: Optional[OverconfidenceBias] = None,
+        K_nested: Optional[int] = None,
+        R_nested: Optional[int] = None,
     ):
         self.beliefs = beliefs
         self.param_sampler = param_sampler
@@ -48,6 +50,17 @@ class PredictiveDistribution:
         self.K = K
         self.R_rollouts = R_rollouts
         self.overconfidence_bias = overconfidence_bias
+        # Lighter-weight settings for recursive Level-2 predictions to avoid
+        # quadratic explosion (K * R inside every nested rollout).
+        # Default: downscale to something modest if not explicitly provided.
+        self.K_nested = (
+            K_nested if K_nested is not None
+            else max(5, min(10, K // 2))
+        )
+        self.R_nested = (
+            R_nested if R_nested is not None
+            else max(2, min(5, R_rollouts))
+        )
 
     def predict(
         self,
@@ -59,12 +72,16 @@ class PredictiveDistribution:
         mode: ModeConfig,
         level: int,
         rng: np.random.Generator,
+        use_nested: bool = False,
     ) -> dict[str, float]:
         """
         Compute predictive distribution over opponent's action at node_name.
 
         Returns dict mapping action_name -> probability.
         """
+        # Use reduced K/R when this call is part of a recursive Level-2 rollout.
+        K_eff = self.K_nested if use_nested else self.K
+        R_eff = self.R_nested if use_nested else self.R_rollouts
         owner = state.node_owner(node_name)
         feasible = state.feasible_actions(node_name)
 
@@ -76,7 +93,7 @@ class PredictiveDistribution:
 
         counts = {a: 0 for a in feasible}
 
-        for k in range(self.K):
+        for k in range(K_eff):
             k_rng = np.random.default_rng(rng.integers(0, 2**32))
 
             # Sample opponent parameters from focal's beliefs
@@ -103,6 +120,7 @@ class PredictiveDistribution:
                     mode=mode,
                     level=level,
                     rng=k_rng,
+                    R_rollouts=R_eff,
                 )
                 if psi > best_value:
                     best_value = psi
@@ -133,6 +151,7 @@ class PredictiveDistribution:
         mode: ModeConfig,
         level: int,
         rng: np.random.Generator,
+        R_rollouts: Optional[int] = None,
     ) -> float:
         """
         Compute Psi_j(x; h, Theta_j) via stochastic rollouts.
@@ -141,8 +160,9 @@ class PredictiveDistribution:
         for other actors, and returns average utility for the owner.
         """
         total_utility = 0.0
+        R = R_rollouts or self.R_rollouts
 
-        for r in range(self.R_rollouts):
+        for r in range(R):
             r_rng = np.random.default_rng(rng.integers(0, 2**32))
 
             # Apply the forced action
@@ -166,7 +186,7 @@ class PredictiveDistribution:
 
             total_utility += compute_utility(owner, outcome, theta_j)
 
-        return total_utility / self.R_rollouts
+        return total_utility / R
 
     def _simulate_forward(
         self,
@@ -202,19 +222,29 @@ class PredictiveDistribution:
                     bias_sigma_scale = None
                     if self.overconfidence_bias is not None:
                         bias_sigma_scale = self.overconfidence_bias.sigma_scale
+                    # Crisis floor (one draw per rollout — epistemic)
+                    crisis_floor = None
+                    if s.headline_incident:
+                        crisis_floor = float(rng.beta(50, 150))
                     vote_out = self.chance_models.sample_vote(
                         draw_i, self.beliefs, h, s, rng,
                         governance_effect=gov_effect,
                         sigma_scale=bias_sigma_scale,
+                        crisis_floor=crisis_floor,
                     )
                     h["V"] = "vote"
                     h["V_percent"] = vote_out.vote_percent
                     h["V_strike"] = vote_out.strike_indicator
                     h["V_overwhelming"] = vote_out.overwhelming_indicator
                 elif current_node == "R":
+                    # Draw p_adverse once per rollout (epistemic)
+                    p_adverse = self.chance_models.review.draw_adverse_probability(
+                        rng, bias=self.overconfidence_bias
+                    )
                     review_out = self.chance_models.sample_review(
                         draw_i, self.beliefs, h, s, rng,
                         bias=self.overconfidence_bias,
+                        p_adverse=p_adverse,
                     )
                     h["R"] = "review"
                     h["R_adverse"] = review_out.review_adverse
@@ -223,9 +253,7 @@ class PredictiveDistribution:
                         self.chance_models.sample_review_direct_cost(rng)
                         if s.review_commissioned else 0.0
                     )
-                    if review_out.review_adverse:
-                        s = s.apply("R", "adverse")
-                    s.review_completed = True
+                    s = s.apply("R", "adverse" if review_out.review_adverse else "no_adverse")
                 elif current_node in ("M_agm", "M_rev"):
                     # Market reaction nodes - pass through
                     h[current_node] = "market_reaction"
@@ -251,6 +279,7 @@ class PredictiveDistribution:
                         mode=mode,
                         level=level - 1,
                         rng=rng,
+                        use_nested=True,
                     )
                     action = self._sample_from_dist(pred, rng)
                 else:
@@ -279,13 +308,13 @@ class PredictiveDistribution:
         if not feasible:
             raise ValueError(f"No feasible actions for {actor} at {node_name}")
 
-        if actor == "Board" and node_name == "D_rev":
+        if actor == "Board" and node_name in ("D_rev", "D_rev_post_review"):
             vote_pct = history.get("V_percent", 0.0)
             review_thresh = self.policy_params.get(
-                ("Board", "D_rev", "review_vote_threshold"), 0.25
+                ("Board", node_name, "review_vote_threshold"), 0.25
             )
             sack_thresh = self.policy_params.get(
-                ("Board", "D_rev", "sack_vote_threshold"), 0.50
+                ("Board", node_name, "sack_vote_threshold"), 0.25
             )
             if vote_pct >= sack_thresh and "Drev_sack_ceo" in feasible:
                 return "Drev_sack_ceo"
@@ -298,45 +327,58 @@ class PredictiveDistribution:
             # Default fixed policy: CEO stays (conservative).
             return "CEO_stay" if "CEO_stay" in feasible else feasible[0]
 
-        elif actor == "CEO" and node_name == "D4":
+        elif actor == "CEO" and node_name in ("D4", "D4_post_review"):
             vote_pct = history.get("V_percent", 0.0)
             resign_thresh = self.policy_params.get(
-                ("CEO", "D4", "resign_vote_threshold"), 0.40
+                ("CEO", node_name, "resign_vote_threshold"), 0.40
             )
             if vote_pct >= resign_thresh and "D4_resign" in feasible:
                 return "D4_resign"
             return "D4_stay" if "D4_stay" in feasible else feasible[0]
 
         elif actor == "ASA" and node_name == "A2":
-            # ASA recommendation conditioned on Board's D1 action.
-            # Empirical data from data/ranked_voting_recommendations.csv:
-            #   Rank 0 (D0): n=24, k=22 Against  (point est 91.7%)
-            #   Rank 1 (D1): n=8,  k=5  Against  (point est 62.5%)
-            #   Rank 2 (D3): n=4,  k=4  Against  (point est 100.0%)
+            # ASA recommendation — informative Beta prior from
+            # background/asa/asa-informative-prior.md.
             #
-            # Small samples → use Beta-Binomial posterior to propagate
-            # parameter uncertainty. Prior: Beta(1, 1) (uniform/Laplace).
-            # Posterior: Beta(k+1, n-k+1).
-            #   Rank 0: Beta(23, 3) — posterior mean 0.885, tight
-            #   Rank 1: Beta(6, 4)  — posterior mean 0.600, wide
-            #   Rank 2: Beta(5, 1)  — posterior mean 0.833, wide
+            # Source: ranked_voting_recommendations.csv, headline_incident=1 only.
+            # Qantas (QAN, 2023) excluded. Pooled observed rate: 14/15 = 0.933.
+            #
+            # Key finding: ASA recommendation is near-automatic given a headline
+            # incident. Board action (review, CEO replacement) plausibly affects the
+            # shareholder vote, but NOT the ASA recommendation — the data provide no
+            # statistical evidence for a board-action effect at the recommendation
+            # stage. The three Beta distributions are nearly identical; separation is
+            # a modelling convention, not a data-driven estimate.
+            #
+            # Monotonic decreasing by board accountability level (convention):
+            #   Board Action 0 — Do nothing          : Beta(46, 4)  mean=0.920
+            #   Board Action 1 — Review or CEO resigns: Beta(44, 4)  mean=0.917
+            #   Board Action 2 — Sack CEO             : Beta(43, 4)  mean=0.914
+            #
+            # All 90% CIs are entirely above 0.84.
+            #
+            # At A2 the knowable board actions are:
+            #   D3_ceo_transition → "Sack CEO"
+            #   D1_review         → "Review"    (Board Action 1)
+            #   CEO_resigned_early→ "CEO resigns" (Board Action 1)
+            #   D0_minimal        → "Do nothing" (Board Action 0)
             d1_action = history.get("D1", "D0_minimal")
+            ceo_resigned_early = history.get("D0_ceo") == "CEO_resign"
 
             if rng is None:
-                # No rng: fall back to posterior means
-                p_map = {"D3_ceo_transition": 5/6, "D1_review": 6/10}
+                # No rng: MAP — all means > 0.90, always recommend strike
                 return "A2_rec_strike" if "A2_rec_strike" in feasible else feasible[0]
 
-            # Sample p_strike from Beta posterior, then flip
+            # Two-stage Beta-Binomial: sample p_strike from informative prior
             if d1_action == "D3_ceo_transition":
-                # Rank 2: Beta(5, 1) — n=4, k=4. Posterior mean 0.833.
-                p_strike = rng.beta(5, 1)
-            elif d1_action == "D1_review":
-                # Rank 1: Beta(6, 4) — n=8, k=5. Posterior mean 0.600.
-                p_strike = rng.beta(6, 4)
+                # Board Action 2 — Sack CEO: Beta(43, 4) mean=0.914
+                p_strike = rng.beta(43, 4)
+            elif d1_action == "D1_review" or ceo_resigned_early:
+                # Board Action 1 — Review or CEO resigns: Beta(44, 4) mean=0.917
+                p_strike = rng.beta(44, 4)
             else:
-                # Rank 0: Beta(23, 3) — n=24, k=22. Posterior mean 0.885.
-                p_strike = rng.beta(23, 3)
+                # Board Action 0 — Do nothing: Beta(46, 4) mean=0.920
+                p_strike = rng.beta(46, 4)
 
             if rng.random() >= p_strike:
                 return "A2_no_strike" if "A2_no_strike" in feasible else feasible[0]
@@ -379,6 +421,8 @@ class PredictiveDistribution:
             a2_action=history.get("A2", "A2_no_strike"),
             d_rev_action=history.get("D_rev", "Drev_no_action"),
             d4_action=history.get("D4", "D4_stay"),
+            d4_post_review_action=history.get("D4_post_review", "D4_stay"),
+            d_rev_post_review_action=history.get("D_rev_post_review", "Drev_no_action"),
             vote_percent=history.get("V_percent", 0.0),
             strike_indicator=history.get("V_strike", False),
             overwhelming_indicator=history.get("V_overwhelming", False),

@@ -23,8 +23,16 @@ desktop.ini
 # Generated outputs (regenerate via run scripts)
 outputs/
 
-# IDE
+# IDE / AI tool config
 .vscode/
 .idea/
+.codex/
+.cursor/
 *.swp
 *.swo
+
+# Secrets
+.env
+
+# Windows artifacts
+nul

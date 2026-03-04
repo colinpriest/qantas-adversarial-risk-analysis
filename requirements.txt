@@ -2,3 +2,10 @@ numpy>=1.20.0
 pandas>=1.3.0
 openpyxl>=3.0.0
 cmdstanpy>=1.0.0
+
+# Interactive HTML tree visualisation with LLM commentary
+instructor>=1.0.0
+openai>=1.0.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+tqdm>=4.0.0

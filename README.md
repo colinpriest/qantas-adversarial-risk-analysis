@@ -95,40 +95,46 @@ python -m pytest tests/test_engine.py -v
 
 Computes Board's optimal governance reform at D1 under strategic uncertainty about ASA and CEO responses.
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--checkpoint` | `C0` | Belief checkpoint (Cpre, C0–C3) |
-| `--all_checkpoints` | off | Run all checkpoints |
-| `--scenario` | `both` | Pre-game CEO scenario: `ceo_stayed`, `ceo_resigned`, or `both` |
-| `--n_draws` | `100` | Number of belief posterior draws |
-| `--K` | `200` | Opponent parameter samples per prediction |
-| `--R_rollouts` | `20` | Rollouts per opponent action evaluation |
-| `--level` | `1` | Opponent modelling depth (1 or 2) |
-| `--asa_policy` | off | Use empirical fixed policy for ASA instead of ARA |
-| `--no-bias-board` | off | Disable Board overconfidence bias (counterfactual: accurate self-assessment) |
-| `--seed` | `42` | Random seed |
-| `--output` | `outputs/board_mode_results.csv` | Output path |
+
+| Argument            | Default                          | Description                                                                  |
+| ------------------- | -------------------------------- | ---------------------------------------------------------------------------- |
+| `--checkpoint`      | `C0`                             | Belief checkpoint (Cpre, C0–C3)                                              |
+| `--all_checkpoints` | off                              | Run all checkpoints                                                          |
+| `--scenario`        | `both`                           | Pre-game CEO scenario: `ceo_stayed`, `ceo_resigned`, or `both`               |
+| `--n_draws`         | `100`                            | Number of belief posterior draws                                             |
+| `--K`               | `200`                            | Opponent parameter samples per prediction                                    |
+| `--R_rollouts`      | `20`                             | Rollouts per opponent action evaluation                                      |
+| `--level`           | `2`                              | Opponent modelling depth (1 or 2)                                            |
+| `--asa_policy`      | off                              | Use empirical fixed policy for ASA instead of ARA                            |
+| `--no-bias-board`   | off                              | Disable Board overconfidence bias (counterfactual: accurate self-assessment) |
+| `--seed`            | `42`                             | Random seed                                                                  |
+| `--output`          | `outputs/board_mode_results.csv` | Output path                                                                  |
+
 
 ### `run_asa_mode.py` — ASA-Focal Analysis
 
 Same interface as Board mode, with ASA as the focal actor. Additional argument:
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--board_policy` | off | Board uses fixed policy instead of ARA |
+
+| Argument         | Default | Description                            |
+| ---------------- | ------- | -------------------------------------- |
+| `--board_policy` | off     | Board uses fixed policy instead of ARA |
+
 
 ### `sensitivity.py` — Parameter Sensitivity
 
 Sweeps a grid over utility weights (81 combinations by default) and tracks how the optimal action shifts.
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--focal` | `Board` | Focal actor (Board or ASA) |
-| `--checkpoint` | `C0` | Belief checkpoint |
-| `--n_draws` | `20` | Draws per grid point |
-| `--K` | `50` | Opponent samples (reduced for speed) |
-| `--R_rollouts` | `10` | Rollouts (reduced for speed) |
-| `--output` | `outputs/sensitivity_results.csv` | Output path |
+
+| Argument       | Default                           | Description                          |
+| -------------- | --------------------------------- | ------------------------------------ |
+| `--focal`      | `Board`                           | Focal actor (Board or ASA)           |
+| `--checkpoint` | `C0`                              | Belief checkpoint                    |
+| `--n_draws`    | `20`                              | Draws per grid point                 |
+| `--K`          | `50`                              | Opponent samples (reduced for speed) |
+| `--R_rollouts` | `10`                              | Rollouts (reduced for speed)         |
+| `--output`     | `outputs/sensitivity_results.csv` | Output path                          |
+
 
 ## Game Tree
 
@@ -175,32 +181,37 @@ D0_ceo  [CEO: resign or stay?]  (05-Sep-2023)
 
 ### `governance_spec.xlsx` (8 sheets)
 
-| Sheet | Contents |
-|-------|----------|
-| `node_order` | Node sequence, types (decision/chance/terminal), and owners |
-| `action_sets` | Actions per node with feasibility codes |
-| `vote_thresholds` | Strike (25%) and overwhelming (50%) thresholds |
-| `utilities_board` | Board utility weight parameters |
-| `utilities_asa` | ASA utility weight parameters |
-| `utilities_ceo` | CEO utility weight parameters |
-| `policy_parameters` | Fixed Level-1 policy parameters |
+
+| Sheet                  | Contents                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| `node_order`           | Node sequence, types (decision/chance/terminal), and owners                        |
+| `action_sets`          | Actions per node with feasibility codes                                            |
+| `vote_thresholds`      | Strike (25%) and overwhelming (50%) thresholds                                     |
+| `utilities_board`      | Board utility weight parameters                                                    |
+| `utilities_asa`        | ASA utility weight parameters                                                      |
+| `utilities_ceo`        | CEO utility weight parameters                                                      |
+| `policy_parameters`    | Fixed Level-1 policy parameters                                                    |
 | `board_overconfidence` | Board cognitive bias: governance effect bounds + sigma_scale (Saar/Joyce evidence) |
+
 
 ### `opponent_priors.xlsx`
 
 Prior distributions (normal, lognormal, beta, uniform, gamma) for each perspective-target actor pair used in ARA opponent modelling:
+
 - Board's beliefs about ASA and CEO utility parameters
 - ASA's beliefs about Board and CEO utility parameters
 
 ### Belief Checkpoints (`data/checkpoints/`)
 
-| Checkpoint | Date | Event |
-|------------|------|-------|
-| Cpre | 2023-08-31 | ACCC legal action (analysis start date) |
-| C0 | 2023-10-01 | Pre-mobilisation baseline |
-| C1 | 2023-10-10 | Governance review announced |
-| C2 | 2023-10-18 | ASA public mobilisation |
-| C3 | 2023-11-03 | Pre-AGM peak distrust |
+
+| Checkpoint | Date       | Event                                   |
+| ---------- | ---------- | --------------------------------------- |
+| Cpre       | 2023-08-31 | ACCC legal action (analysis start date) |
+| C0         | 2023-10-01 | Pre-mobilisation baseline               |
+| C1         | 2023-10-10 | Governance review announced             |
+| C2         | 2023-10-18 | ASA public mobilisation                 |
+| C3         | 2023-11-03 | Pre-AGM peak distrust                   |
+
 
 Each `.npz` contains 500 posterior draws: `B_mkt`, `B_mgmt`, `alpha_vote`, `gamma_A`, `gamma_D`, `sigma_vote`, `review_param_1`, `review_param_2`.
 
@@ -208,32 +219,36 @@ Each `.npz` contains 500 posterior draws: `B_mkt`, `B_mgmt`, `alpha_vote`, `gamm
 
 ### `state.py` — Game State & Data Loading
 
-- **`DecisionState`** — Tracks `CEO_present`, `review_commissioned`, `review_completed`, `CEO_removed`, `CEO_resigned_early`. Enforces feasibility rules from `governance_spec.xlsx`. Provides `feasible_actions()`, `apply()`, `next_node()`, `for_scenario()`. D0_ceo actions (`CEO_resign`, `CEO_stay`) are handled by `apply()`; `for_scenario()` delegates to it.
-- **`BeliefBundle`** — Loads checkpoint `.npz` files. `get_draw(i)` returns all parameters for draw *i*.
-- **`ParameterSampler`** — Samples opponent utility parameters from priors in `opponent_priors.xlsx`.
+- `**DecisionState`** — Tracks `CEO_present`, `review_commissioned`, `review_completed`, `CEO_removed`, `CEO_resigned_early`. Enforces feasibility rules from `governance_spec.xlsx`. Provides `feasible_actions()`, `apply()`, `next_node()`, `for_scenario()`. D0_ceo actions (`CEO_resign`, `CEO_stay`) are handled by `apply()`; `for_scenario()` delegates to it.
+- `**BeliefBundle**` — Loads checkpoint `.npz` files. `get_draw(i)` returns all parameters for draw *i*.
+- `**ParameterSampler*`* — Samples opponent utility parameters from priors in `opponent_priors.xlsx`.
 
 ### `chance_models.py` — Stochastic Outcomes
 
-- **`VoteModel`** — Vote percentage via logit-normal: `logit(V) ~ N(alpha + B_mkt + gamma_A * strike + gamma_D * reform, sigma)`. ASA strike amplifies opposition; governance reform dampens it. Board overconfidence bias scales sigma down (`sigma_scale < 1`) to model overprecision.
-- **`ReviewModel`** — Adverse finding via `Bernoulli(expit(review_param_1 + adjustments))`, conditional on review being commissioned.
+- `**VoteModel**` — Vote percentage via logit-normal: `logit(V) ~ N(alpha + B_mkt + gamma_A * strike + gamma_D * reform, sigma)`. ASA strike amplifies opposition; governance reform dampens it. Board overconfidence bias scales sigma down (`sigma_scale < 1`) to model overprecision.
+- `**ReviewModel**` — Adverse finding via `Bernoulli(expit(review_param_1 + adjustments))`, conditional on review being commissioned.
 
 ### `utilities.py` — Actor Utility Functions
 
-| Actor | Objective | Key terms |
-|-------|-----------|-----------|
-| Board | Minimize opposition & disruption | Vote penalty (quadratic above 25%), CEO loss cost, reform implementation cost |
-| ASA | Maximize accountability outcomes | Vote reward (linear), CEO removal bonus, adverse review bonus, mobilisation cost |
-| CEO | Maximize CRRA wealth utility, minimize non-monetary penalty | U = W^(1-γ)/(1-γ) − D; wealth by departure mode (W_resign, W_stay_sacked, W_stay_kept); additive penalty D (sacking, AGM humiliation, disgrace, adverse review) |
+
+| Actor | Objective                                                   | Key terms                                                                                                                                                       |
+| ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Board | Minimize opposition & disruption                            | Vote penalty (quadratic above 25%), CEO loss cost, reform implementation cost                                                                                   |
+| ASA   | Maximize accountability outcomes                            | Vote reward (linear), CEO removal bonus, adverse review bonus, mobilisation cost                                                                                |
+| CEO   | Maximize CRRA wealth utility, minimize non-monetary penalty | U = W^(1-γ)/(1-γ) − D; wealth by departure mode (W_resign, W_stay_sacked, W_stay_kept); additive penalty D (sacking, AGM humiliation, disgrace, adverse review) |
+
 
 ### `modes.py` — Analysis Configurations
 
-| Mode | Focal | Opponents | Level |
-|------|-------|-----------|-------|
-| `MODE_BOARD` | Board | ASA=ARA, CEO=ARA | 1 |
-| `MODE_ASA` | ASA | Board=ARA, CEO=ARA | 1 |
-| `MODE_BOARD_L2` | Board | ASA=ARA, CEO=ARA | 2 |
-| `MODE_ASA_L2` | ASA | Board=ARA, CEO=ARA | 2 |
-| `MODE_ASA_POLICY_BOARD` | ASA | Board=Policy, CEO=ARA | 1 |
+
+| Mode                    | Focal | Opponents             | Level |
+| ----------------------- | ----- | --------------------- | ----- |
+| `MODE_BOARD`            | Board | ASA=ARA, CEO=ARA      | 1     |
+| `MODE_ASA`              | ASA   | Board=ARA, CEO=ARA    | 1     |
+| `MODE_BOARD_L2`         | Board | ASA=ARA, CEO=ARA      | 2     |
+| `MODE_ASA_L2`           | ASA   | Board=ARA, CEO=ARA    | 2     |
+| `MODE_ASA_POLICY_BOARD` | ASA   | Board=Policy, CEO=ARA | 1     |
+
 
 ### `predictive.py` — ARA Opponent Modelling
 
@@ -244,6 +259,7 @@ Level-2 modelling recurses: opponents model the focal actor strategically (with 
 ### `tree.py` — Game Tree Recursion
 
 Node-indexed value computation:
+
 - **Terminal:** compute utility for target actor
 - **Chance (V, R):** Monte Carlo integration over sampled outcomes
 - **Focal decision:** maximize over feasible actions
@@ -284,3 +300,4 @@ Outcome statistics per action include: `Pr_strike`, `Pr_overwhelming`, `Pr_CEO_r
 ```bash
 python -m pytest tests/test_engine.py -v
 ```
+
