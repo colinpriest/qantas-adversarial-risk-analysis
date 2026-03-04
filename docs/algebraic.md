@@ -28,7 +28,7 @@ $$
 | $M_{\text{agm}}$   | Chance   | Nature | Post-AGM market reaction (pass-through)        |
 | $D_4$              | Decision | CEO    | CEO response to AGM outcome                    |
 | $D_{\text{rev}}$   | Decision | Board  | Board review response / CEO removal            |
-| $R$                | Chance   | Nature | Review findings release (Student-$t$)        |
+| $R$                | Chance   | Nature | Review findings release (Student-$t$ + Bernoulli) |
 | $M_{\text{rev}}$   | Chance   | Nature | Post-review market reaction (pass-through)     |
 | $D_4'$             | Decision | CEO    | CEO response to adverse review (conditional)   |
 | $D_{\text{rev}}'$  | Decision | Board  | Board response to adverse review (conditional) |
@@ -94,13 +94,13 @@ $$
 \text{scenario} \in \{\text{ceo\_stayed},\; \text{ceo\_resigned}\}
 $$
 
-The probability of each scenario is computed via ARA predictive distribution over $D_0^{\text{ceo}}$:
+The probability of each scenario is computed via Bayesian-updated ARA predictive distribution over $D_0^{\text{ceo}}$ (see §10.2):
 
 $$
-\Pr_i(\text{CEO\_resign}) = p_i(D_0^{\text{ceo}} = \text{resign} \mid \emptyset)
+\Pr_i(\text{CEO\_resign}) = \frac{\alpha + n_{\text{resign}}}{\alpha + \beta + N}
 $$
 
-where $i$ is the focal actor. Each scenario prunes the action space downstream (e.g., `ceo_resigned` makes $D_4$ infeasible because CEO is already gone).
+where $\alpha, \beta$ are Beta prior pseudo-counts and $n_{\text{resign}}$ is the ARA soft evidence accumulated over $N$ belief draws. Each scenario prunes the action space downstream (e.g., `ceo_resigned` makes $D_4$ infeasible because CEO is already gone).
 
 ### 1.5 Conditional branching structure
 
@@ -213,9 +213,27 @@ $$
 
 Vote samples within a draw reflect aleatoric noise (individual voter responses).
 
-### 3.2 Review findings — Student-$t$ hierarchy
+### 3.2 Review findings — two-component model (outcome rating + CAR)
 
-If review commissioned:
+The review produces two independently modelled outputs: a qualitative outcome rating (adverse vs positive) and a quantitative cumulative abnormal return (CAR).
+
+**Component 1: Outcome rating (adverse/positive).**
+
+Grounded in external-governance-review-Bayesian-distribution.md. The Qantas review is non-regulatory (board-initiated), so the outcome follows $\text{Dirichlet}(5, 5, 5)$ over {Negative, Neutral, Positive}. Grouping negative + neutral as "adverse":
+
+$$
+p_{\text{adverse}} \sim \text{Beta}(10, 5), \quad \mathbb{E}[p_{\text{adverse}}] = \tfrac{2}{3}
+$$
+
+$p_{\text{adverse}}$ is drawn once per belief draw (epistemic uncertainty about the review process). Each MC review sample then draws:
+
+$$
+\text{review\_adverse} \sim \text{Bernoulli}(p_{\text{adverse}})
+$$
+
+**Component 2: CAR (market reaction to findings release).**
+
+Student-$t$ hierarchy calibrated from ASX governance review case studies 2014–2023 (board-background/governance-review-case-studies.md):
 
 $$
 \mu_f \sim t_4(-0.05,\; 0.03)
@@ -229,18 +247,15 @@ $$
 \text{CAR} \sim t_3(\mu_f,\; \sigma_f)
 $$
 
-$$
-\text{review\_adverse} = \mathbb{1}[\text{CAR} < 0]
-$$
+Calibrated from: Star $-13.95\%$, Westpac $-3.00\%$, CBA $+1.75\%$, Qantas $+0.85\%$.
 
-If review not commissioned: $\text{CAR} = 0$, $\text{review\_adverse} = \text{false}$ (deterministic).
-
-Calibrated from ASX governance review case studies (2014–2023):
-Star $-13.95\%$, Westpac $-3.00\%$, CBA $+1.75\%$, Qantas $+0.85\%$.
+The CAR captures the market's quantitative reaction. It is separate from the qualitative outcome rating: a "positive" review could still produce a mildly negative CAR (market expected more), and an "adverse" review could produce a mildly positive CAR (market had already priced in the bad news).
 
 **Why $t_4$ for $\mu_f$, not Cauchy:** The Cauchy distribution ($t_1$) has no finite mean or variance. With `review_car_weight` $= 15$, a single extreme Cauchy draw (e.g., $\mu_f \approx -0.5$) contributes $15 \times (-0.5) = -7.5$ to Board utility and can dominate the Monte Carlo average, making "commission review" appear far worse than it actually is. $t_4$ is the minimum degrees-of-freedom giving both a finite mean ($\nu > 1$) and finite variance ($\nu > 2$), while still retaining genuinely heavy tails. The outer $\text{CAR} \sim t_3(\mu_f, \sigma_f)$ preserves heavy-tail capability for extreme events (Star $-13.95\%$).
 
 Analytical mean: $\mathbb{E}[\mu_f] = -0.05$ (well-defined since $\nu = 4 > 1$). $\mathbb{E}[\text{CAR}] = \mathbb{E}[\mu_f] = -0.05$.
+
+If review not commissioned: $\text{CAR} = 0$, $\text{review\_adverse} = \text{false}$ (deterministic).
 
 ### 3.3 Review direct cost — Gamma
 
@@ -256,7 +271,7 @@ Drawn once per scenario (epistemic) and held fixed across MC review samples.
 
 ## 4. Board overconfidence bias (`chance_models.py`)
 
-When Board is focal, the engine applies three cognitive biases calibrated from the governance overconfidence literature.
+When Board is focal, the engine applies cognitive biases calibrated from the governance overconfidence literature.
 
 ### 4.1 Overestimation on governance effects
 
@@ -280,15 +295,29 @@ $$
 
 Production default: $\kappa = 3.5$, $\kappa_\sigma = 0.53$.
 
-### 4.3 Overestimation on review CAR
+### 4.3 Overestimation on review
 
-Board overestimates governance quality, perceiving findings as more favourable:
+Board overestimates governance quality, affecting both the CAR location and the outcome rating probability.
+
+**CAR location bias:**
 
 $$
 \hat{\mu}_f = \mu_f + \delta_{\text{CAR}}, \qquad \delta_{\text{CAR}} = 0.03
 $$
 
 Board perceives review CAR $\sim 3$ pp more favourable than actuarial.
+
+**Outcome rating bias:** The Board believes positive outcomes are more likely, inflating the positive pseudo-count in the Beta distribution:
+
+$$
+\hat{\beta}_{\text{positive}} = \beta_{\text{positive}} \cdot (1 + 10 \cdot \delta_{\text{CAR}})
+$$
+
+With default $\delta_{\text{CAR}} = 0.03$: $\hat{\beta}_{\text{positive}} = 5 \times 1.3 = 6.5$. The biased adverse probability is:
+
+$$
+p_{\text{adverse}}^{\text{biased}} \sim \text{Beta}(10, 6.5), \quad \mathbb{E} = 0.606 \quad (\text{vs } 0.667 \text{ unbiased})
+$$
 
 ### 4.4 Bias propagation
 
@@ -313,7 +342,7 @@ $$
 
 ### 5.2 Board utility
 
-Board minimises opposition and disruption:
+Board minimises opposition and disruption. Define $\text{ceo\_at\_end} = \neg\text{CEO\_removed} \;\wedge\; \neg\text{CEO\_resigned\_early}$ (CEO still in seat at terminal node).
 
 $$
 \begin{aligned}
@@ -325,25 +354,51 @@ u_B(Z) &= -w_{\text{early}} \cdot \mathbb{1}[\text{CEO\_resigned\_early}] \\
 &\quad - w_{\text{cost}} \cdot C_{\text{direct}} \cdot \mathbb{1}[\text{review\_commissioned}] \\
 &\quad - w_{\text{impl}} \cdot \bigl(\mathbb{1}[d_1 = \text{D3}] + \mathbb{1}[d_{\text{rev}} = \text{sack}] + \mathbb{1}[d_{\text{rev}}' = \text{sack}]\bigr) \\
 &\quad - w_{\text{loss}} \cdot \mathbb{1}[\text{CEO\_removed} \wedge \neg\text{CEO\_resigned\_early}] \\
-&\quad - w_{\text{rep}} \cdot \mathbb{1}[\text{overwhelming}]
+&\quad - w_{\text{rep}} \cdot \mathbb{1}[\text{overwhelming}] \\[6pt]
+&\quad - w_{\text{spill2}} \cdot \mathbb{1}[\text{strike} \;\wedge\; \text{ceo\_at\_end}] \\
+&\quad - w_{\text{reg}} \cdot \mathbb{1}[\text{strike} \;\wedge\; \text{ceo\_at\_end}] \\
+&\quad - w_{\text{d1\_liab}} \cdot \mathbb{1}[\text{overwhelming} \;\wedge\; d_1 = \text{D0\_minimal}] \\
+&\quad - w_{\text{legal\_d1}} \cdot \mathbb{1}[\text{strike} \;\wedge\; d_1 = \text{D0\_minimal}] \\
+&\quad - w_{\text{legal\_rev}} \cdot \mathbb{1}[\text{strike} \;\wedge\; \text{ceo\_at\_end}] \\
+&\quad - w_{\text{adverse\_ceo}} \cdot \mathbb{1}[\text{review\_commissioned} \;\wedge\; \text{adverse} \;\wedge\; \text{ceo\_at\_end}]
 \end{aligned}
 $$
 
 where $(x)_+ = \max(x, 0)$.
 
+The last six terms encode legal and regulatory consequences of Board inaction:
+
+1. **Second-strike spill** ($w_{\text{spill2}}$): Under Corporations Act 2001 s.250V, a first strike with the CEO still in place makes a second strike near-certain at the next AGM, triggering a Board spill motion. All directors lose their seats.
+
+2. **Board regulatory liability** ($w_{\text{reg}}$): ASIC director banning and personal fines when the Board fails to remove the CEO after a first strike.
+
+3. **Board D1 liability** ($w_{\text{d1\_liab}}$): Failure to act early ($D_1 = \text{D0\_minimal}$) despite an overwhelming ($>50\%$) vote — demonstrated inaction when the crisis was already apparent.
+
+4. **Qantas legal D1 penalty** ($w_{\text{legal\_d1}}$): Class actions and ACCC/ASIC company penalties when $D_1 = \text{D0\_minimal}$ and a strike occurs.
+
+5. **Qantas legal D\_rev penalty** ($w_{\text{legal\_rev}}$): Company legal exposure when the CEO remains after a first strike.
+
+6. **Adverse review + CEO present** ($w_{\text{adverse\_ceo}}$): Board liability from retaining CEO after governance review found adverse/neutral outcomes. Grounded in external-governance-review-Bayesian-distribution.md: non-regulatory reviews have $\Pr(\text{adverse}) \sim \text{Beta}(10, 5)$, mean $2/3$.
+
 Default weights:
 
-| Parameter                       | Symbol               | Default |
-| ------------------------------- | -------------------- | ------- |
-| `early_ceo_departure_cost`    | $w_{\text{early}}$ | 0.5     |
-| `vote_penalty_weight`         | $w_{\text{vote}}$  | 2.0     |
-| `overwhelming_penalty_weight` | $w_{\text{over}}$  | 3.0     |
-| `spill_risk_weight`           | $w_{\text{spill}}$ | 2.5     |
-| `review_car_weight`           | $w_{\text{CAR}}$   | 15.0    |
-| `review_direct_cost_weight`   | $w_{\text{cost}}$  | 15.0    |
-| `implementation_cost_sack`    | $w_{\text{impl}}$  | 1.0     |
-| `ceo_loss_cost`               | $w_{\text{loss}}$  | 1.5     |
-| `reputational_spill_weight`   | $w_{\text{rep}}$   | 1.0     |
+| Parameter                       | Symbol                    | Default |
+| ------------------------------- | ------------------------- | ------- |
+| `early_ceo_departure_cost`    | $w_{\text{early}}$      | 0.5     |
+| `vote_penalty_weight`         | $w_{\text{vote}}$       | 2.0     |
+| `overwhelming_penalty_weight` | $w_{\text{over}}$       | 3.0     |
+| `spill_risk_weight`           | $w_{\text{spill}}$      | 2.5     |
+| `review_car_weight`           | $w_{\text{CAR}}$        | 15.0    |
+| `review_direct_cost_weight`   | $w_{\text{cost}}$       | 15.0    |
+| `implementation_cost_sack`    | $w_{\text{impl}}$       | 1.0     |
+| `ceo_loss_cost`               | $w_{\text{loss}}$       | 1.5     |
+| `reputational_spill_weight`   | $w_{\text{rep}}$        | 1.0     |
+| `second_strike_spill_penalty` | $w_{\text{spill2}}$     | 8.0     |
+| `board_regulatory_liability`  | $w_{\text{reg}}$        | 5.0     |
+| `board_d1_liability`          | $w_{\text{d1\_liab}}$   | 4.0     |
+| `qantas_legal_d1_penalty`     | $w_{\text{legal\_d1}}$  | 3.0     |
+| `qantas_legal_d_rev_penalty`  | $w_{\text{legal\_rev}}$ | 2.0     |
+| `adverse_review_ceo_present_penalty` | $w_{\text{adverse\_ceo}}$ | 5.0 |
 
 ### 5.3 ASA utility
 
@@ -357,9 +412,12 @@ u_A(Z) &= w_{\text{early}}^A \cdot \mathbb{1}[\text{CEO\_resigned\_early}] \\
 &\quad + w_{\text{removal}}^A \cdot \mathbb{1}[\text{CEO\_removed} \wedge \neg\text{CEO\_resigned\_early}] \\
 &\quad - w_{\text{CAR}}^A \cdot \text{CAR} \cdot \mathbb{1}[\text{review\_commissioned}] \\
 &\quad - w_{\text{mob}}^A \cdot \mathbb{1}[a_2 = \text{rec\_strike}] \\
-&\quad + w_{\text{rep}}^A \cdot (V - 0.25)_+
+&\quad + w_{\text{rep}}^A \cdot (V - 0.25)_+ \\
+&\quad + w_{\text{align}}^A \cdot \mathbb{1}[a_2 = \text{rec\_strike} \;\wedge\; \text{strike}]
 \end{aligned}
 $$
+
+The market alignment bonus ($w_{\text{align}}^A$) rewards ASA when its strike recommendation is validated by the actual vote outcome. ASA's credibility and influence as a governance advocate is enhanced when it leads the consensus. Empirically, in 100% of headline-incident cases (ranked_voting_recommendations.csv, headline_incident=1, Qantas excluded), the market votes a first strike.
 
 Default weights:
 
@@ -372,6 +430,7 @@ Default weights:
 | `review_car_weight`          | $w_{\text{CAR}}^A$     | 15.0    |
 | `mobilisation_cost`          | $w_{\text{mob}}^A$     | 0.3     |
 | `reputational_gain_weight`   | $w_{\text{rep}}^A$     | 1.0     |
+| `market_alignment_bonus`     | $w_{\text{align}}^A$   | 1.5     |
 
 ### 5.4 CEO utility — reference-dependent CRRA with loss aversion
 
@@ -424,11 +483,23 @@ $$
 
 $W$ values are calibrated for ACCC-era pay erosion (frozen LTIs, reserved clawbacks, legal costs).
 
-Disutility starts at a baseline crisis cost and is additive over outcome components:
+Non-monetary disutility starts at a baseline crisis cost and is additive over outcome components, with **departure-mode-dependent penalties** replacing the old blanket $D_{\text{sacked}}$:
 
 $$
-D_{\text{raw}} = D_{\text{stay}} + D_{\text{sacked}} \cdot \mathbb{1}[\text{CEO\_removed}] + D_{\text{agm}} \cdot \mathbb{1}[V > 0.25] + D_{\text{disgrace}} \cdot \mathbb{1}[\text{overwhelming}] + D_{\text{adverse\_review}} \cdot \mathbb{1}[\text{review\_commissioned} \wedge \text{adverse}]
+D_{\text{raw}} = D_{\text{stay}} + D_{\text{departure}}(\tilde{d}_4) \cdot \mathbb{1}[\text{CEO\_removed}] + D_{\text{agm}} \cdot \mathbb{1}[V > 0.25] + D_{\text{disgrace}} \cdot \mathbb{1}[\text{overwhelming}] + D_{\text{adverse\_review}} \cdot \mathbb{1}[\text{review\_commissioned} \wedge \text{adverse}]
 $$
+
+where the departure-mode penalty discriminates between involuntary and voluntary removal:
+
+$$
+D_{\text{departure}}(\tilde{d}_4) = \begin{cases}
+D_{\text{negotiate}} & \tilde{d}_4 = \text{negotiate\_exit} \quad \text{(face-saving terms)} \\
+D_{\text{resign\_late}} & \tilde{d}_4 = \text{resign} \quad \text{(controls narrative, but post-AGM)} \\
+D_{\text{sacked}} & \text{otherwise} \quad \text{(Board fires CEO — maximum reputational destruction)}
+\end{cases}
+$$
+
+This ensures that CEO $D_4$ actions (resign, negotiate) produce strictly less disutility than being fired by the Board, giving the CEO a rational incentive to exit voluntarily.
 
 Safety bound: $W \leftarrow \max(W, 0.01)$, $W_{\text{ref}} \leftarrow \max(W_{\text{ref}}, 0.01)$.
 
@@ -446,6 +517,8 @@ Default parameters:
 | Resign disutility              | $D_{\text{resign}}$           | 40.0    |
 | Stay baseline disutility       | $D_{\text{stay}}$             | 25.0    |
 | Sacked disutility              | $D_{\text{sacked}}$           | 100.0   |
+| Resign-late disutility         | $D_{\text{resign\_late}}$     | 60.0    |
+| Negotiate-exit disutility      | $D_{\text{negotiate}}$        | 45.0    |
 | AGM humiliation                | $D_{\text{agm}}$              | 30.0    |
 | Public disgrace                | $D_{\text{disgrace}}$         | 30.0    |
 | Adverse review                 | $D_{\text{adverse\_review}}$  | 10.0    |
@@ -495,11 +568,13 @@ $$
 
 $$
 \pi_B^{\text{fix}}(D_{\text{rev}} \mid h) = \begin{cases}
-\text{Drev\_sack\_ceo} & V_\% \ge 0.50 \;\wedge\; \text{CEO\_present} \\
-\text{Drev\_commission\_review} & V_\% \ge 0.25 \;\wedge\; \text{review\_not\_commissioned} \\
+\text{Drev\_sack\_ceo} & V_\% \ge \tau_{\text{sack}} \;\wedge\; \text{CEO\_present} \\
+\text{Drev\_commission\_review} & V_\% \ge \tau_{\text{review}} \;\wedge\; \text{review\_not\_commissioned} \\
 \text{Drev\_no\_action} & \text{otherwise}
 \end{cases}
 $$
+
+where $\tau_{\text{sack}}$ and $\tau_{\text{review}}$ are policy parameters loaded from governance_spec.xlsx (`policy_parameters` sheet). Defaults: $\tau_{\text{sack}} = 0.25$, $\tau_{\text{review}} = 0.25$.
 
 **ASA at $A_2$ — informative Beta prior (headline-incident conditioning):**
 
@@ -529,10 +604,12 @@ $$
 
 $$
 \pi_C^{\text{fix}}(D_4 \mid h) = \begin{cases}
-\text{D4\_resign} & V_\% \ge 0.40 \;\wedge\; \text{feasible} \\
+\text{D4\_resign} & V_\% \ge \tau_{\text{resign}} \;\wedge\; \text{feasible} \\
 \text{D4\_stay} & \text{otherwise}
 \end{cases}
 $$
+
+where $\tau_{\text{resign}} = 0.40$ (from `policy_parameters` sheet).
 
 ### 6.4 Level-2 recursion
 
@@ -543,7 +620,7 @@ p_i^{(L)}(X = x \mid h) \quad\text{where}\quad
 \Psi_j^{(L)}(x; h, \Theta_j) \text{ uses } p_j^{(L-1)}(\cdot) \text{ for counterpart } j'
 $$
 
-The level decrements on each recursive call, preventing infinite recursion.
+The level decrements on each recursive call, preventing infinite recursion. Nested predictions use reduced $K_{\text{nested}}$ and $R_{\text{nested}}$ to avoid quadratic explosion.
 
 ---
 
@@ -621,13 +698,18 @@ When Board is focal with overconfidence bias:
 
 If review not commissioned: deterministic pass-through ($\text{CAR} = 0$, $\text{adverse} = \text{false}$, $C_{\text{direct}} = 0$).
 
-If commissioned, direct cost $C_{\text{direct}}$ is drawn once (epistemic). Findings are sampled $M_R$ times (default $M_R = 20$):
+If commissioned, two epistemic quantities are drawn once and held fixed across MC review samples:
+
+1. $C_{\text{direct}} \sim \text{Gamma}(4.55, 4741)$ — review direct cost
+2. $p_{\text{adverse}} \sim \text{Beta}(10, 5)$ — adverse probability (with bias if applicable, see §4.3)
+
+Findings are sampled $M_R$ times (default $M_R = 20$):
 
 $$
 U_i^{(R)}(h) = \frac{1}{M_R} \sum_{m=1}^{M_R} U_i^{(\text{next}(R))}(h \cup \{\text{CAR}_m, \text{adverse}_m, C_{\text{direct}}\})
 $$
 
-where each $\text{CAR}_m \sim t_3(\mu_f, \sigma_f)$ with hierarchical parameters.
+where each $\text{CAR}_m \sim t_3(\mu_f, \sigma_f)$ with hierarchical parameters, and $\text{adverse}_m \sim \text{Bernoulli}(p_{\text{adverse}})$.
 
 ### 7.7 Pass-through nodes ($M_{\text{agm}}, M_{\text{rev}}$)
 
@@ -812,18 +894,42 @@ For a given focal actor $i$, checkpoint $c$, scenario $s$:
    - $\text{EU}(a) = \frac{1}{N} \sum_i v_{a,i}$
 5. $a^* = \arg\max_a \text{EU}(a)$
 
-### 10.2 Scenario solver
+### 10.2 D0\_ceo Bayesian prediction
+
+The solver predicts the pre-game CEO resignation probability by combining a Beta prior with ARA evidence:
+
+**Prior:** Based on 12 Australian no-remorse CEO observations (all resigned), using a Jeffreys starting prior:
+
+$$
+p_{\text{resign}} \sim \text{Beta}(\alpha_0, \beta_0) = \text{Beta}(12.5, 0.5), \quad \mathbb{E} = 0.962
+$$
+
+**ARA evidence:** For each belief draw $i = 1, \ldots, N$, a Level-2 ARA predictive distribution is computed over $D_0^{\text{ceo}}$, yielding soft pseudo-counts:
+
+$$
+n_{\text{resign}} = \sum_{i=1}^{N} p_i(D_0^{\text{ceo}} = \text{resign} \mid h), \qquad n_{\text{stay}} = \sum_{i=1}^{N} p_i(D_0^{\text{ceo}} = \text{stay} \mid h)
+$$
+
+**Bayesian update:**
+
+$$
+\Pr(\text{CEO\_resign}) = \frac{\alpha_0 + n_{\text{resign}}}{\alpha_0 + \beta_0 + N}
+$$
+
+The D0\_ceo prediction uses reduced computational budget ($K_{\text{d0}} = 50$, $R_{\text{d0}} = 10$) and Level-2 mode (CEO strategically models Board's $D_1$ response).
+
+### 10.3 Scenario solver
 
 `solve_scenarios()` runs both scenarios and attaches D0\_ceo predictive:
 
-1. $p_i(D_0^{\text{ceo}}) = \text{predict\_d0\_ceo}(i, c)$
+1. $\Pr_i(D_0^{\text{ceo}}) = \text{predict\_d0\_ceo}(i, c)$
 2. For each $s \in \{\text{ceo\_stayed}, \text{ceo\_resigned}\}$:
    - $\text{result}_s = \text{solve}(i, c, s)$
-   - $\text{result}_s.\text{scenario\_prob} = p_i(D_0^{\text{ceo}} = \text{action}(s))$
+   - $\text{result}_s.\text{scenario\_prob} = \Pr_i(D_0^{\text{ceo}} = \text{action}(s))$
 
-### 10.3 Parallelisation
+### 10.4 Parallelisation
 
-Each $(a, i)$ pair is submitted as an independent task to `ProcessPoolExecutor`. Workers reconstruct all engine components from serialisable arguments.
+Each $(a, i)$ pair is submitted as an independent task to `ProcessPoolExecutor`. Workers are initialised once per checkpoint with all engine components (beliefs, tree, predictive) to eliminate per-task file I/O. A persistent process pool is reused across predict\_d0\_ceo and solve calls for the same checkpoint.
 
 ---
 
@@ -854,22 +960,24 @@ At every node:
 | Decision                                    | Focal actor       | $\max$ over feasible actions               |
 | Decision                                    | Opponent (ARA)    | $\sum$ weighted by predictive distribution |
 | Decision                                    | Opponent (Policy) | Deterministic fixed policy                   |
-| Chance ($V$)                              | Nature            | MC average over$M_V$ vote samples          |
-| Chance ($R$)                              | Nature            | MC average over$M_R$ review samples        |
+| Chance ($V$)                              | Nature            | MC average over $M_V$ vote samples          |
+| Chance ($R$)                              | Nature            | MC average over $M_R$ review samples        |
 | Chance ($M_{\text{agm}}, M_{\text{rev}}$) | Nature            | Pass-through                                 |
-| Terminal                                    | —                | Compute$u_i(Z)$                            |
+| Terminal                                    | —                | Compute $u_i(Z)$                            |
 
 ---
 
 ## 13. Computational budget
 
-| Parameter                  | Symbol  | Default                | Purpose                                    |
-| -------------------------- | ------- | ---------------------- | ------------------------------------------ |
-| Belief draws               | $N$   | 500 (or `--n_draws`) | Posterior samples per checkpoint           |
-| Opponent parameter samples | $K$   | 200                    | Draws from$p_i(\Theta_j)$ per predictive |
-| Stochastic rollouts        | $R$   | 20                     | Forward simulations per$(K, a)$ pair     |
-| Vote MC samples            | $M_V$ | 50                     | Samples per vote node evaluation           |
-| Review MC samples          | $M_R$ | 20                     | Samples per review node evaluation         |
+| Parameter                  | Symbol           | Default                | Purpose                                    |
+| -------------------------- | ---------------- | ---------------------- | ------------------------------------------ |
+| Belief draws               | $N$            | 500 (or `--n_draws`) | Posterior samples per checkpoint           |
+| Opponent parameter samples | $K$            | 200                    | Draws from $p_i(\Theta_j)$ per predictive |
+| Stochastic rollouts        | $R$            | 20                     | Forward simulations per $(K, a)$ pair     |
+| Vote MC samples            | $M_V$          | 50                     | Samples per vote node evaluation           |
+| Review MC samples          | $M_R$          | 20                     | Samples per review node evaluation         |
+| D0\_ceo opponent samples   | $K_{\text{d0}}$ | 50                     | Reduced $K$ for D0\_ceo prediction        |
+| D0\_ceo rollouts           | $R_{\text{d0}}$ | 10                     | Reduced $R$ for D0\_ceo prediction        |
 
 Total tree evaluations per solve: $|\mathcal{A}_{D_1}| \times N$.
 Total rollouts per predictive call: $K \times |\mathcal{A}| \times R$.
