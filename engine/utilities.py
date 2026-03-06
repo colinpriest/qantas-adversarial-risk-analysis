@@ -86,10 +86,24 @@ def utility_board(outcome: TerminalOutcome, params: dict[str, float]) -> float:
     if outcome.d_rev_post_review_action == "Drev_sack_ceo":
         u -= params.get("implementation_cost_sack", 1.0)
 
-    # CEO loss cost (disruption from losing CEO — not applied for early
-    # resignation, which has its own cost above)
+    # CEO loss cost with shock attenuation.
+    # In normal times, removing the CEO costs the Board (disruption, institutional
+    # knowledge loss, investor-relationship continuity).  Severe negative shocks
+    # — a first strike, an overwhelming vote, adverse review findings — break the
+    # Board's historical loyalty pattern and reduce this perceived cost.
+    # Empirical grounding: AMP (2018), Crown Resorts (2021), Rio Tinto (2020)
+    # all show boards pivoting rapidly from CEO-protective to CEO-removal once
+    # the shock sequence made retention riskier than transition.
     if outcome.CEO_removed and not outcome.CEO_resigned_early:
-        u -= params.get("ceo_loss_cost", 1.5)
+        base_ceo_loss = params.get("ceo_loss_cost", 1.5)
+        shock_relief = 0.0
+        if outcome.strike_indicator:
+            shock_relief += params.get("ceo_loss_shock_strike", 0.4)
+        if outcome.overwhelming_indicator:
+            shock_relief += params.get("ceo_loss_shock_overwhelming", 0.5)
+        if outcome.review_commissioned and outcome.review_adverse:
+            shock_relief += params.get("ceo_loss_shock_adverse", 0.5)
+        u -= max(0.0, base_ceo_loss - shock_relief)
 
     # Reputational spill cost
     if outcome.overwhelming_indicator:

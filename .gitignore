@@ -23,6 +23,9 @@ desktop.ini
 # Generated outputs (regenerate via run scripts)
 outputs/
 
+# LLM elicitation cache (regenerate via board_utility_quantification.py)
+utility-quantification/cache/
+
 # IDE / AI tool config
 .vscode/
 .idea/

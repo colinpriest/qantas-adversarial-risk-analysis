@@ -21,6 +21,65 @@ from engine.modes import MODE_BOARD, MODE_BOARD_L2, MODE_BOARD_POLICY_ASA
 from run.visualise_tree import build_unified_tree, render_tree
 from run.interactive_tree import render_interactive_tree
 
+
+def _load_estimated_weights(csv_path: str) -> dict[str, float]:
+    """Load estimated Board utility weights from quantification pipeline output.
+
+    The quantification pipeline uses collapsed parameter names (w_removal,
+    w_inaction) that must be decomposed into the engine's individual parameter
+    names.  Collapsed sums are allocated proportionally to spec defaults.
+
+    Returns a dict of engine parameter names → values, suitable for merging
+    into solver.utility_weights["Board"].
+    """
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+    est = dict(zip(df["parameter"], df["estimate"]))
+
+    # Direct mappings (1:1 between quantification and engine)
+    direct = {
+        "w1": "early_ceo_departure_cost",
+        "w2": "vote_penalty_weight",
+        "w3": "overwhelming_penalty_weight",
+        "w4": "spill_risk_weight",
+        "w8s": "ceo_loss_shock_strike",
+        "w8o": "ceo_loss_shock_overwhelming",
+        "w8r": "ceo_loss_shock_adverse",
+        "w9": "reputational_spill_weight",
+        "w12": "board_d1_liability",
+        "w13": "qantas_legal_d1_penalty",
+        "w15": "adverse_review_ceo_present_penalty",
+    }
+
+    out = {}
+    for q_name, engine_name in direct.items():
+        if q_name in est:
+            out[engine_name] = float(est[q_name])
+
+    # Collapsed: w_removal = implementation_cost_sack + ceo_loss_cost
+    # Spec defaults: implementation_cost_sack=0.3, ceo_loss_cost=1.5 → total=1.8
+    if "w_removal" in est:
+        total = float(est["w_removal"])
+        spec_sack, spec_ceo = 0.3, 1.5
+        spec_total = spec_sack + spec_ceo
+        out["implementation_cost_sack"] = total * spec_sack / spec_total
+        out["ceo_loss_cost"] = total * spec_ceo / spec_total
+
+    # Collapsed: w_inaction = second_strike_spill + board_regulatory_liability
+    #                       + qantas_legal_d_rev_penalty
+    # Spec defaults: 8.0 + 5.0 + 2.0 = 15.0
+    if "w_inaction" in est:
+        total = float(est["w_inaction"])
+        specs = {"second_strike_spill_penalty": 8.0,
+                 "board_regulatory_liability": 5.0,
+                 "qantas_legal_d_rev_penalty": 2.0}
+        spec_total = sum(specs.values())
+        for name, spec_val in specs.items():
+            out[name] = total * spec_val / spec_total
+
+    return out
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -65,6 +124,10 @@ def main():
                              "reduce to 3–5 for faster runs)")
     parser.add_argument("--output", type=str, default=None,
                         help="Output CSV path")
+    parser.add_argument("--estimated-weights", type=str, default=None,
+                        help="Path to parameter_estimates.csv from board_utility_quantification.py. "
+                             "Overrides Board utility weights in governance_spec.xlsx with "
+                             "estimated values.")
 
     args = parser.parse_args()
 
@@ -82,6 +145,27 @@ def main():
         K_d0_ceo=args.K_d0,
         R_d0_ceo=args.R_d0,
     )
+
+    # Override Board utility weights with quantification estimates
+    if args.estimated_weights:
+        est_path = Path(args.estimated_weights)
+        if not est_path.exists():
+            logger.error(f"Estimated weights file not found: {est_path}")
+            sys.exit(1)
+        est_weights = _load_estimated_weights(str(est_path))
+        board_w = solver.utility_weights["Board"]
+        n_overridden = 0
+        for k, v in est_weights.items():
+            if k in board_w:
+                old = board_w[k]
+                board_w[k] = v
+                logger.info(f"  Weight override: {k} = {old:.4f} → {v:.4f}")
+                n_overridden += 1
+            else:
+                board_w[k] = v
+                logger.info(f"  Weight added: {k} = {v:.4f}")
+                n_overridden += 1
+        logger.info(f"Applied {n_overridden} estimated Board weights from {est_path}")
 
     if args.asa_policy:
         mode = MODE_BOARD_POLICY_ASA

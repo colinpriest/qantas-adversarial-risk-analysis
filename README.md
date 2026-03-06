@@ -25,9 +25,16 @@ Qantas/
 │   └── solver.py                      # Solver — full orchestration across draws & actions
 │
 ├── run/                               # CLI entry points
-│   ├── run_board_mode.py              # Board-focal ARA
+│   ├── run_board_mode.py              # Board-focal ARA (primary)
 │   ├── run_asa_mode.py                # ASA-focal ARA
-│   └── sensitivity.py                 # Grid sensitivity analysis
+│   ├── sensitivity.py                 # Grid sensitivity analysis
+│   └── apply_estimated_weights.py     # Apply quantification outputs to governance_spec
+│
+├── board_utility_quantification.py    # Board utility parameter estimation pipeline
+├── utility-quantification/            # Quantification supporting files
+│   ├── cache/                         # LLM response cache (SHA-256 keyed)
+│   ├── ara_board_utility_experiment_spec.md  # Formal specification
+│   └── what-was-built.md             # Implementation notes
 │
 ├── data/
 │   ├── governance_spec.xlsx           # Game tree structure, actions, utilities (8 sheets)
@@ -38,7 +45,7 @@ Qantas/
 │   ├── test_engine.py                 # 114 tests across 14 test classes
 │   └── create_test_data.py            # Generate synthetic checkpoint data
 │
-├── outputs/                           # Results from run scripts (CSV)
+├── outputs/                           # Results from run scripts (CSV, HTML dashboards)
 ├── models/                            # Stan models (belief_model.stan, media_better.stan)
 ├── deprecated/                        # Legacy V1 pipeline scripts
 └── requirements.txt
@@ -134,6 +141,40 @@ Sweeps a grid over utility weights (81 combinations by default) and tracks how t
 | `--K`          | `50`                              | Opponent samples (reduced for speed) |
 | `--R_rollouts` | `10`                              | Rollouts (reduced for speed)         |
 | `--output`     | `outputs/sensitivity_results.csv` | Output path                          |
+
+
+### `board_utility_quantification.py` — Board Utility Parameter Estimation
+
+A supporting calibration pipeline that estimates the Board utility function weights using LLM stakeholder simulation (gpt-4o-mini). The engine (`run_board_mode.py`) uses the resulting parameter values from `governance_spec.xlsx`.
+
+The pipeline uses a two-stage estimation strategy:
+- **Stage 4A (Softmax MLE):** Estimates 8 action-varying parameters from choice probabilities
+- **Stage 4B (Factor Rating OLS):** Estimates 5 scenario-level parameters from LLM factor importance ratings
+
+```bash
+# Full pipeline (~$0.60 at gpt-4o-mini prices)
+python board_utility_quantification.py --all
+
+# Re-run estimation only (uses cached LLM responses)
+python board_utility_quantification.py --stage 4,5,6
+
+# Apply estimates to governance_spec.xlsx
+python -m run.apply_estimated_weights outputs/parameter_estimates.csv
+
+# Preview without writing
+python -m run.apply_estimated_weights outputs/parameter_estimates.csv --dry-run
+```
+
+| Argument       | Default           | Description                          |
+| -------------- | ----------------- | ------------------------------------ |
+| `--stage`      | `all`             | Comma-separated stages (1-6) or 'all' |
+| `--model`      | `gpt-4o-mini`    | LLM model for elicitation            |
+| `--n_reps`     | `40`              | Repetitions per scenario             |
+| `--n_starts`   | `10`              | L-BFGS-B starting points             |
+| `--bootstrap_B`| `500`             | Bootstrap samples for SEs            |
+| `--output_dir` | `outputs/`        | Output directory                     |
+
+Output: `outputs/board_utility_dashboard.html` (self-contained interactive dashboard with 12 tabs). See [docs/board-utility-quantification.md](docs/board-utility-quantification.md) for full documentation.
 
 
 ## Game Tree
