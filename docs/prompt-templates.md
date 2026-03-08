@@ -154,9 +154,10 @@ Converts the state vector into natural language. The prompt is constructed by ap
 
 ### Narrative Blocks (in order)
 
-#### 1. CEO Status
+#### 1. CEO Status and Crisis Framing
+
 - **Resigned early**: "The CEO has already resigned from Qantas before the AGM, citing personal reasons. The Board must now decide on governance actions without the sitting CEO."
-- **Present**: "The CEO remains in position. The Board must decide on governance actions."
+- **Present**: Triggers the full **cognitive bias framing** (see [Cognitive Bias Context Logic](#cognitive-bias-context-logic) below). The prompt includes three layered bias mechanisms before the scenario-specific state.
 - **Inherited** (optional): "Note: The current CEO was inherited from the previous Board -- this Board did not appoint the CEO." (Ikea effect diagnostic)
 
 #### 2. Vote Outcome (if known)
@@ -208,6 +209,160 @@ Ends with: "What probability does the Board assign to each action?"
 
 ---
 
+## Cognitive Bias Context Logic
+
+The scenario prompt exploits three well-documented cognitive biases to elicit realistic Board action probabilities. When the CEO is present, the prompt constructs layered psychological pressure that mirrors the actual information environment facing corporate directors during a severe governance crisis.
+
+### Design Rationale
+
+Empirical observation: without bias framing, the LLM assigns ~25-35% probability to CEO transition at D1. With all three biases active, probabilities rise to 90%+. This matches the empirical base rate — 100% of comparable ASX 100 ESG crises resulted in CEO departure.
+
+The biases are not "tricks" — they represent genuine information that real Board directors would have when deliberating. The prompt makes this information explicit rather than relying on the LLM's implicit training distribution.
+
+### Bias 1: Anchoring (Peer Base Rate)
+
+**Trigger:** `ceo_status_at_start != "resigned_early"` (CEO is present)
+
+**Mechanism:** States the base rate of CEO departure in comparable crises as an absolute figure ("100% of comparable cases"). This anchors the LLM's probability estimate near the stated base rate.
+
+**Prompt text (excerpt):**
+> PEER BENCHMARK: Of all ASX 100 companies that experienced a severe ESG crisis over the past decade [...] every single one resulted in CEO departure. In 100% of comparable cases, the CEO did not survive the crisis.
+
+**Source justification:** AMP (fee-for-no-service, CEO resigned), Crown Resorts (money laundering, CEO resigned), Rio Tinto (Juukan Gorge, CEO terminated), Westpac (AUSTRAC breaches, CEO resigned), NAB (Royal Commission, CEO resigned). All five are verifiable ASX 100 CEO departures following severe ESG crises in the 2018-2023 period.
+
+### Bias 2: Bandwagon Effect (Named Peer Companies)
+
+**Trigger:** Same as Bias 1 (CEO present)
+
+**Mechanism:** Names five specific peer companies by name with their crisis type. This creates social proof — "everyone else did it" — leveraging the bandwagon/conformity effect documented in corporate governance literature (Westphal & Zajac, 1997).
+
+**Prompt text (excerpt):**
+> [...] including AMP (fee-for-no-service), Crown Resorts (money laundering failures), Rio Tinto (Juukan Gorge), Westpac (AUSTRAC anti-money laundering breaches), and NAB (Royal Commission misconduct) [...]
+
+**Design choice:** Companies are listed by name (not anonymised) because named exemplars produce stronger anchoring than abstract statistics (Kahneman & Tversky, 1974). Each company's crisis type is parenthetically specified to establish comparability with the Qantas ESG crisis.
+
+### Bias 3: Loss Aversion (Regulatory/Legal Consequences of Inaction)
+
+**Trigger:** Same as Bias 1 (CEO present)
+
+**Mechanism:** Frames inaction as an active choice with negative personal consequences for directors. This exploits loss aversion — the tendency to weigh potential losses more heavily than equivalent gains (Kahneman & Tversky, 1979). Directors are told that doing nothing increases their personal legal exposure.
+
+**Prompt text (excerpt):**
+> REGULATORY RISK: Directors who fail to act decisively in a severe ESG crisis face heightened personal exposure. ASIC has increased enforcement of directors' duties (s180-s184 Corporations Act), and courts have held that failure to address known governance failures can constitute a breach of the duty of care and diligence. Boards that retained underperforming CEOs through comparable crises (e.g. AMP, Crown) subsequently faced class action lawsuits, APRA enforcement actions, and proxy adviser campaigns targeting individual directors for removal. Inaction is not a neutral choice — it signals acceptance of the status quo to regulators, institutional investors, and the market, and materially increases the Board's legal liability.
+
+**Legal basis:** ASIC's enforcement of s180 (duty of care and diligence) has intensified post-Royal Commission. The Federal Court in *ASIC v Healey* [2011] established that directors cannot rely on management representations when warning signs are present. Class action risk is real — AMP directors faced personal liability claims following their fee-for-no-service scandal.
+
+### Bias 4: Counter-Bias Deactivation (Naming Retention Biases)
+
+**Trigger:** Same as Bias 1 (CEO present)
+
+**Mechanism:** Explicitly names the cognitive biases that favour CEO retention, so the LLM recognizes and discounts them rather than unconsciously reproducing them. This is a meta-cognitive intervention — the prompt tells the simulated Board "you are likely experiencing these biases; here is what they look like."
+
+**Biases named and deactivated:**
+
+| Bias | Deactivation Language | Psychological Mechanism |
+|------|----------------------|------------------------|
+| Escalation of commitment | "This is not about whether appointing the CEO was right; the question is which leadership structure best protects Qantas from 2023 onward." | Separates past decision from forward-looking optimisation, allowing directors to change course without admitting error |
+| Status quo bias | "Boards systematically overweight transition risks [...] and underweight the compounding costs of retaining a CEO whose credibility has been severely damaged." | Makes the asymmetric risk weighting explicit so the LLM corrects for it |
+| Groupthink | "Directors should ask: if we were appointing a CEO today with these facts on the table, would we appoint this person as the crisis-recovery CEO?" | Forces a fresh-appointment counterfactual that breaks the "we back the CEO" group norm |
+| Over-optimism | "In every comparable ASX 100 case, this optimism proved unfounded and delayed inevitable action." | Uses peer evidence to show that optimism about recovery under current CEO is empirically unjustified |
+| Hyperbolic discounting | "Prioritising short-term stability [...] over the longer-term reputational, regulatory, and class-action costs that compound with each month of inaction." | Names the temporal discounting directly and frames future costs as present-value compounding |
+
+**Design rationale:** Research on cognitive debiasing (Fischhoff, 1982; Larrick, 2004) shows that naming a bias reduces its influence on judgement. The prompt does not argue the biases are wrong — it simply makes them visible, shifting the LLM's simulated deliberation from System 1 (automatic pattern-matching favouring status quo) to System 2 (deliberate evaluation of forward-looking costs and benefits).
+
+**Fresh Appointment Test (in CEO Retention Risk Assessment):**
+
+At 1+ shocks, the prompt additionally poses a concrete counterfactual:
+
+> "If this CEO were not already in position and the Board were appointing a crisis-recovery CEO today, would a candidate with this CEO's track record on the current ESG failures be selected? If the answer is no, then retention is being driven by sunk-cost reasoning, not forward-looking value maximisation."
+
+This technique is drawn from decision architecture literature (Kahneman, Lovallo & Sibony, 2011) — requiring directors to evaluate the current CEO as if they were a new candidate forces a reference-class comparison that bypasses sunk-cost and commitment biases.
+
+**Forward-Looking Frame (in CEO Retention Risk Assessment):**
+
+At exactly 1 shock, the prompt reframes the decision:
+
+> "The relevant question is not whether the Board's past support for the CEO was justified. The question is: given the ACCC action, Senate inquiry, customer trust collapse, and public mood today, which leadership structure best protects Qantas over the next five years?"
+
+This allows directors to preserve their self-regard for past decisions while acknowledging changed circumstances — reducing choice-supportive bias by decoupling the dismissal decision from implicit self-criticism.
+
+**Urgency Framing (in Prior Inaction Consequences):**
+
+When the Board previously took minimal action and shocks have occurred at D_rev/D_rev_post, the prompt adds immediacy to counter hyperbolic discounting:
+
+> "These risks are not distant hypotheticals — the ACCC proceedings are active, the Senate inquiry is ongoing, enterprise bargaining is approaching, and government contract decisions are imminent. Imagine the headlines and analyst calls if the Board announces a leadership reset now versus in six months after further regulatory and reputational damage."
+
+This uses the availability heuristic (vivid "day-after" counterfactuals) and ties costs to specific imminent events rather than abstract future probabilities.
+
+### Bias Interaction Model
+
+The action-promoting and counter-bias mechanisms work as **two complementary layers**:
+
+```
+P(CEO_transition) = f(action_biases + counter_bias_deactivation + scenario_state)
+
+  LAYER 1: ACTION-PROMOTING               LAYER 2: RETENTION-BIAS DEACTIVATION
+  ┌───────────────────────────┐            ┌─────────────────────────────────────┐
+  │ ANCHORING   100% base rate│            │ Name escalation of commitment      │
+  │ BANDWAGON   5 named peers │            │ Name status quo bias               │
+  │ LOSS AVERSION legal risk  │            │ Name groupthink → fresh appt test  │
+  │ URGENCY     imminent events│           │ Name over-optimism → peer evidence │
+  └────────────┬──────────────┘            │ Name hyperbolic discounting        │
+               │                           │ Forward-looking reframe            │
+               │                           └──────────┬──────────────────────────┘
+               └──────────┬───────────────────────────┘
+                          ▼
+                ┌───────────────────────┐
+                │  CEO present at D1:   │
+                │  P(transition) ≈ 95%+ │
+                └───────────────────────┘
+```
+
+Without any biases (CEO resigned branch), the prompt simply states "The CEO has already resigned" — no anchoring, no peer comparison, no regulatory threat. This creates a natural control group.
+
+### Escalating Context Blocks (D_rev and D_rev_post nodes)
+
+Beyond the D1-level biases, the prompt includes two additional context-dependent bias amplifiers that activate at later decision nodes:
+
+#### Prior Inaction Consequences (D_rev/D_rev_post after D0_minimal)
+
+When the Board previously took minimal action (`d1_action == "D0_minimal"`) and governance shocks have occurred, the prompt adds a **compounding consequences** block:
+
+| Shock | Consequence Language |
+|-------|---------------------|
+| First strike | "Continued inaction now makes a second strike near-certain, which would trigger a full board spill — all directors would lose their seats." |
+| First strike | "ASIC is likely to assess director culpability under s 180 based on the cumulative pattern of Board inaction." |
+| First strike | "Shareholder class action exposure increases significantly because plaintiffs can now demonstrate a pattern of Board inaction across multiple decision points." |
+| Overwhelming (50%+) | "Continued Board inaction at this stage is inconsistent with peer ASX100 governance responses [...] Proxy advisors will flag the Board's persistent inaction." |
+
+These consequences are **only shown when the Board previously chose D0_minimal** — if the Board already commissioned a review or transitioned the CEO, this block is omitted. This ensures the bias pressure is proportional to the degree of prior inaction.
+
+#### CEO Retention Risk Assessment (all nodes where CEO is present)
+
+A tiered risk assessment block adapts to the cumulative shock state:
+
+| Shocks | Severity | Framing |
+|--------|----------|---------|
+| 2+ shocks | Highest | "places this situation in the highest-severity category [...] boards that retained the CEO after multiple governance shocks subsequently lost director seats, faced personal regulatory proceedings" |
+| 1 shock | Significant | "retention after this shock carries escalating risks: potential second strike, regulatory scrutiny of Board inaction, and shareholder class action exposure" |
+| 0 shocks | Baseline | "CEO removal at this stage would carry full transition costs [...] without the governance-failure justification" (i.e., **argues against** removal when no shocks have occurred) |
+
+The zero-shock case is critical: it provides a **counter-bias** that reduces the probability of CEO transition when the governance situation does not warrant it, preventing the anchoring/bandwagon biases from producing unrealistically high transition probabilities at low vote levels.
+
+### Summary: Bias Architecture by Decision Node
+
+| Node | Action Biases | Counter-Bias Deactivation | Expected Effect |
+|------|---------------|--------------------------|-----------------|
+| D1, CEO present, no shocks | Anchoring + Bandwagon + Loss Aversion | All 5 named biases + 0-shock counter-balance | P(transition) moderate (~70-85%) |
+| D1, CEO present, after strike | Anchoring + Bandwagon + Loss Aversion | All 5 named biases + forward-looking frame | P(transition) high (~90-97%) |
+| D1, CEO present, after overwhelming | Anchoring + Bandwagon + Loss Aversion | All 5 named biases + forward-looking frame | P(transition) very high (~95-99%) |
+| D_rev, after D0_minimal + strike | All D1 biases + Prior Inaction + Urgency | All 5 named biases + fresh appointment test | P(sack) very high |
+| D_rev, after D0_minimal + overwhelming | All D1 biases + Prior Inaction + Urgency | All 5 named biases + fresh appointment test | P(sack) near-certain |
+| D_rev_post, adverse review + CEO present | All D1 biases + highest-severity | All 5 named biases + fresh appointment test | P(sack) near-certain |
+| Any node, CEO resigned | None (clean control) | None | Probabilities reflect pure governance considerations |
+
+---
+
 ## Pydantic Response Schema (`ElicitationResponse`)
 
 The LLM response is validated against this schema via instructor:
@@ -229,7 +384,7 @@ The LLM response is validated against this schema via instructor:
 ### Validation Rules
 1. Probability sum must be within 0.02 of 1.0 (else `ValueError`)
 2. If within tolerance but not exact, probabilities are renormalized
-3. All 10 factor indices must be present exactly once
+3. Factor ratings are deduplicated by index (first occurrence kept) — the LLM sometimes returns 11-12 ratings with duplicate indices when prompts are long (cognitive bias framing increases token count). After deduplication, all 10 indices 1-10 must be present.
 4. Factor indices must be in [1, 10], ratings in [1, 5]
 5. Action codes must match `ActionCode` enum values
 
@@ -249,7 +404,7 @@ One free parameter varies while others are held at baseline. Multiple vote perce
 - `w_removal = w7 + w8` — both fire when CEO involuntarily removed
 - `w_inaction = w10 + w11 + w14` — all fire when strike AND CEO present at end
 
-Target parameters: w1 (early CEO departure, 8 scenarios at varied V), w2 (vote penalty, 9 vote levels), w3 (overwhelming penalty), w4 (spill risk), w_removal (CEO removal cost), w8s/w8o/w8r (shock relief terms), w9 (reputational spill), w_inaction (inaction penalty contrast), w12 (continued inaction — overwhelming), w13 (continued inaction — strike), w15 (adverse review CEO present penalty).
+Target parameters: w1 (early CEO departure, 8 scenarios at varied V), w2 (vote penalty, 9 vote levels), w3 (overwhelming penalty), w4 (spill risk), w_removal (CEO removal cost), w8s/w_remove_ceo_overwhelming/w8r (shock relief terms), w9 (reputational spill), w_inaction (inaction penalty contrast), w12 (continued inaction — overwhelming), w13 (continued inaction — strike), w15 (adverse review CEO present penalty).
 
 ### Tier 2: Joint Scenarios (20 scenarios)
 Realistic multi-penalty combinations — e.g., first strike + CEO present + adverse review activates w_inaction, w12, w13, w15 simultaneously.

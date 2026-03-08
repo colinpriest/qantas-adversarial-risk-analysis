@@ -44,7 +44,7 @@ def _load_estimated_weights(csv_path: str) -> dict[str, float]:
         "w3": "overwhelming_penalty_weight",
         "w4": "spill_risk_weight",
         "w8s": "ceo_loss_shock_strike",
-        "w8o": "ceo_loss_shock_overwhelming",
+        "w_remove_ceo_overwhelming": "ceo_loss_shock_overwhelming",
         "w8r": "ceo_loss_shock_adverse",
         "w9": "reputational_spill_weight",
         "w12": "board_d1_liability",
@@ -128,8 +128,26 @@ def main():
                         help="Path to parameter_estimates.csv from board_utility_quantification.py. "
                              "Overrides Board utility weights in governance_spec.xlsx with "
                              "estimated values.")
+    parser.add_argument("--no-board-prior", action="store_true",
+                        help="Disable Laplace smoothing on Board's predictive distribution")
+    parser.add_argument("--no-ceo-prior", action="store_true",
+                        help="Disable Laplace smoothing on CEO's predictive distribution")
+    parser.add_argument("--no-asa-prior", action="store_true",
+                        help="Disable Laplace smoothing on ASA's predictive distribution")
 
     args = parser.parse_args()
+
+    # Build set of actors whose predictive distributions should NOT get
+    # Laplace smoothing (Dirichlet(1,...,1) prior).
+    no_prior_actors = set()
+    if args.no_board_prior:
+        no_prior_actors.add("Board")
+    if args.no_ceo_prior:
+        no_prior_actors.add("CEO")
+    if args.no_asa_prior:
+        no_prior_actors.add("ASA")
+    if no_prior_actors:
+        logger.info(f"Laplace smoothing DISABLED for: {', '.join(sorted(no_prior_actors))}")
 
     data_dir = PROJECT_ROOT / "data"
     solver = Solver(
@@ -144,6 +162,7 @@ def main():
         n_workers=args.n_workers,
         K_d0_ceo=args.K_d0,
         R_d0_ceo=args.R_d0,
+        no_prior_actors=no_prior_actors,
     )
 
     # Override Board utility weights with quantification estimates

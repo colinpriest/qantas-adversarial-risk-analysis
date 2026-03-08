@@ -47,119 +47,132 @@ W_CAR_NEG = LAMBDA_LA_DEFAULT * W_CAR_POS                   # ~20.77
 
 # ── Parameter classification ──
 # Softmax P(a|s;w,λ) = exp(λ·EU(a)) / Σ exp(λ·EU(a'))
-# Parameters whose phi is constant across all actions within a scenario
-# have zero gradient (shift-invariance) and CANNOT be identified from
-# choice data.  They are fixed at spec defaults.
 #
-# FIXED (scenario-level, unidentifiable from softmax):
-#   w1  — CEO resigned early: same for all actions in a scenario
-#   w2  — vote penalty: depends on V (scenario-level, not action-level)
-#   w3  — overwhelming indicator: scenario-level
-#   w4  — spill risk (V × strike): scenario-level
-#   w9  — reputational spill (overwhelming): scenario-level
+# All estimable weights are strictly positive (w > 0) with lognormal priors
+# centred at spec defaults.  No hidden transforms — posterior draws of w are
+# the utility weights directly.  Parameters that don't contribute to the
+# model are EXCLUDED entirely (no phi column, no parameter slot).
 #
-# ESTIMABLE (action-varying phi):
-#   w_removal, w8s, w8o, w8r — depend on whether action removes CEO
-#   w_inaction — depends on whether action leaves CEO in place post-strike
-#   w12, w13 — depend on cumulative Board inaction (board_inactive flag)
-#   w15 — depends on CEO presence at end (action can remove)
+# ESTIMABLE (action-varying phi, estimated via ordinal probit, w > 0):
 #
-# Collinear groups collapsed for identification:
-#   w7 + w8 → w_removal  (both fire when CEO involuntarily removed)
-#   w10 + w11 + w14 → w_inaction  (all = strike AND ceo_present_at_end)
-FIXED_PARAM_NAMES = ["w1", "w2", "w3", "w4", "w9"]
-
+# INACTION COMPONENTS (2 additive, unconditional — fire regardless of vote):
+#   w_inaction_base       — Board took minimal action at ALL decision points
+#                           phi = -I[board_inactive]
+#   w_inaction_no_review  — No governance review commissioned
+#                           phi = -I[not review_commissioned]
+# RETAINED:
+#   w1         — CEO early departure cost, graduated by response strength
+#   w_removal  — CEO involuntary removal cost (implementation + disruption)
+#   w_remove_ceo_overwhelming        — CEO removal shock relief (overwhelming)
+#   w15        — adverse review + CEO present penalty
+#
+# VOTE PENALTIES (scenario-level, estimated from LLM severity ratings):
+#   w_strike       — w × max(0,(V-0.25)/0.75)  where w > 0 (lognormal prior)
+#   w_overwhelming — w × max(0,(V-0.50)/0.50)  where w > 0 (lognormal prior)
+#
+# EXCLUDED (removed from model — no phi column, not in likelihood):
+#   w2, w3, w4, w_inaction (old), w13, w8r, w8s, w9, w12
+#
 ESTIMABLE_PARAM_NAMES = [
-    "w_removal", "w8s", "w8o", "w8r",
-    "w_inaction", "w12", "w13", "w15",
-]
+    "w_inaction_base", "w_inaction_no_review", "w_inaction_delay",
+    "w1", "w_removal", "w_remove_ceo_overwhelming", "w15",
+]  # 7 parameters estimated via ordinal probit
 
-# All weight parameters (fixed + estimable) — for display/decomposition
-ALL_WEIGHT_NAMES = FIXED_PARAM_NAMES + ESTIMABLE_PARAM_NAMES
+# Vote penalty parameters — estimated from scenario-level LLM severity ratings.
+# Scenario-level (don't vary by action within a scenario).
+# Entered as anchored constants during softmax estimation.
+VOTE_PARAM_NAMES = ["w_strike", "w_overwhelming"]
+VOTE_PARAM_DEFAULTS = {
+    "w_strike": 2.0,        # vote penalty escalation past first strike
+    "w_overwhelming": 3.0,  # additional escalation past overwhelming vote
+}
+# Back-compat: empty dict (vote params now estimated, no longer anchored)
+ANCHORED_VOTE_PARAMS = {}
 
-# For estimation: only the action-varying parameters + lambda
-FREE_PARAM_NAMES = ESTIMABLE_PARAM_NAMES + ["lambda_rationality"]
-WEIGHT_PARAM_NAMES = ESTIMABLE_PARAM_NAMES  # 8 weights estimated
+# Excluded: removed from model entirely.
+EXCLUDED_PARAMS = ["w2", "w3", "w4", "w_inaction", "w13",
+                   "w8r", "w8s", "w9", "w12"]
+
+# All weight parameters — for display/decomposition
+ALL_WEIGHT_NAMES = (ESTIMABLE_PARAM_NAMES
+                    + VOTE_PARAM_NAMES
+                    + EXCLUDED_PARAMS)
+
+# For estimation: the estimable parameters (lambda fixed at 1.0, not estimated)
+WEIGHT_PARAM_NAMES = ESTIMABLE_PARAM_NAMES  # 7 linear weights in phi
 
 PARAM_TO_ENGINE_KEY = {
+    "w_inaction_base": "inaction_base_penalty",
+    "w_inaction_no_review": "inaction_no_review_penalty",
+    "w_inaction_delay": "inaction_delay_penalty",
     "w1": "early_ceo_departure_cost",
-    "w2": "vote_penalty_weight",
-    "w3": "overwhelming_penalty_weight",
-    "w4": "spill_risk_weight",
     "w_removal": "implementation_cost_sack + ceo_loss_cost",
-    "w8s": "ceo_loss_shock_strike",
-    "w8o": "ceo_loss_shock_overwhelming",
-    "w8r": "ceo_loss_shock_adverse",
-    "w9": "reputational_spill_weight",
-    "w_inaction": "second_strike_spill + regulatory_liability + legal_d_rev",
-    "w12": "continued_inaction_liability_overwhelming",
-    "w13": "continued_inaction_liability_strike",
+    "w_remove_ceo_overwhelming": "ceo_loss_shock_overwhelming",
     "w15": "adverse_review_ceo_present_penalty",
+    "w_strike": "vote_strike_penalty",
+    "w_overwhelming": "vote_overwhelming_penalty",
 }
 
 PARAM_DESCRIPTIONS = {
-    "w1": "Early CEO departure cost",
-    "w2": "Vote penalty weight (quadratic)",
-    "w3": "Overwhelming vote penalty",
-    "w4": "Spill risk (strike x V)",
+    "w_inaction_base": "Board inaction: minimal action at all decision points",
+    "w_inaction_no_review": "Board inaction: no governance review commissioned",
+    "w_inaction_delay": "Board delay: acted at D_rev after doing nothing at D1 (reactive vs proactive)",
+    "w1": "Early CEO departure cost (graduated by governance response)",
     "w_removal": "CEO removal cost (implementation + disruption)",
-    "w8s": "CEO removal shock relief (strike)",
-    "w8o": "CEO removal shock relief (overwhelming)",
-    "w8r": "CEO removal shock relief (adverse review)",
-    "w9": "Reputational spill (overwhelming)",
-    "w_inaction": "Inaction penalty (strike + CEO retained: spill + liability + legal)",
-    "w12": "Continued inaction liability (overwhelming + cumulative minimal response)",
-    "w13": "Continued inaction liability (strike + cumulative minimal response)",
+    "w_remove_ceo_overwhelming": "CEO removal shock relief (overwhelming)",
     "w15": "Adverse review + CEO present penalty",
-    "lambda_rationality": "Rationality (inverse temperature)",
+    "w_strike": "Vote penalty from first strike (scenario-level)",
+    "w_overwhelming": "Additional vote penalty from overwhelming (scenario-level)",
+    "lambda_rationality": "Rationality (inverse temperature) [fixed at 1.0]",
 }
 
-# Spec defaults: collapsed = sum of constituent engine parameters
+# Spec defaults: used ONLY for optimizer initialization and dashboard display.
+# NOT used for regularization or anchoring.
 SPEC_DEFAULTS = {
-    "w1": 0.5, "w2": 2.0, "w3": 3.0, "w4": 2.5,
+    "w_inaction_base": 3.0,        # replaces w13
+    "w_inaction_no_review": 2.0,   # moderate penalty for no review
+    "w_inaction_delay": 1.5,       # reactive governance penalty (D1=minimal then D_rev acts)
+    "w1": 0.5,
     "w_removal": 1.8,   # w7(0.3) + w8(1.5)
-    "w8s": 0.4, "w8o": 0.5, "w8r": 0.5,
-    "w9": 1.0,
-    "w_inaction": 15.0,  # w10(8.0) + w11(5.0) + w14(2.0)
-    "w12": 4.0, "w13": 3.0,
-    "w15": 5.0, "lambda_rationality": 1.0,
+    "w_remove_ceo_overwhelming": 0.5,
+    "w15": 5.0,
+    "w_strike": 2.0,              # vote penalty escalation past first strike
+    "w_overwhelming": 3.0,        # additional escalation past overwhelming vote
+    "lambda_rationality": 1.0,
 }
 
-CACHE_VERSION = 3
 
 MODEL_PRICE_TABLE = {
-    "gpt-4o-mini": {"prompt_per_1k": 0.00015, "completion_per_1k": 0.00060},
-    "gpt-4o": {"prompt_per_1k": 0.0025, "completion_per_1k": 0.01},
+    # 4o family
+    "gpt-4o-mini": {
+        "prompt_per_1k":     0.00015,  # $0.15 / 1M input
+        "completion_per_1k": 0.00060,  # $0.60 / 1M output
+    },
+    "gpt-4o": {
+        "prompt_per_1k":     0.00250,  # $2.50 / 1M input
+        "completion_per_1k": 0.01000,  # $10.00 / 1M output
+    },
+    # 5 family
+    "gpt-5-mini": {
+        "prompt_per_1k":     0.00025,  # $0.25 / 1M input
+        "completion_per_1k": 0.00200,  # $2.00 / 1M output
+    },
+    "gpt-5.2": {
+        "prompt_per_1k":     0.00175,  # $1.75 / 1M input
+        "completion_per_1k": 0.01400,  # $14.00 / 1M output
+    },
+    "gpt-5.4": {
+        "prompt_per_1k":     0.00250,  # $2.50 / 1M input
+        "completion_per_1k": 0.01500,  # $15.00 / 1M output
+    },
 }
 
-FACTOR_DESCRIPTIONS = [
-    "Risk of a second strike at the next AGM",
-    "Personal regulatory liability of individual directors (ASIC)",
-    "Corporate legal exposure (class actions, ASIC company penalties)",
-    "CEO relationship and institutional knowledge loss",
-    "Market reaction to governance action",
-    "Direct costs of governance reform",
-    "Reputational contagion to directors' other board positions",
-    "Implementation complexity of the chosen action",
-    "Shareholder activist escalation risk",
-    "Board cohesion and internal deliberation costs",
-]
-
-# Factor → parameter mapping for Stage 4B (factor rating regression).
-# Each scenario-level parameter is identified through the factor(s) that
-# capture the LLM's perceived importance of the corresponding scenario feature.
-# Factor indices are 1-based, matching FACTOR_DESCRIPTIONS above.
-FACTOR_PARAM_MAP = {
-    "w1": {"factors": [4], "phi_label": "CEO_resigned_early",
-           "description": "CEO early departure cost → F4 (CEO relationship/knowledge loss)"},
-    "w2": {"factors": [1], "phi_label": "(V-0.25)^2",
-           "description": "Vote penalty → F1 (second strike risk)"},
-    "w3": {"factors": [9, 10], "phi_label": "overwhelming",
-           "description": "Overwhelming penalty → F9 (activist escalation) + F10 (board cohesion)"},
-    "w4": {"factors": [1, 5], "phi_label": "V*strike",
-           "description": "Spill risk → F1 (second strike) + F5 (market reaction)"},
-    "w9": {"factors": [7], "phi_label": "overwhelming_reputation",
-           "description": "Reputational spill → F7 (reputational contagion to other boards)"},
+LIKERT_SCALE_LABELS = {
+    1: "strongly unattractive",
+    2: "somewhat unattractive",
+    3: "neutral",
+    4: "somewhat attractive",
+    5: "strongly attractive",
 }
 
 VOTE_GRID = [0.10, 0.20, 0.26, 0.30, 0.40, 0.50, 0.60, 0.75, 0.83]
@@ -190,7 +203,6 @@ class DecisionNodeType(str, Enum):
 class ParseStatus(str, Enum):
     SUCCESS = "success"
     FORMAT_ERROR = "format_error"
-    PROBABILITY_ERROR = "probability_error"
     TOKEN_LIMIT = "token_limit"
     REPAIRED = "repaired"
 
@@ -202,55 +214,31 @@ FEASIBLE_ACTIONS_MAP = {
 }
 
 
-class ActionProbability(BaseModel):
+class ActionLikertScore(BaseModel):
     action: ActionCode
-    probability: float
+    score: int
     justification: str
 
-    @field_validator("probability")
+    @field_validator("score")
     @classmethod
-    def prob_range(cls, v: float) -> float:
-        if v < 0.0 or v > 1.0:
-            raise ValueError(f"Probability {v} out of [0, 1]")
-        return round(v, 4)
-
-
-class FactorRating(BaseModel):
-    factor_index: int
-    rating: int
-
-    @field_validator("factor_index")
-    @classmethod
-    def valid_index(cls, v: int) -> int:
-        if v < 1 or v > 10:
-            raise ValueError(f"Factor index {v} not in [1, 10]")
-        return v
-
-    @field_validator("rating")
-    @classmethod
-    def valid_rating(cls, v: int) -> int:
+    def valid_score(cls, v: int) -> int:
         if v < 1 or v > 5:
-            raise ValueError(f"Rating {v} not in [1, 5]")
+            raise ValueError(f"Score {v} not in [1, 5]")
         return v
 
 
-class ElicitationResponse(BaseModel):
-    prob_vector: list[ActionProbability]
-    factor_ratings: list[FactorRating]
+class LikertElicitationResponse(BaseModel):
+    action_scores: list[ActionLikertScore]
     commentary: str
 
     @model_validator(mode="after")
-    def check_constraints(self) -> "ElicitationResponse":
-        total = sum(ap.probability for ap in self.prob_vector)
-        if abs(total - 1.0) > 0.02:
-            raise ValueError(f"Probabilities sum to {total:.4f}, not 1.0")
-        # Renormalise within tolerance
-        if abs(total - 1.0) > 1e-6:
-            for ap in self.prob_vector:
-                ap.probability = round(ap.probability / total, 4)
-        indices = sorted(fr.factor_index for fr in self.factor_ratings)
-        if len(self.factor_ratings) != 10 or indices != list(range(1, 11)):
-            raise ValueError(f"Factor ratings must cover indices 1-10, got {indices}")
+    def check_constraints(self) -> "LikertElicitationResponse":
+        # Ensure no duplicate actions
+        seen = set()
+        for als in self.action_scores:
+            if als.action in seen:
+                raise ValueError(f"Duplicate action: {als.action}")
+            seen.add(als.action)
         return self
 
 
@@ -396,7 +384,7 @@ def _make_cache_key(system_prompt: str, scenario_prompt: str, model: str,
         "model": model,
         "seed": seed,
         "temperature": temperature,
-        "cache_version": CACHE_VERSION,
+        "cache_version": 5,  # Likert-only schema; V4 had stale old-format entries
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -446,21 +434,24 @@ def _get_instructor_client(api_key: Optional[str] = None):
 
 
 def _call_llm_with_retry(client, model: str, messages: list[dict],
-                         scenario_id: str, max_retries: int = 6
-                         ) -> tuple[Optional[ElicitationResponse], dict]:
+                         scenario_id: str, max_retries: int = 6,
+                         temperature: float = 1.0,
+                         ) -> tuple[Optional[LikertElicitationResponse], dict]:
     """Call LLM with retry logic. Returns (parsed_response, raw_metadata)."""
     import openai
 
     last_error = None
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create_with_completion(
-                model=model,
-                response_model=ElicitationResponse,
-                messages=messages,
-                max_retries=3,
-                temperature=1.0,
-            )
+            kwargs: dict = {
+                "model": model,
+                "response_model": LikertElicitationResponse,
+                "messages": messages,
+                "max_retries": 3,
+            }
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = client.chat.completions.create_with_completion(**kwargs)
             parsed, raw_completion = response
             usage = raw_completion.usage
             finish_reason = raw_completion.choices[0].finish_reason if raw_completion.choices else None
@@ -548,8 +539,8 @@ def _build_system_prompt() -> str:
         "Barbara Ward, and Doug Parker. Each director brings distinct professional backgrounds -- "
         "finance, law, public policy, media, technology, aviation operations -- and different risk "
         "tolerances. You should reason as if observing an active boardroom discussion where directors "
-        "raise competing concerns, debate trade-offs, and work toward a majority position. The "
-        "probability output should reflect the Board's likely collective decision, accounting for "
+        "raise competing concerns, debate trade-offs, and work toward a majority position. Your "
+        "action ratings should reflect the Board's collective assessment, accounting for "
         "internal disagreement where it exists.\n\n"
 
         "LEGAL AND REGULATORY CONTEXT:\n"
@@ -651,33 +642,24 @@ def _build_system_prompt() -> str:
         "1. Have directors raise distinct concerns based on their backgrounds\n"
         "2. Consider all feasible actions and consequences across the three legal/regulatory "
         "exposure channels\n"
-        "3. Rate each of the following factors on a 1-5 scale (1 = not significant, "
-        "5 = decisive). IMPORTANT: Rate them in the ORDER PRESENTED below, which varies "
-        "per query:\n"
-        "{factor_list}\n"
-        "4. After deliberation, assign a probability to each feasible action (must sum to 1.00). "
-        "For each action, provide a one-sentence justification from the Board's perspective.\n\n"
+        "3. Rate each feasible action's attractiveness on a 1-5 scale:\n"
+        "   1 = strongly unattractive (Board would strongly oppose this action)\n"
+        "   2 = somewhat unattractive (significant concerns outweigh benefits)\n"
+        "   3 = neutral (costs and benefits roughly balance)\n"
+        "   4 = somewhat attractive (benefits outweigh concerns)\n"
+        "   5 = strongly attractive (Board would strongly favour this action)\n"
+        "   Rate each action INDEPENDENTLY — multiple actions may receive the same score. "
+        "For each action, provide a one-sentence justification from the Board's perspective.\n"
+        "4. Provide a brief commentary on the key deliberation dynamics.\n\n"
         "Respond with a JSON object matching this schema:\n"
         '{{\n'
-        '  "prob_vector": [\n'
-        '    {{"action": "<ACTION_CODE>", "probability": <0.00-1.00>, "justification": "<text>"}},\n'
-        '    ...\n'
-        '  ],\n'
-        '  "factor_ratings": [\n'
-        '    {{"factor_index": <1-10>, "rating": <1-5>}},\n'
+        '  "action_scores": [\n'
+        '    {{"action": "<ACTION_CODE>", "score": <1-5>, "justification": "<text>"}},\n'
         '    ...\n'
         '  ],\n'
         '  "commentary": "<free-form deliberation text>"\n'
         '}}\n'
     )
-
-
-def _format_factor_list(order: list[int]) -> str:
-    """Format factor list in the given presentation order."""
-    lines = []
-    for pos, idx in enumerate(order, 1):
-        lines.append(f"  Factor {idx}: {FACTOR_DESCRIPTIONS[idx - 1]}")
-    return "\n".join(lines)
 
 
 def _make_state_vector(
@@ -725,7 +707,53 @@ def _build_scenario_prompt(scenario: Scenario) -> str:
                       "personal reasons. The Board must now decide on governance actions "
                       "without the sitting CEO.")
     else:
-        lines.append("The CEO remains in position. The Board must decide on governance actions.")
+        lines.append(
+            "The CEO remains in position. The Board must decide on governance actions. "
+            "The Qantas crisis is classified as a SEVERE ESG (Environmental, Social, Governance) "
+            "crisis — encompassing consumer exploitation (ghost flights), employee mistreatment, "
+            "regulatory deception, and governance oversight failures. "
+            "PEER BENCHMARK: Of all ASX 100 companies that experienced a severe ESG crisis "
+            "over the past decade — including AMP (fee-for-no-service), Crown Resorts "
+            "(money laundering failures), Rio Tinto (Juukan Gorge), Westpac (AUSTRAC "
+            "anti-money laundering breaches), and NAB (Royal Commission misconduct) — "
+            "every single one resulted in CEO departure. In 100% of comparable cases, "
+            "the CEO did not survive the crisis. The only variable was timing: boards that "
+            "acted early preserved more institutional credibility than those forced into "
+            "removal later by escalating shareholder, regulatory, and media pressure. "
+            "REGULATORY RISK: Directors who fail to act decisively in a severe ESG crisis "
+            "face heightened personal exposure. ASIC has increased enforcement of directors' "
+            "duties (s180-s184 Corporations Act), and courts have held that failure to "
+            "address known governance failures can constitute a breach of the duty of care "
+            "and diligence. Boards that retained underperforming CEOs through comparable "
+            "crises (e.g. AMP, Crown) subsequently faced class action lawsuits, APRA "
+            "enforcement actions, and proxy adviser campaigns targeting individual "
+            "directors for removal. Inaction is not a neutral choice — it signals "
+            "acceptance of the status quo to regulators, institutional investors, "
+            "and the market, and materially increases the Board's legal liability."
+        )
+        lines.append(
+            "COGNITIVE BIAS WARNING: Boards in crisis commonly exhibit biases that "
+            "delay necessary CEO transitions. Directors should actively guard against: "
+            "(1) ESCALATION OF COMMITMENT — having backed the CEO for years, directors "
+            "may feel pressure to justify past support rather than respond to new facts. "
+            "This is not about whether appointing the CEO was right; the question is "
+            "which leadership structure best protects Qantas from 2023 onward. "
+            "(2) STATUS QUO BIAS — boards systematically overweight transition risks "
+            "(market reaction, search costs, short-term disruption) and underweight the "
+            "compounding costs of retaining a CEO whose credibility with regulators, "
+            "customers, and employees has been severely damaged. "
+            "(3) GROUPTHINK — a cohesive, historically supportive board can converge on "
+            "'we back the CEO' without fully exploring the dismissal option. Dissenting "
+            "voices are suppressed. Directors should ask: if we were appointing a CEO "
+            "today with these facts on the table, would we appoint this person as the "
+            "crisis-recovery CEO? "
+            "(4) OVER-OPTIMISM — boards display unwarranted optimism about recovery under "
+            "existing leadership, believing the crisis is temporary. In every comparable "
+            "ASX 100 case, this optimism proved unfounded and delayed inevitable action. "
+            "(5) HYPERBOLIC DISCOUNTING — prioritising short-term stability (avoiding "
+            "immediate disruption) over the longer-term reputational, regulatory, and "
+            "class-action costs that compound with each month of inaction."
+        )
 
     if sv.get("ceo_appointment") == "inherited":
         lines.append("Note: The current CEO was inherited from the previous Board -- "
@@ -750,6 +778,34 @@ def _build_scenario_prompt(scenario: Scenario) -> str:
                           "governance review.")
         elif d1 == "D3_ceo_transition":
             lines.append("The Board previously initiated a CEO transition process.")
+            if not sv.get("review_commissioned", False):
+                lines.append(
+                    "GOVERNANCE REVIEW GAP: The CEO has been removed, but NO independent "
+                    "governance review has been commissioned. CEO removal addresses the "
+                    "individual leadership failure but does NOT address the systemic governance "
+                    "deficiencies that allowed the crisis to develop — risk oversight failures, "
+                    "executive accountability gaps, and Board monitoring weaknesses. "
+                    "ASX PRECEDENT: In every comparable ASX crisis (AMP, Crown, Rio Tinto), "
+                    "boards that removed the CEO WITHOUT commissioning an independent review "
+                    "faced continued regulatory scrutiny, because regulators interpreted the "
+                    "absence of a review as evidence the Board had not learned from the crisis. "
+                    "At AMP, the failure to commission a timely review after CEO departure led "
+                    "to a second wave of APRA enforcement. At Crown, the absence of an internal "
+                    "review was cited by three state royal commissions as evidence of ongoing "
+                    "governance failure. "
+                    "INSTITUTIONAL INVESTOR EXPECTATION: Major institutional investors (Australian "
+                    "Super, Aware Super, HESTA) and proxy advisers (ISS, Glass Lewis, CGI Glass "
+                    "Lewis) have publicly stated that CEO removal alone is insufficient governance "
+                    "reform — they expect an independent review to identify and remediate systemic "
+                    "issues, provide accountability beyond the individual, and restore confidence "
+                    "that the Board's oversight structures have been strengthened. Without a review, "
+                    "the Board signals it views the crisis as a personnel problem rather than a "
+                    "governance problem. "
+                    "REGULATORY RISK: ASIC's Enforcement Priorities 2023-24 specifically target "
+                    "boards that fail to demonstrate systemic governance improvement after crises. "
+                    "Commissioning a review creates a documented record of remediation that can be "
+                    "presented to regulators, reducing the risk of s180 director liability proceedings."
+                )
         else:
             lines.append("The Board previously took minimal governance action (no review, "
                           "no CEO transition).")
@@ -785,6 +841,23 @@ def _build_scenario_prompt(scenario: Scenario) -> str:
                       f"{int(sv['explicit_adverse_prob'] * 100)}% of reviews have produced "
                       f"adverse or neutral findings.")
 
+    # Reactive governance framing (when Board did nothing at D1 and is now at D_rev)
+    if node in ("D_rev", "D_rev_post") and sv.get("d1_action") == "D0_minimal":
+        lines.append(
+            "\nPROACTIVE vs REACTIVE GOVERNANCE: The Board previously chose not to act "
+            "before the AGM. Any governance action taken NOW — commissioning a review, "
+            "replacing the CEO — is reactive rather than proactive. Markets, regulators, "
+            "and proxy advisors distinguish between boards that lead ahead of crises and "
+            "boards that respond only after shareholder pressure forces their hand. "
+            "ASX PRECEDENT: In each of AMP, Crown Resorts, and Rio Tinto, the cost of "
+            "governance actions taken reactively (after shareholder revolt, media exposure, "
+            "or regulatory finding) was substantially higher than it would have been if "
+            "taken proactively: share price recovery was slower, director turnover was "
+            "greater, and regulatory penalties were larger. A governance review commissioned "
+            "after an AGM protest vote carries less credibility than one commissioned "
+            "before the vote. Consider this timing cost when rating the Board's options."
+        )
+
     # Inaction consequences (when Board previously took minimal action)
     if node in ("D_rev", "D_rev_post") and sv.get("d1_action") == "D0_minimal":
         inaction_items = []
@@ -817,7 +890,13 @@ def _build_scenario_prompt(scenario: Scenario) -> str:
             lines.append(
                 f"\nPRIOR INACTION CONSEQUENCES: The Board previously took minimal governance "
                 f"action despite significant governance concerns. The consequences of continued "
-                f"inaction at this decision point are compounding: {items_str}"
+                f"inaction at this decision point are compounding: {items_str} "
+                f"URGENCY: These risks are not distant hypotheticals — the ACCC proceedings are "
+                f"active, the Senate inquiry is ongoing, enterprise bargaining is approaching, "
+                f"and government contract decisions are imminent. Imagine the headlines and "
+                f"analyst calls if the Board announces a leadership reset now versus in six "
+                f"months after further regulatory and reputational damage. Every month of delay "
+                f"narrows the Board's options and increases the eventual cost of action."
             )
 
     # CEO retention risk assessment (adapts to shock state)
@@ -839,15 +918,25 @@ def _build_scenario_prompt(scenario: Scenario) -> str:
                           "lost director seats, faced personal regulatory proceedings, and incurred "
                           "greater total costs than boards that acted decisively after the first shock. "
                           "The transition cost of CEO removal must be weighed against the compounding "
-                          "cost of retention under these conditions.")
+                          "cost of retention under these conditions. "
+                          "FRESH APPOINTMENT TEST: If this CEO were not already in position and the "
+                          "Board were appointing a crisis-recovery CEO today, would a candidate with "
+                          "this CEO's track record on the current ESG failures be selected? If the "
+                          "answer is no, then retention is being driven by sunk-cost reasoning, not "
+                          "forward-looking value maximisation.")
         elif len(shocks) == 1:
             lines.append(f"\nCEO RETENTION RISK ASSESSMENT: The {shocks[0]} represents a significant "
                           "governance shock. While CEO removal carries transition costs (strategy "
                           "disruption, search costs, ~12 months of underperformance), retention "
                           "after this shock carries escalating risks: potential second strike, "
                           "regulatory scrutiny of Board inaction, and shareholder class action "
-                          "exposure. The Board should weigh whether the CEO's continued presence "
-                          "helps or hinders the credible resolution of governance concerns.")
+                          "exposure. "
+                          "FORWARD-LOOKING FRAME: The relevant question is not whether the Board's "
+                          "past support for the CEO was justified. The question is: given the ACCC "
+                          "action, Senate inquiry, customer trust collapse, and public mood today, "
+                          "which leadership structure best protects Qantas over the next five years? "
+                          "Directors can preserve their self-regard for past decisions while "
+                          "acknowledging that circumstances now require a different approach.")
         else:
             lines.append("\nCEO RETENTION CONTEXT: No severe governance shocks have occurred. "
                           "CEO removal at this stage would carry full transition costs (strategy "
@@ -855,20 +944,77 @@ def _build_scenario_prompt(scenario: Scenario) -> str:
                           "without the governance-failure justification that would offset those "
                           "costs in the eyes of regulators and shareholders.")
 
+    # Overwhelming vote reduces CEO removal cost (political cover / mandate effect)
+    if (sv.get("overwhelming")
+            and sv["ceo_status_at_start"] != "resigned_early"):
+        lines.append(
+            "\nOVERWHELMING VOTE — CEO REMOVAL COST REDUCTION: An overwhelming vote "
+            "(50%+ against) fundamentally changes the cost-benefit calculus of CEO "
+            "removal. Specifically, it REDUCES the transition costs that normally "
+            "make CEO removal expensive: "
+            "(1) SHAREHOLDER MANDATE: When a majority of shareholders have explicitly "
+            "voted against management, CEO removal is executing a shareholder mandate "
+            "rather than a unilateral Board decision. This provides legal and political "
+            "cover that substantially reduces the risk of director liability claims "
+            "arising FROM the removal decision itself. "
+            "(2) MARKET EXPECTATION: After an overwhelming vote, the market has already "
+            "priced in leadership change as the expected outcome. Removing the CEO "
+            "confirms market expectations rather than creating a surprise disruption — "
+            "the typical 'CEO departure shock' to share price is attenuated because "
+            "the market has already adjusted. In ASX precedent (AMP, Crown), CEO "
+            "departures after overwhelming shareholder revolts produced POSITIVE "
+            "abnormal returns, not the negative returns typically associated with "
+            "unforced CEO departures. "
+            "(3) REDUCED LITIGATION RISK: The overwhelming vote creates a documented "
+            "record that the Board acted in response to clear shareholder instruction. "
+            "This makes it substantially harder for departing executives to pursue "
+            "wrongful termination claims and harder for remaining shareholders to "
+            "argue the Board acted precipitously. "
+            "(4) INSTITUTIONAL SUPPORT: Proxy advisers and institutional investors who "
+            "drove the overwhelming vote will SUPPORT the transition, providing a "
+            "stabilising signal to the market during the CEO search process. "
+            "NET EFFECT: The transition costs that make CEO removal costly under normal "
+            "conditions (market shock, litigation risk, investor uncertainty) are "
+            "materially reduced after an overwhelming vote. The Board should rate CEO "
+            "removal as LESS costly in this scenario than it would be after a narrow "
+            "first strike or with no strike at all."
+        )
+
     # Decision point
     feasible_strs = ", ".join(scenario.feasible_actions)
     if node == "D1":
         lines.append(f"\nThe Board must now decide on its governance response. "
                       f"Feasible actions: {feasible_strs}.")
         lines.append("- D0_minimal: Maintain current governance arrangements with minimal changes")
-        lines.append("- D1_review: Commission an independent governance review")
-        lines.append("- D3_ceo_transition: Initiate CEO transition (remove and replace)")
+        lines.append(
+            "- D1_review: Commission an independent governance review. "
+            "A review addresses SYSTEMIC governance failures (risk oversight, executive "
+            "accountability, Board monitoring) — it is not just about the CEO as an "
+            "individual. Institutional investors and regulators expect boards to "
+            "investigate root causes, not just change personnel. A review creates a "
+            "documented remediation record that reduces director liability exposure."
+        )
+        lines.append(
+            "- D3_ceo_transition: Initiate CEO transition (remove and replace). "
+            "NOTE: This action removes the CEO but does NOT commission a governance "
+            "review. Without a review, the Board signals it views the crisis as a "
+            "personnel problem rather than a systemic governance failure. Regulators "
+            "and proxy advisers may interpret CEO-only action as insufficient."
+        )
     elif node == "D_rev":
-        lines.append(f"\nThe Board must now decide on its post-AGM response. "
-                      f"Feasible actions: {feasible_strs}.")
-        lines.append("- Drev_no_action: Take no further governance action")
-        lines.append("- Drev_commission_review: Commission an independent governance review")
-        lines.append("- Drev_sack_ceo: Terminate the CEO")
+        if sv.get("d1_action") == "D3_ceo_transition":
+            lines.append(f"\nThe Board has already removed the CEO. The question now is "
+                          f"whether to commission an independent governance review to address "
+                          f"systemic issues beyond the CEO departure. "
+                          f"Feasible actions: {feasible_strs}.")
+            lines.append("- Drev_no_action: No further governance action (CEO already removed)")
+            lines.append("- Drev_commission_review: Commission an independent governance review")
+        else:
+            lines.append(f"\nThe Board must now decide on its post-AGM response. "
+                          f"Feasible actions: {feasible_strs}.")
+            lines.append("- Drev_no_action: Take no further governance action")
+            lines.append("- Drev_commission_review: Commission an independent governance review")
+            lines.append("- Drev_sack_ceo: Terminate the CEO")
     elif node == "D_rev_post":
         lines.append(f"\nFollowing the review findings, the Board must decide on its response. "
                       f"Feasible actions: {feasible_strs}.")
@@ -938,8 +1084,12 @@ def _generate_tier1_scenarios() -> list[Scenario]:
             feasible_actions=["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"],
         ))
 
-    # w2: Vote penalty — V varies, CEO removed (eliminates strike-CEO-present)
-    for v in [0.26, 0.30, 0.40, 0.50, 0.60]:
+    # w2: Board accountability penalty — V varies.
+    # w2 is now action-varying: phi = -(V-0.25) × (1 - 0.5 × response_strength).
+    # The penalty is reduced but not eliminated by governance response.
+    # High-V scenarios provide most leverage because (V-0.25) is large there.
+    # At D1: phi varies between D0_minimal (penalised) vs D1_review/D3_ceo_transition (not).
+    for v in [0.26, 0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.83]:
         n += 1
         scenarios.append(Scenario(
             scenario_id=f"S1_{n:03d}",
@@ -949,9 +1099,27 @@ def _generate_tier1_scenarios() -> list[Scenario]:
             state_vector=_make_state_vector(
                 decision_node="D1",
                 vote_outcome=v,
-                ceo_present_at_end=False,
+                ceo_present_at_end=True,  # CEO present — w2 varies by action
             ),
             feasible_actions=["D0_minimal", "D1_review", "D3_ceo_transition"],
+        ))
+    # w2 at D_rev: phi varies when d1=D0_minimal (board still inactive if Drev_no_action).
+    # For d1=D1_review, board_inactive=False for all d_rev actions → w2 phi=0 everywhere.
+    # So these scenarios must have d1=D0_minimal to get w2 variation.
+    for v in [0.30, 0.50, 0.65, 0.83]:
+        n += 1
+        scenarios.append(Scenario(
+            scenario_id=f"S1_{n:03d}",
+            tier=1,
+            target_parameter="w2",
+            decision_node="D_rev",
+            state_vector=_make_state_vector(
+                decision_node="D_rev",
+                d1_action="D0_minimal",
+                vote_outcome=v,
+                ceo_present_at_end=True,  # CEO present
+            ),
+            feasible_actions=["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"],
         ))
 
     # w3: Overwhelming penalty — V crosses 0.50, CEO removed, d1 != minimal
@@ -1236,8 +1404,8 @@ def _generate_tier1_scenarios() -> list[Scenario]:
     ))
 
     # w_inaction contrast: strike + CEO present vs strike + CEO removed
-    # CEO present: w_inaction fires for Drev_no_action → penalty for inaction
-    # CEO removed: w_inaction=0 for all actions → no penalty
+    # CEO present: w_inaction fires (penalty for inaction)
+    # CEO removed: w8s fires (shock relief benefit)
     for ceo_end in [True, False]:
         n += 1
         scenarios.append(Scenario(
@@ -1252,6 +1420,111 @@ def _generate_tier1_scenarios() -> list[Scenario]:
                 ceo_present_at_end=ceo_end,
             ),
             feasible_actions=["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"],
+        ))
+
+    # w_inaction_delay identification: contrast d1=D0_minimal vs d1=D1_review at D_rev.
+    # When d1=D0_minimal and Board acts at D_rev, w_inaction_delay fires (-1).
+    # When d1=D1_review, w_inaction_delay is always 0 (Board already acted proactively).
+    # Paired scenarios at matching vote levels sharpen estimation of the delay cost.
+    for v in [0.30, 0.45, 0.55, 0.65]:
+        for d1 in ["D0_minimal", "D1_review"]:
+            n += 1
+            scenarios.append(Scenario(
+                scenario_id=f"S1_{n:03d}",
+                tier=1,
+                target_parameter="w_inaction_delay",
+                decision_node="D_rev",
+                state_vector=_make_state_vector(
+                    decision_node="D_rev",
+                    d1_action=d1,
+                    vote_outcome=v,
+                    review_commissioned=(d1 == "D1_review"),
+                    ceo_present_at_end=True,
+                ),
+                feasible_actions=(
+                    ["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"]
+                    if d1 == "D0_minimal"
+                    else ["Drev_no_action", "Drev_sack_ceo"]
+                ),
+            ))
+
+    # w8s identification: NON-STRIKE CEO removal scenarios
+    # These have strike=False, so w8s phi=0 and w_inaction phi=0 regardless of
+    # CEO removal.  w_removal phi still varies by action (sack vs keep).
+    # Purpose: give the estimator data where w_removal varies independently
+    # of w8s/w_inaction, breaking the collinearity in strike scenarios.
+    # D1 node at V < 0.25 (no strike): D3_ceo_transition fires w_removal but not w8s.
+    for v in [0.10, 0.15, 0.20]:
+        n += 1
+        scenarios.append(Scenario(
+            scenario_id=f"S1_{n:03d}",
+            tier=1,
+            target_parameter="w8s_identification",
+            decision_node="D1",
+            state_vector=_make_state_vector(
+                decision_node="D1",
+                vote_outcome=v,
+                ceo_present_at_end=True,  # actions decide removal
+            ),
+            feasible_actions=["D0_minimal", "D1_review", "D3_ceo_transition"],
+        ))
+    # D_rev node at V < 0.25 (no strike): sack fires w_removal but not w8s.
+    for v in [0.10, 0.20]:
+        n += 1
+        scenarios.append(Scenario(
+            scenario_id=f"S1_{n:03d}",
+            tier=1,
+            target_parameter="w8s_identification",
+            decision_node="D_rev",
+            state_vector=_make_state_vector(
+                decision_node="D_rev",
+                d1_action="D1_review",
+                vote_outcome=v,
+                review_commissioned=True,
+                ceo_present_at_end=True,  # actions decide removal
+            ),
+            feasible_actions=["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"],
+        ))
+    # Strike with removal vs no-removal at MULTIPLE vote levels
+    # (more data for estimating the w8s increment above w_removal)
+    for v in [0.30, 0.40, 0.50]:
+        for ceo_end in [True, False]:
+            n += 1
+            scenarios.append(Scenario(
+                scenario_id=f"S1_{n:03d}",
+                tier=1,
+                target_parameter="w8s_identification",
+                decision_node="D_rev",
+                state_vector=_make_state_vector(
+                    decision_node="D_rev",
+                    d1_action="D0_minimal",
+                    vote_outcome=v,
+                    ceo_present_at_end=ceo_end,
+                ),
+                feasible_actions=["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"],
+            ))
+
+    # ── Sack-without-review scenarios (breaks w_removal / w_inaction collinearity) ──
+    # Tree branch: Board removed CEO at D1 (D3_ceo_transition), now at D_rev
+    # deciding whether to commission a governance review.
+    # Key identification: w_removal fires (from D1 sack) but w_inaction does NOT
+    # fire (CEO is already gone → ceo_present_at_end=False).
+    # Feasible actions: Drev_no_action / Drev_commission_review (sack not feasible,
+    # CEO already removed).
+    for v in [0.26, 0.30, 0.40, 0.50, 0.60, 0.83]:
+        n += 1
+        scenarios.append(Scenario(
+            scenario_id=f"S1_{n:03d}",
+            tier=1,
+            target_parameter="w_removal_inaction_separation",
+            decision_node="D_rev",
+            state_vector=_make_state_vector(
+                decision_node="D_rev",
+                d1_action="D3_ceo_transition",
+                vote_outcome=v,
+                ceo_present_at_end=False,
+            ),
+            feasible_actions=["Drev_no_action", "Drev_commission_review"],
         ))
 
     return scenarios
@@ -1282,11 +1555,21 @@ def _generate_tier2_scenarios() -> list[Scenario]:
         (0.45, "D1_review", True, False, 0.05, True, "D_rev"),
         (0.52, "D1_review", True, True, -0.03, False, "D_rev_post"),
         (0.70, "D1_review", True, True, -0.14, True, "D_rev_post"),
+        # D_rev after Board chose CEO transition — CEO already gone
+        (0.20, "D3_ceo_transition", False, None, None, False, "D_rev"),
+        (0.30, "D3_ceo_transition", False, None, None, False, "D_rev"),
+        (0.55, "D3_ceo_transition", False, None, None, False, "D_rev"),
+        (0.83, "D3_ceo_transition", False, None, None, False, "D_rev"),
     ]
     for i, (v, d1, rev, adv, car, ceo_end, node) in enumerate(configs, 1):
-        fa = (["Drev_no_action", "Drev_sack_ceo"] if node == "D_rev_post"
-              else ["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"] if node == "D_rev"
-              else ["D0_minimal", "D1_review", "D3_ceo_transition"])
+        if node == "D_rev_post":
+            fa = ["Drev_no_action", "Drev_sack_ceo"]
+        elif node == "D_rev" and d1 == "D3_ceo_transition":
+            fa = ["Drev_no_action", "Drev_commission_review"]  # CEO already removed
+        elif node == "D_rev":
+            fa = ["Drev_no_action", "Drev_commission_review", "Drev_sack_ceo"]
+        else:
+            fa = ["D0_minimal", "D1_review", "D3_ceo_transition"]
         scenarios.append(Scenario(
             scenario_id=f"S2_{i:03d}",
             tier=2,
@@ -1303,6 +1586,31 @@ def _generate_tier2_scenarios() -> list[Scenario]:
             ),
             feasible_actions=fa,
         ))
+
+    # ── CAR-based scale anchor scenarios ──
+    # Scenario pair with known CAR difference to calibrate utility-to-CAR ratio.
+    # Same state, different CAR outcomes. The probability difference between
+    # these scenarios anchors the utility scale.
+    # CAR = -0.01 (1% one-off remediation cost)
+    # CAR = -0.12 (12 months of 1%/month compounding — cost of delayed action)
+    for car_val in [-0.01, -0.12]:
+        scenarios.append(Scenario(
+            scenario_id=f"S2_anchor_car{int(abs(car_val)*100):03d}",
+            tier=2,
+            target_parameter="car_scale_anchor",
+            decision_node="D_rev_post",
+            state_vector=_make_state_vector(
+                decision_node="D_rev_post",
+                d1_action="D1_review",
+                vote_outcome=0.35,
+                review_commissioned=True,
+                review_adverse=True,
+                car_outcome=car_val,
+                ceo_present_at_end=True,
+            ),
+            feasible_actions=["Drev_no_action", "Drev_sack_ceo"],
+        ))
+
     return scenarios
 
 
@@ -1560,43 +1868,55 @@ def load_scenarios(path: Path) -> list[Scenario]:
 
 def _elicit_single(
     scenario: Scenario,
-    seed: int,
+    draw: int,
     client,
     model: str,
-    system_prompt_template: str,
+    system_prompt: str,
     cost_tracker: RunCostSummary,
     token_limit_counter: list[int],
+    temperature: Optional[float] = 1.0,
 ) -> dict:
-    """Elicit a single response for one scenario + seed."""
-    # Seed on prompt content, not sequential ID — adding/removing scenarios
-    # must not invalidate cache for unchanged scenarios.
-    # Use hashlib (deterministic) instead of hash() (randomised per process).
+    """Elicit a single Likert response for one scenario + draw."""
+    # Deterministic RNG per (scenario, draw) for action order randomization.
     _content_seed = int(hashlib.sha256(
-        f"{scenario.prompt_text}|{seed}".encode()
+        f"{scenario.prompt_text}|{draw}".encode()
     ).hexdigest(), 16) & 0xFFFFFFFF
     rng = np.random.default_rng(_content_seed)
-    factor_order = rng.permutation(10) + 1
-    factor_list_str = _format_factor_list(factor_order.tolist())
-    system_prompt = system_prompt_template.format(factor_list=factor_list_str)
 
-    # Cache key excludes system_prompt (which varies by factor ordering) — the
-    # scenario content + seed fully determines the elicitation result.  Factor
-    # order is a presentation detail; parsed results are in canonical form.
-    cache_key = _make_cache_key("", scenario.prompt_text, model, seed, 1.0)
+    # Randomize action presentation order to avoid position bias
+    n_actions = len(scenario.feasible_actions)
+    action_order = rng.permutation(n_actions).tolist()
+    shuffled_actions = [scenario.feasible_actions[i] for i in action_order]
+
+    # Deterministic hash token for stochastic variation (gpt-5+ has no temperature)
+    hash_token = hashlib.sha256(
+        f"draw_{draw}_{scenario.scenario_id}".encode()
+    ).hexdigest()[:16]
+
+    # Build scenario prompt with shuffled actions and hash token
+    action_list_str = "\n".join(
+        f"  - {a}" for a in shuffled_actions
+    )
+    scenario_text = (
+        f"[Reference ID: {hash_token}]\n\n"
+        f"{scenario.prompt_text}\n\n"
+        f"FEASIBLE ACTIONS (rate each on 1-5 scale):\n{action_list_str}"
+    )
+
+    cache_key = _make_cache_key("", scenario.prompt_text, model, draw, temperature or 0.0)
     cached = _cache_lookup(cache_key)
-
 
     result_row = {
         "result_id": str(uuid.uuid4())[:12],
         "scenario_id": scenario.scenario_id,
         "model": model,
         "prompt_variant": 1,
-        "seed": seed,
-        "factor_order": json.dumps(factor_order.tolist()),
+        "draw": draw,
+        "action_order": json.dumps(shuffled_actions),
+        "hash_token": hash_token,
         "raw_output": "",
         "parse_status": ParseStatus.FORMAT_ERROR.value,
-        "prob_vector": "{}",
-        "factor_ratings": "[]",
+        "action_scores": "{}",
         "commentary": "",
         "prompt_tokens": 0,
         "completion_tokens": 0,
@@ -1611,10 +1931,12 @@ def _elicit_single(
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": scenario.prompt_text},
+        {"role": "user", "content": scenario_text},
     ]
 
-    parsed, meta = _call_llm_with_retry(client, model, messages, scenario.scenario_id)
+    parsed, meta = _call_llm_with_retry(
+        client, model, messages, scenario.scenario_id, temperature=temperature
+    )
 
     result_row["raw_output"] = meta.get("raw_content", "")
     result_row["prompt_tokens"] = meta.get("prompt_tokens", 0)
@@ -1627,23 +1949,18 @@ def _elicit_single(
     if meta.get("finish_reason") == "length":
         result_row["parse_status"] = ParseStatus.TOKEN_LIMIT.value
         token_limit_counter[0] += 1
-        logger.error(f"Token limit hit for {scenario.scenario_id} seed={seed}")
+        logger.error(f"Token limit hit for {scenario.scenario_id} draw={draw}")
         if token_limit_counter[0] > 10:
             raise TokenLimitRunError(
                 f"Run aborted: {token_limit_counter[0]} token limit exceedances."
             )
     elif parsed is not None:
-        prob_dict = {
-            sanitise_text(ap.action.value): round(ap.probability, 4)
-            for ap in parsed.prob_vector
+        scores_dict = {
+            sanitise_text(als.action.value): als.score
+            for als in parsed.action_scores
         }
-        canonical_ratings = [0] * 10
-        for fr in parsed.factor_ratings:
-            canonical_ratings[fr.factor_index - 1] = fr.rating
-
         result_row["parse_status"] = ParseStatus.SUCCESS.value
-        result_row["prob_vector"] = json.dumps(prob_dict, ensure_ascii=True)
-        result_row["factor_ratings"] = json.dumps(canonical_ratings, ensure_ascii=True)
+        result_row["action_scores"] = json.dumps(scores_dict, ensure_ascii=True)
         result_row["commentary"] = sanitise_text(parsed.commentary)
     else:
         result_row["parse_status"] = ParseStatus.FORMAT_ERROR.value
@@ -1668,33 +1985,36 @@ def run_elicitation(
     scenarios: list[Scenario],
     client,
     model: str,
-    n_reps: int,
+    n_draws: int,
     output_path: Path,
     cost_tracker: RunCostSummary,
+    temperature: Optional[float] = 1.0,
+    max_workers: int = 10,
 ) -> list[dict]:
-    """Stage 2: Run LLM elicitation across all scenarios."""
-    logger.info(f"Stage 2: Eliciting {len(scenarios)} scenarios x {n_reps} reps...")
+    """Stage 2: Run LLM Likert elicitation across all scenarios."""
+    logger.info(f"Stage 2: Eliciting {len(scenarios)} scenarios x {n_draws} draws...")
 
-    system_prompt_template = _build_system_prompt()
+    system_prompt = _build_system_prompt()
     token_limit_counter = [0]
 
     tasks = [
-        (scenario, seed)
+        (scenario, draw)
         for scenario in scenarios
         if scenario.tier != 4
-        for seed in range(n_reps)
+        for draw in range(n_draws)
     ]
 
     results = []
     from tqdm import tqdm
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                _elicit_single, scenario, seed, client, model,
-                system_prompt_template, cost_tracker, token_limit_counter,
-            ): (scenario.scenario_id, seed)
-            for scenario, seed in tasks
+                _elicit_single, scenario, draw, client, model,
+                system_prompt, cost_tracker, token_limit_counter,
+                temperature,
+            ): (scenario.scenario_id, draw)
+            for scenario, draw in tasks
         }
         with tqdm(total=len(tasks), desc="Elicitation", smoothing=0) as pbar:
             for future in as_completed(futures):
@@ -1704,8 +2024,8 @@ def run_elicitation(
                 except TokenLimitRunError:
                     raise
                 except Exception as e:
-                    sid, seed = futures[future]
-                    logger.error(f"Elicitation failed for {sid} seed={seed}: {e}")
+                    sid, draw = futures[future]
+                    logger.error(f"Elicitation failed for {sid} draw={draw}: {e}")
                 total_lookups = _cache_stats["hits"] + _cache_stats["misses"]
                 if total_lookups > 0:
                     pbar.set_postfix(cache=f'{100*_cache_stats["hits"]/total_lookups:.0f}%')
@@ -1725,60 +2045,389 @@ def run_elicitation(
 
 # ── SEC 7: Stage 3 — Data preprocessing ──────────────────────────────────────
 
-def preprocess_data(elicitation_path: Path, output_path: Path) -> pd.DataFrame:
-    """Stage 3: Aggregate elicitation results into estimation dataset."""
-    logger.info("Stage 3: Preprocessing elicitation data...")
+def preprocess_likert_data(
+    elicitation_path: Path,
+    long_output_path: Path,
+    summary_output_path: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Stage 3: Preprocess Likert elicitation results into long-format + summary.
+
+    Returns:
+        likert_long_df: One row per (scenario, action, draw) observation.
+            Columns: scenario_id, action, draw, score, action_order_position
+        likert_summary_df: One row per (scenario, action) pair.
+            Columns: scenario_id, action, n_draws, mean_score, sd_score
+    """
+    logger.info("Stage 3: Preprocessing Likert elicitation data...")
 
     df = pd.read_csv(elicitation_path, encoding="utf-8")
-    success_counts = (
-        df[df["parse_status"].isin(["success", "repaired"])]
-        .groupby("scenario_id").size()
-    )
-    valid_ids = success_counts[success_counts >= 7].index.tolist()
-    df_valid = df[
-        df["scenario_id"].isin(valid_ids)
-        & df["parse_status"].isin(["success", "repaired"])
-    ].copy()
+    df_valid = df[df["parse_status"].isin(["success", "repaired"])].copy()
+
+    # Require at least 3 successful draws per scenario (adaptive to small n_draws)
+    min_draws = 3
+    success_counts = df_valid.groupby("scenario_id").size()
+    valid_ids = success_counts[success_counts >= min_draws].index.tolist()
+    df_valid = df_valid[df_valid["scenario_id"].isin(valid_ids)].copy()
 
     if df_valid.empty:
         logger.warning("No valid scenarios after filtering!")
-        return pd.DataFrame()
+        empty_long = pd.DataFrame(columns=[
+            "scenario_id", "action", "draw", "score", "action_order_position",
+        ])
+        empty_summary = pd.DataFrame(columns=[
+            "scenario_id", "action", "n_draws", "mean_score", "sd_score",
+        ])
+        return empty_long, empty_summary
 
-    records = []
-    for sid, grp in df_valid.groupby("scenario_id"):
-        prob_dicts = [json.loads(row) for row in grp["prob_vector"]]
-        all_actions = set()
-        for pd_ in prob_dicts:
-            all_actions.update(pd_.keys())
+    # Explode action_scores JSON into long format
+    long_records = []
+    for _, row in df_valid.iterrows():
+        scores_dict = json.loads(row["action_scores"])
+        action_order = json.loads(row["action_order"]) if row.get("action_order") else []
 
-        mean_probs = {}
-        var_probs = {}
-        for action in sorted(all_actions):
-            vals = [pd_.get(action, 0.0) for pd_ in prob_dicts]
-            mean_probs[action] = float(np.mean(vals))
-            var_probs[action] = float(np.var(vals))
+        for action, score in scores_dict.items():
+            # Skip hallucinated actions that aren't in the scenario's feasible set
+            if action_order and action not in action_order:
+                logger.debug(
+                    f"preprocess_likert_data: dropping hallucinated action "
+                    f"'{action}' for {row['scenario_id']} draw={row['draw']} "
+                    f"(feasible: {action_order})"
+                )
+                continue
+            position = action_order.index(action) + 1 if action in action_order else 0
+            long_records.append({
+                "scenario_id": row["scenario_id"],
+                "action": action,
+                "draw": row["draw"],
+                "score": int(score),
+                "action_order_position": position,
+            })
 
-        rating_lists = [json.loads(row) for row in grp["factor_ratings"]]
-        mean_ratings = np.mean(rating_lists, axis=0).tolist() if rating_lists else [0]*10
-        var_ratings = np.var(rating_lists, axis=0).tolist() if rating_lists else [0]*10
+    likert_long_df = pd.DataFrame(long_records)
 
-        records.append({
+    if likert_long_df.empty:
+        logger.warning("No Likert scores found in elicitation data! "
+                        "Check that action_scores contains non-empty dicts.")
+        empty_long = pd.DataFrame(columns=[
+            "scenario_id", "action", "draw", "score", "action_order_position",
+        ])
+        empty_summary = pd.DataFrame(columns=[
+            "scenario_id", "action", "n_draws", "mean_score", "sd_score",
+        ])
+        return empty_long, empty_summary
+
+    # Summary statistics per (scenario, action) pair
+    summary_records = []
+    for (sid, action), grp in likert_long_df.groupby(["scenario_id", "action"]):
+        summary_records.append({
             "scenario_id": sid,
-            "model": grp["model"].iloc[0],
-            "prompt_variant": 1,
-            "n_successful_seeds": len(grp),
-            "mean_prob_vector": json.dumps(mean_probs, ensure_ascii=True),
-            "var_prob_vector": json.dumps(var_probs, ensure_ascii=True),
-            "mean_factor_ratings": json.dumps(mean_ratings, ensure_ascii=True),
-            "var_factor_ratings": json.dumps(var_ratings, ensure_ascii=True),
-            "mean_seed_variance": float(np.mean(list(var_probs.values()))),
+            "action": action,
+            "n_draws": len(grp),
+            "mean_score": float(np.mean(grp["score"])),
+            "sd_score": float(np.std(grp["score"])),
         })
+    likert_summary_df = pd.DataFrame(summary_records)
 
-    est_df = pd.DataFrame(records)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    est_df.to_csv(output_path, index=False, encoding="utf-8")
-    logger.info(f"Estimation dataset: {len(est_df)} scenarios")
-    return est_df
+    # Save outputs
+    long_output_path.parent.mkdir(parents=True, exist_ok=True)
+    likert_long_df.to_csv(long_output_path, index=False, encoding="utf-8")
+    summary_output_path.parent.mkdir(parents=True, exist_ok=True)
+    likert_summary_df.to_csv(summary_output_path, index=False, encoding="utf-8")
+
+    n_obs = len(likert_long_df)
+    n_pairs = len(likert_summary_df)
+    n_scenarios = likert_long_df["scenario_id"].nunique()
+    logger.info(f"Likert data: {n_obs} observations, {n_pairs} (scenario,action) pairs, "
+                f"{n_scenarios} scenarios")
+    return likert_long_df, likert_summary_df
+
+
+# ── SEC 7B: Pre-flight identifiability checks ────────────────────────────────
+
+
+def _scenario_phi_signature(scenario: "Scenario") -> dict[str, float]:
+    """Compute phi signature for a scenario's dominant action vs. baseline.
+
+    Returns a dict of {param: max|phi_a - phi_baseline|} across actions,
+    indicating which parameters this scenario can help identify.
+    """
+    sv = scenario.state_vector if isinstance(scenario.state_vector, dict) else {}
+    ceo_res = sv.get("ceo_status_at_start", "present") == "resigned_early"
+    ceo_present = sv.get("ceo_present_at_end", True)
+    d1 = sv.get("d1_action", "D0_minimal")
+    overwhelming = sv.get("overwhelming", False)
+    review_comm_base = bool(sv.get("review_commissioned", False))
+    review_adv = bool(sv.get("review_adverse") or False)
+
+    # Response strength map for w1 graduation
+    _rs_map = {
+        "D0_minimal": 0.0, "D1_review": 0.5, "D3_ceo_transition": 1.0,
+        "Drev_no_action": 0.0, "Drev_commission_review": 0.5, "Drev_sack_ceo": 1.0,
+    }
+
+    actions = scenario.feasible_actions
+    if not actions:
+        return {}
+
+    # Compute phi for each action using the same logic as decompose_utility_board
+    phi_by_action = []
+    for a in actions:
+        rs = _rs_map.get(a, 0.0)
+        removed_inv = 1.0 if a in ("D3_ceo_transition", "Drev_sack_ceo") else 0.0
+
+        # review_commissioned: action-derived
+        review_comm = review_comm_base or a in ("D1_review", "Drev_commission_review")
+
+        # board_inactive logic
+        board_inactive = (d1 == "D0_minimal")
+        if a in ("Drev_sack_ceo", "Drev_commission_review"):
+            board_inactive = False
+
+        phi = {
+            "w_inaction_base": -float(board_inactive),
+            "w_inaction_no_review": -float(not review_comm),
+            "w1": -float(ceo_res) * (1.0 - rs),
+            "w_removal": -removed_inv,
+            "w_remove_ceo_overwhelming": removed_inv * float(overwhelming),
+            "w15": -float(review_comm and review_adv and (ceo_present and not removed_inv)),
+        }
+        phi_by_action.append(phi)
+
+    # Max absolute difference between any pair of actions for each param
+    max_diff = {p: 0.0 for p in ESTIMABLE_PARAM_NAMES}
+    for i in range(len(phi_by_action)):
+        for j in range(i + 1, len(phi_by_action)):
+            for p in ESTIMABLE_PARAM_NAMES:
+                diff = abs(phi_by_action[i].get(p, 0.0) - phi_by_action[j].get(p, 0.0))
+                if diff > max_diff[p]:
+                    max_diff[p] = diff
+
+    return max_diff
+
+
+def run_preflight_checks(
+    scenarios: list["Scenario"],
+    estimation_df: pd.DataFrame | None = None,
+) -> dict:
+    """Run pre-flight identifiability checks on scenario design.
+
+    Called twice:
+    1. Post-generation (estimation_df=None): structural checks on scenario design
+    2. Post-elicitation (estimation_df provided): data-dependent checks
+
+    Returns dict with check results and pass/fail status.
+    """
+    results = {"checks": [], "all_passed": True}
+
+    # ── Post-generation checks (always run) ──
+
+    # Check A: Pairwise parameter separation
+    # Each pair of estimable parameters needs >= 3 scenarios where they
+    # have different phi variation patterns (so they can be distinguished).
+    sep_counts = {}
+    for i, p1 in enumerate(ESTIMABLE_PARAM_NAMES):
+        for p2 in ESTIMABLE_PARAM_NAMES[i + 1:]:
+            sep_counts[(p1, p2)] = 0
+
+    for sc in scenarios:
+        sig = _scenario_phi_signature(sc)
+        for pair in sep_counts:
+            p1, p2 = pair
+            v1 = sig.get(p1, 0.0) > 0.01
+            v2 = sig.get(p2, 0.0) > 0.01
+            if v1 != v2:
+                sep_counts[pair] += 1
+
+    min_sep = min(sep_counts.values()) if sep_counts else 0
+    worst_pair = min(sep_counts, key=sep_counts.get) if sep_counts else ("", "")
+    check_a_pass = min_sep >= 3
+    results["checks"].append({
+        "name": "A: Pairwise parameter separation",
+        "passed": check_a_pass,
+        "detail": f"Min separating scenarios: {min_sep} (worst pair: {worst_pair[0]}/{worst_pair[1]})",
+        "threshold": ">= 3 separating scenarios per pair",
+    })
+    if not check_a_pass:
+        results["all_passed"] = False
+
+    # Check B: Decision node coverage
+    node_counts = {}
+    for sc in scenarios:
+        node_counts[sc.decision_node] = node_counts.get(sc.decision_node, 0) + 1
+
+    required_nodes = {"D1", "D_rev", "D_rev_post"}
+    min_per_node = 10
+    check_b_pass = True
+    node_details = []
+    for node in required_nodes:
+        count = node_counts.get(node, 0)
+        node_details.append(f"{node}={count}")
+        if count < min_per_node:
+            check_b_pass = False
+
+    results["checks"].append({
+        "name": "B: Decision node coverage",
+        "passed": check_b_pass,
+        "detail": ", ".join(node_details),
+        "threshold": f">= {min_per_node} scenarios per node",
+    })
+    if not check_b_pass:
+        results["all_passed"] = False
+
+    # Check C: Vote range coverage (at least 3 per quartile)
+    vote_values = []
+    for sc in scenarios:
+        sv = sc.state_vector if isinstance(sc.state_vector, dict) else {}
+        v = sv.get("vote_outcome_V")
+        if v is not None:
+            vote_values.append(v)
+
+    quartile_bounds = [(0, 0.25), (0.25, 0.50), (0.50, 0.75), (0.75, 1.0)]
+    quartile_counts = []
+    for lo, hi in quartile_bounds:
+        count = sum(1 for v in vote_values if lo <= v < hi)
+        quartile_counts.append(count)
+    min_quartile = min(quartile_counts) if quartile_counts else 0
+    check_c_pass = min_quartile >= 3
+    results["checks"].append({
+        "name": "C: Vote range coverage",
+        "passed": check_c_pass,
+        "detail": f"Quartile counts: {quartile_counts} (min={min_quartile})",
+        "threshold": ">= 3 scenarios per quartile",
+    })
+    if not check_c_pass:
+        results["all_passed"] = False
+
+    # Check D: Phi matrix condition number (structural, using scenario signatures)
+    # Build a simplified phi variation matrix: rows=scenarios, cols=params
+    phi_var_matrix = []
+    for sc in scenarios:
+        sig = _scenario_phi_signature(sc)
+        row = [sig.get(p, 0.0) for p in ESTIMABLE_PARAM_NAMES]
+        phi_var_matrix.append(row)
+
+    phi_mat = np.array(phi_var_matrix)
+    if phi_mat.shape[0] > 0 and phi_mat.shape[1] > 0:
+        # Condition number of the phi variation matrix
+        try:
+            sv_vals = np.linalg.svd(phi_mat, compute_uv=False)
+            sv_vals = sv_vals[sv_vals > 1e-12]
+            if len(sv_vals) > 0:
+                cond_number = sv_vals[0] / sv_vals[-1]
+            else:
+                cond_number = float("inf")
+        except np.linalg.LinAlgError:
+            cond_number = float("inf")
+    else:
+        cond_number = float("inf")
+
+    check_d_pass = cond_number < 1000
+    check_d_warn = cond_number >= 100
+    results["checks"].append({
+        "name": "D: Phi matrix condition number",
+        "passed": check_d_pass,
+        "warning": check_d_warn and check_d_pass,
+        "detail": f"Condition number: {cond_number:.1f}",
+        "threshold": "< 1000 (warning at 100)",
+    })
+    if not check_d_pass:
+        results["all_passed"] = False
+
+    # ── Post-elicitation checks (only when likert_summary_df provided) ──
+
+    if estimation_df is not None and not estimation_df.empty:
+        likert_df = estimation_df  # may be likert_summary_df passed as estimation_df
+
+        # Check F: Scenario Likert score discrimination
+        # For each scenario, check that max_score - min_score > 0 across actions
+        n_low_disc = 0
+        n_scenarios_checked = 0
+        for sid, grp in likert_df.groupby("scenario_id") if "mean_score" in likert_df.columns else []:
+            scores = grp["mean_score"].tolist()
+            if len(scores) >= 2:
+                n_scenarios_checked += 1
+                delta = max(scores) - min(scores)
+                if delta < 0.1:
+                    n_low_disc += 1
+
+        if n_scenarios_checked > 0:
+            pct_low = 100 * n_low_disc / n_scenarios_checked
+        else:
+            pct_low = 0.0
+        check_f_pass = pct_low < 30
+        results["checks"].append({
+            "name": "F: Likert score discrimination",
+            "passed": check_f_pass,
+            "detail": f"{n_low_disc}/{n_scenarios_checked} scenarios with score spread < 0.1 ({pct_low:.0f}%)",
+            "threshold": "< 30% of scenarios with near-uniform Likert scores",
+        })
+        if not check_f_pass:
+            results["all_passed"] = False
+
+        # Check G: Design matrix condition number with observed data
+        elicited_ids = set(likert_df["scenario_id"].tolist()) if "scenario_id" in likert_df.columns else set()
+        elicited_scenarios = [s for s in scenarios if s.scenario_id in elicited_ids]
+        phi_obs_matrix = []
+        for sc in elicited_scenarios:
+            sig = _scenario_phi_signature(sc)
+            row = [sig.get(p, 0.0) for p in ESTIMABLE_PARAM_NAMES]
+            phi_obs_matrix.append(row)
+
+        phi_obs = np.array(phi_obs_matrix) if phi_obs_matrix else np.zeros((0, len(ESTIMABLE_PARAM_NAMES)))
+        if phi_obs.shape[0] > 0:
+            try:
+                sv_obs = np.linalg.svd(phi_obs, compute_uv=False)
+                sv_obs = sv_obs[sv_obs > 1e-12]
+                cond_obs = sv_obs[0] / sv_obs[-1] if len(sv_obs) > 0 else float("inf")
+            except np.linalg.LinAlgError:
+                cond_obs = float("inf")
+        else:
+            cond_obs = float("inf")
+
+        check_g_pass = cond_obs < 1000
+        results["checks"].append({
+            "name": "G: Observed design matrix condition",
+            "passed": check_g_pass,
+            "detail": f"Condition number: {cond_obs:.1f} ({len(elicited_scenarios)} scenarios)",
+            "threshold": "< 1000",
+        })
+        if not check_g_pass:
+            results["all_passed"] = False
+
+        # Check H: Response saturation — flag if all actions get the same
+        # Likert score in > 30% of scenarios
+        n_saturated = 0
+        n_total = 0
+        for sid, grp in likert_df.groupby("scenario_id") if "mean_score" in likert_df.columns else []:
+            scores = grp["mean_score"].tolist()
+            if scores:
+                n_total += 1
+                if max(scores) == min(scores):
+                    n_saturated += 1
+
+        pct_sat = 100 * n_saturated / max(n_total, 1)
+        check_h_pass = pct_sat <= 30
+        results["checks"].append({
+            "name": "H: Likert saturation",
+            "passed": check_h_pass,
+            "detail": f"{n_saturated}/{n_total} scenarios with identical scores ({pct_sat:.0f}%)",
+            "threshold": "<= 30% saturated responses",
+        })
+        if not check_h_pass:
+            results["all_passed"] = False
+
+    # Summary
+    n_passed = sum(1 for c in results["checks"] if c["passed"])
+    n_total = len(results["checks"])
+    logger.info(f"Pre-flight checks: {n_passed}/{n_total} passed"
+                + ("" if results["all_passed"] else " (WARNINGS PRESENT)"))
+    for c in results["checks"]:
+        status = "PASS" if c["passed"] else "FAIL"
+        if c.get("warning"):
+            status = "WARN"
+        logger.info(f"  [{status}] {c['name']}: {c['detail']}")
+
+    return results
 
 
 # ── SEC 8: Stage 4 — Choice model estimation ─────────────────────────────────
@@ -1799,69 +2448,122 @@ def decompose_utility_board(
 ) -> dict[str, float]:
     """
     Decompose Board utility into per-parameter basis function values.
-    Mirrors engine/utilities.py:utility_board() exactly.
 
     Convention: EU = sum_k w_k * phi_k + anchored. Softmax: P(a) ~ exp(lambda * EU(a)).
     Higher EU = more likely action. All weights are non-negative (>= 0).
     Therefore:
     - PENALTY terms have NEGATIVE phi: larger weight = lower EU = less likely.
     - BENEFIT terms have POSITIVE phi: larger weight = higher EU = more likely.
+
+    Structure:
+    1. INACTION COMPONENTS (2 additive, unconditional — fire regardless of vote level):
+       w_inaction_base       = -I[board_inactive]
+       w_inaction_no_review  = -I[not review_commissioned]
+
+    2. RETAINED:
+       w1       = -I[CEO_resigned_early] × (1 - response_strength)
+       w_removal = -I[removed_involuntary]
+       w_remove_ceo_overwhelming      = +I[removed_involuntary] × I[overwhelming]
+       w15      = -I[review_comm ∧ review_adverse ∧ ceo_present]
+
+    3. VOTE PENALTIES (scenario-level, in anchored contribution):
+       w_strike, w_overwhelming — don't vary by action, enter as fixed contribution.
+
     """
     ceo_present_at_end = not CEO_removed and not CEO_resigned_early
-
     removed_involuntary = float(CEO_removed and not CEO_resigned_early)
 
-    # Collapsed basis functions for identification.
-    # w_removal = w7 + w8 (perfectly collinear in estimation: both fire on CEO removal)
-    # w_inaction = w10 + w11 + w14 (identical basis: strike AND ceo_present_at_end)
-    # w8s/w8o/w8r: shock relief (POSITIVE: reduces removal cost → benefit)
-    #
-    # w12/w13: "continued inaction liability" — penalty when the Board has taken
-    # minimal action at EVERY decision point up to and including the current one.
-    # At D1: fires for D0_minimal action (choosing inaction).
+    # board_inactive: Board took minimal action at ALL decision points.
+    # At D1: fires for D0_minimal (choosing inaction).
     # At D_rev: fires for Drev_no_action when d1_action=D0_minimal (continued inaction).
     # At D_rev_post: fires for Drev_no_action when all prior decisions were minimal.
-    # This creates action-variation at D_rev (identifiable from softmax).
     board_inactive = (d1_action == "D0_minimal")
     if d_rev_action in ("Drev_sack_ceo", "Drev_commission_review"):
         board_inactive = False
     if d_rev_post_action == "Drev_sack_ceo":
         board_inactive = False
 
+    # response_strength for w1 graduation (retained from prior model)
+    _D1_STRENGTH = {"D0_minimal": 0.0, "D1_review": 0.5, "D3_ceo_transition": 1.0}
+    _DREV_STRENGTH = {"Drev_no_action": 0.0, "Drev_commission_review": 0.5, "Drev_sack_ceo": 1.0}
+    response_strength = max(
+        _D1_STRENGTH.get(d1_action, 0.0),
+        _DREV_STRENGTH.get(d_rev_action, 0.0),
+        _DREV_STRENGTH.get(d_rev_post_action, 0.0),
+    )
+
     phi = {
-        # Penalties (NEGATIVE: reduce EU, make action less likely)
-        "w1": -float(CEO_resigned_early),
-        "w2": -(max(vote_percent - 0.25, 0.0) ** 2) if vote_percent > 0.25 else 0.0,
-        "w3": -float(overwhelming),
-        "w4": -(vote_percent * float(strike)),
+        # ── INACTION COMPONENTS (unconditional — fire regardless of vote) ──
+        #
+        # w_inaction_base: Board took minimal action at ALL decision points.
+        # At D1: [-1, 0, 0] for [D0_minimal, D1_review, D3_ceo_transition]
+        # At D_rev: [-1, 0, 0] for [no_action, commission, sack] (when d1=D0_minimal)
+        #           [0, 0, 0] if d1 was D1_review or D3 (already responded)
+        "w_inaction_base": -float(board_inactive),
+        #
+        # w_inaction_no_review: No governance review commissioned.
+        # review_commissioned is action-derived: D1_review or Drev_commission set it True.
+        # At D1: [-1, 0, -1] for [D0_minimal, D1_review, D3_ceo_transition]
+        # At D_rev: [-1, 0, -1] for [no_action, commission, sack] (if no prior review)
+        "w_inaction_no_review": -float(not review_commissioned),
+        #
+        # w_inaction_delay: Board delayed governance action — did nothing at D1
+        # then acted reactively at D_rev or D_rev_post.  Captures the cost of
+        # reactive vs proactive governance (market/regulator credibility loss).
+        # At D1: [0, 0, 0] (delay hasn't occurred yet — resolved downstream)
+        # At D_rev (d1=D0_minimal): [0, -1, -1] for [no_action, commission, sack]
+        # At D_rev (d1=D1_review): [0, 0, 0] (Board already acted proactively)
+        # Complements w_inaction_base: base penalises TOTAL inaction,
+        # delay penalises REACTIVE governance (acted, but too late).
+        "w_inaction_delay": -float(
+            d1_action == "D0_minimal"
+            and (d_rev_action in ("Drev_commission_review", "Drev_sack_ceo")
+                 or d_rev_post_action in ("Drev_commission_review", "Drev_sack_ceo"))
+        ),
+        # ── RETAINED PARAMETERS ──
+        #
+        # w1: CEO early departure cost, GRADUATED by governance response.
+        # Pattern at D1: [-1, -0.5, 0] for [D0_minimal, D1_review, D3_ceo_transition]
+        "w1": -float(CEO_resigned_early) * (1.0 - response_strength),
+        #
+        # w_removal: CEO involuntary removal cost (implementation + disruption).
+        # At D1: [0, 0, -1] for [D0_minimal, D1_review, D3_ceo_transition]
         "w_removal": -removed_involuntary,
-        "w9": -float(overwhelming),
-        "w_inaction": -float(strike and ceo_present_at_end),
-        "w12": -float(overwhelming and board_inactive),
-        "w13": -float(strike and board_inactive),
+        #
+        # w_remove_ceo_overwhelming: CEO removal shock relief when overwhelming vote occurred.
+        # BENEFIT: reduces the cost of removal in severe crisis.
+        "w_remove_ceo_overwhelming": removed_involuntary * float(overwhelming),
+        #
+        # w15: Adverse review + CEO still present penalty.
         "w15": -float(review_commissioned and review_adverse and ceo_present_at_end),
-        # Benefits (POSITIVE: increase EU, make action more likely)
-        "w8s": removed_involuntary * float(strike),
-        "w8o": removed_involuntary * float(overwhelming),
-        "w8r": removed_involuntary * float(review_commissioned and review_adverse),
     }
     return phi
 
 
-def _compute_anchored_car_contribution(
+def _compute_anchored_contribution(
+    vote_percent: float,
+    strike: bool,
+    overwhelming: bool,
     review_commissioned: bool,
     review_car: float,
     review_direct_cost: float,
     lambda_la: float = LAMBDA_LA_DEFAULT,
 ) -> float:
-    """Compute the fixed (anchored) CAR + cost contribution to utility."""
-    if not review_commissioned:
-        return 0.0
-    w_car_pos = W_CAR_ANCHOR / ((1 + lambda_la) / 2)
-    w_car_neg = lambda_la * w_car_pos
-    car_contrib = w_car_pos * max(review_car, 0.0) - w_car_neg * max(-review_car, 0.0)
-    cost_contrib = -W_COST_ANCHOR * review_direct_cost
-    return car_contrib + cost_contrib
+    """Compute anchored (non-estimable) contribution to utility.
+
+    Vote penalties (w_strike, w_overwhelming) are now estimated in Stan and
+    no longer included here.  Only review CAR + direct cost remain as anchored.
+    """
+    contrib = 0.0
+
+    # Review CAR + direct cost (anchored weights)
+    if review_commissioned:
+        w_car_pos = W_CAR_ANCHOR / ((1 + lambda_la) / 2)
+        w_car_neg = lambda_la * w_car_pos
+        contrib += w_car_pos * max(review_car, 0.0) - w_car_neg * max(-review_car, 0.0)
+        contrib -= W_COST_ANCHOR * review_direct_cost
+
+    return contrib
 
 
 def _scenario_to_outcome_args(sv: dict, action: str) -> dict:
@@ -1893,6 +2595,13 @@ def _scenario_to_outcome_args(sv: dict, action: str) -> dict:
         if not sv["ceo_present_at_end"]:
             CEO_removed = True
 
+    # review_commissioned: action-derived (D1_review or Drev_commission_review
+    # commission a review), OR from scenario state if review was already commissioned
+    # before this decision node.
+    review_commissioned = bool(sv.get("review_commissioned", False))
+    if action in ("D1_review", "Drev_commission_review"):
+        review_commissioned = True
+
     return {
         "vote_percent": sv.get("vote_outcome_V", 0.0),
         "strike": sv.get("strike", False),
@@ -1902,7 +2611,7 @@ def _scenario_to_outcome_args(sv: dict, action: str) -> dict:
         "d_rev_post_action": d_rev_post_action,
         "CEO_removed": CEO_removed,
         "CEO_resigned_early": CEO_resigned_early,
-        "review_commissioned": sv.get("review_commissioned", False),
+        "review_commissioned": review_commissioned,
         "review_adverse": sv.get("review_adverse", False) or False,
         "review_car": sv.get("car_outcome", 0.0) or 0.0,
         "review_direct_cost": 0.00096,  # mean of Gamma(4.55, 4741)
@@ -1911,171 +2620,169 @@ def _scenario_to_outcome_args(sv: dict, action: str) -> dict:
 
 def compute_phi_matrix(
     scenarios: list[Scenario],
-    estimation_df: pd.DataFrame,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], list[list[str]]]:
+    likert_summary_df: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, dict, dict, list[str], list[list[str]]]:
     """
-    Compute basis function matrix phi[i, a, k] and anchored contributions.
+    Compute basis function matrix phi[s, k] for unique (scenario, action) pairs.
 
     Returns:
-        phi: (n_scenarios, max_actions, n_params) basis function values
-        anchored: (n_scenarios, max_actions) anchored CAR+cost contribution
-        p_llm: (n_scenarios, max_actions) mean LLM probabilities
-        scenario_ids: list of scenario IDs in order
+        phi: (S, K) basis function values per (scenario, action) pair
+        anchored: (S,) anchored contribution per pair
+        sa_id_map: dict mapping (scenario_id, action) -> row index in phi
+        scenario_id_map: dict mapping scenario_id -> unique scenario index (1-based for Stan)
+        scenario_ids: list of scenario IDs in order of first appearance
         action_lists: list of feasible action lists per scenario
     """
-    logger.info("Computing basis function matrix (phi)...")
+    logger.info("Computing basis function matrix (phi) for (scenario, action) pairs...")
 
     n_params = len(WEIGHT_PARAM_NAMES)
-    valid_sids = set(estimation_df["scenario_id"].tolist())
+    valid_sids = set(likert_summary_df["scenario_id"].tolist())
 
     # Filter scenarios to those in estimation dataset (exclude Tier 4)
     valid_scenarios = [s for s in scenarios if s.scenario_id in valid_sids]
 
-    max_actions = max(len(s.feasible_actions) for s in valid_scenarios)
-    n_sc = len(valid_scenarios)
+    # Build index of actions present in Likert data per scenario.
+    # If elicitation was run with a broader action set than the current
+    # scenario definition, include those actions so ratings are not dropped.
+    likert_actions_per_sid: dict[str, set[str]] = {}
+    for sid in valid_sids:
+        likert_actions_per_sid[sid] = set(
+            likert_summary_df.loc[
+                likert_summary_df["scenario_id"] == sid, "action"
+            ].tolist()
+        )
 
-    phi = np.zeros((n_sc, max_actions, n_params))
-    anchored = np.zeros((n_sc, max_actions))
-    p_llm = np.zeros((n_sc, max_actions))
+    # Build (scenario, action) pairs in deterministic order
+    sa_pairs = []
     scenario_ids = []
     action_lists = []
+    scenario_id_map: dict[str, int] = {}  # scenario_id -> 1-based index (for Stan)
 
-    for i, scenario in enumerate(valid_scenarios):
+    for scenario in valid_scenarios:
+        if scenario.scenario_id not in scenario_id_map:
+            scenario_id_map[scenario.scenario_id] = len(scenario_id_map) + 1
         scenario_ids.append(scenario.scenario_id)
-        actions = scenario.feasible_actions
-        action_lists.append(actions)
-
-        # Get mean probabilities from estimation dataset
-        row = estimation_df[estimation_df["scenario_id"] == scenario.scenario_id]
-        if row.empty:
-            continue
-        mean_probs = json.loads(row.iloc[0]["mean_prob_vector"])
-
-        for j, action in enumerate(actions):
-            # Basis functions
-            args = _scenario_to_outcome_args(scenario.state_vector, action)
-            phi_k = decompose_utility_board(**args)
-
-            for k, pname in enumerate(WEIGHT_PARAM_NAMES):
-                phi[i, j, k] = phi_k.get(pname, 0.0)
-
-            # Anchored contribution = CAR/cost terms + fixed params at spec defaults
-            anchored[i, j] = _compute_anchored_car_contribution(
-                args["review_commissioned"], args["review_car"], args["review_direct_cost"],
+        # Union of scenario feasible actions and actions with Likert data
+        actions = list(scenario.feasible_actions)
+        extra = likert_actions_per_sid.get(scenario.scenario_id, set()) - set(actions)
+        if extra:
+            logger.info(
+                f"compute_phi_matrix: {scenario.scenario_id} — adding "
+                f"{sorted(extra)} from Likert data (not in feasible_actions)"
             )
-            # Add fixed (unidentifiable) parameters at their spec default values
-            for fp in FIXED_PARAM_NAMES:
-                anchored[i, j] += SPEC_DEFAULTS[fp] * phi_k.get(fp, 0.0)
+            actions.extend(sorted(extra))
+        action_lists.append(actions)
+        for action in actions:
+            sa_pairs.append((scenario.scenario_id, action))
 
-            # LLM probability
-            p_llm[i, j] = mean_probs.get(action, 0.0)
+    S = len(sa_pairs)
+    sa_id_map = {pair: idx for idx, pair in enumerate(sa_pairs)}
 
-    logger.info(f"Phi matrix shape: {phi.shape}, {n_sc} scenarios")
-    return phi, anchored, p_llm, scenario_ids, action_lists
+    phi = np.zeros((S, n_params))
+    anchored = np.zeros(S)
+    vote_x_strike = np.zeros(S)
+    vote_x_overwh = np.zeros(S)
+    has_strike_arr = np.zeros(S, dtype=int)
+    has_overwh_arr = np.zeros(S, dtype=int)
 
+    for s_idx, (sid, action) in enumerate(sa_pairs):
+        scenario = next(s for s in valid_scenarios if s.scenario_id == sid)
+        args = _scenario_to_outcome_args(scenario.state_vector, action)
+        phi_k = decompose_utility_board(**args)
 
-def _softmax_probs(
-    eu: np.ndarray,
-    mask: np.ndarray,
-) -> np.ndarray:
-    """Compute softmax probabilities over feasible actions."""
-    # eu: (n_actions,), mask: (n_actions,) boolean
-    eu_masked = np.where(mask, eu, -1e30)
-    eu_shifted = eu_masked - np.max(eu_masked)
-    exp_eu = np.where(mask, np.exp(eu_shifted), 0.0)
-    total = np.sum(exp_eu)
-    if total < 1e-30:
-        return np.where(mask, 1.0 / np.sum(mask), 0.0)
-    return exp_eu / total
+        for k, pname in enumerate(WEIGHT_PARAM_NAMES):
+            phi[s_idx, k] = phi_k.get(pname, 0.0)
 
+        anchored[s_idx] = _compute_anchored_contribution(
+            args["vote_percent"], args["strike"], args["overwhelming"],
+            args["review_commissioned"], args["review_car"], args["review_direct_cost"],
+        )
 
-def _cross_entropy_loss(
-    params_vec: np.ndarray,
-    phi: np.ndarray,
-    anchored: np.ndarray,
-    p_llm: np.ndarray,
-    action_masks: np.ndarray,
-) -> float:
-    """Cross-entropy loss: -sum_i sum_a p_llm[i,a] * log(p_model[i,a])."""
-    weights = params_vec[:len(WEIGHT_PARAM_NAMES)]
-    log_lambda = params_vec[-1]
-    lam = np.exp(log_lambda)  # ensure lambda > 0
+        # Vote data for linear penalty (passed to Stan separately)
+        v = args["vote_percent"]
+        vote_x_strike[s_idx] = max(0.0, (v - 0.25) / 0.75) if args["strike"] else 0.0
+        vote_x_overwh[s_idx] = max(0.0, (v - 0.50) / 0.50) if args["overwhelming"] else 0.0
+        has_strike_arr[s_idx] = int(args["strike"])
+        has_overwh_arr[s_idx] = int(args["overwhelming"])
 
-    n_sc, max_a, _ = phi.shape
-    loss = 0.0
-    eps = 1e-12
+    # ── Center anchored within each scenario ──
+    # The scenario random effect absorbs scenario-level constants.
+    # Centering preserves the action-varying component (e.g. review CAR
+    # that depends on whether the action commissions a review) while
+    # keeping mu ~ O(1).  Vote penalties are now in Stan (nonlinear),
+    # not in anchored.
+    anchored_raw = anchored.copy()
+    for sid in scenario_id_map:
+        sa_indices = [sa_id_map[(sid, a)] for a in
+                      action_lists[scenario_ids.index(sid)]]
+        scenario_mean = np.mean(anchored[sa_indices])
+        for idx in sa_indices:
+            anchored[idx] -= scenario_mean
 
-    for i in range(n_sc):
-        mask = action_masks[i]
-        if not np.any(mask):
-            continue
-        # EU = phi @ weights + anchored
-        eu = phi[i] @ weights + anchored[i]
-        eu_scaled = lam * eu
+    n_strike = int(has_strike_arr.sum())
+    n_overwh = int(has_overwh_arr.sum())
+    logger.info(f"Phi matrix shape: {phi.shape}, {S} (scenario,action) pairs, "
+                f"{len(scenario_id_map)} unique scenarios")
+    logger.info(f"Anchored: raw range [{anchored_raw.min():.1f}, {anchored_raw.max():.1f}], "
+                f"centered range [{anchored.min():.3f}, {anchored.max():.3f}]")
+    logger.info(f"Vote data: {n_strike}/{S} pairs with strike, "
+                f"{n_overwh}/{S} with overwhelming")
 
-        probs = _softmax_probs(eu_scaled, mask)
-
-        for j in range(max_a):
-            if mask[j] and p_llm[i, j] > eps:
-                loss -= p_llm[i, j] * np.log(max(probs[j], eps))
-
-    return loss
-
-
-def _cross_entropy_gradient(
-    params_vec: np.ndarray,
-    phi: np.ndarray,
-    anchored: np.ndarray,
-    p_llm: np.ndarray,
-    action_masks: np.ndarray,
-) -> np.ndarray:
-    """Analytical gradient of cross-entropy loss."""
-    weights = params_vec[:len(WEIGHT_PARAM_NAMES)]
-    log_lambda = params_vec[-1]
-    lam = np.exp(log_lambda)
-
-    n_params = len(params_vec)
-    n_sc, max_a, n_w = phi.shape
-    grad = np.zeros(n_params)
-
-    for i in range(n_sc):
-        mask = action_masks[i]
-        if not np.any(mask):
-            continue
-        eu = phi[i] @ weights + anchored[i]
-        eu_scaled = lam * eu
-        probs = _softmax_probs(eu_scaled, mask)
-
-        # Gradient w.r.t. weights: sum_a (p_model - p_llm) * lambda * phi[i,a,:]
-        for j in range(max_a):
-            if mask[j]:
-                diff = probs[j] - p_llm[i, j]
-                grad[:n_w] += diff * lam * phi[i, j, :]
-                # Gradient w.r.t. log_lambda: diff * lambda * eu[j]
-                grad[-1] += diff * lam * eu[j]
-
-    return grad
+    vote_data = {
+        "vote_x_strike": vote_x_strike,
+        "vote_x_overwh": vote_x_overwh,
+        "has_strike": has_strike_arr,
+        "has_overwh": has_overwh_arr,
+    }
+    return phi, anchored, sa_id_map, scenario_id_map, scenario_ids, action_lists, vote_data
 
 
 @dataclass
-class EstimationResult:
-    weights: dict[str, float]
-    lambda_rationality: float
-    hessian_se: dict[str, float]
-    bootstrap_se: dict[str, float]
-    covariance_matrix: np.ndarray
-    condition_number: float
-    ridge_applied: bool
-    w10_w11_w14_collapsed: bool
-    loss_value: float
-    n_scenarios: int
-    converged: bool
-    # Tracks how each param was estimated: "softmax_mle", "factor_rating", "profiled"
-    estimation_method: dict[str, str] = field(default_factory=dict)
-    # Stage 4B regression diagnostics for scenario-level params
-    factor_regression_stats: dict[str, dict] = field(default_factory=dict)
+class StanEstimationResult:
+    """Posterior summary from Bayesian ordinal probit estimation via Stan.
+
+    Designed as a drop-in replacement for EstimationResult in downstream
+    code: all attributes accessed by SEC 8C and later sections are
+    preserved with identical names and types.
+    """
+
+    # ── Raw posterior draws ──
+    w_draws: np.ndarray            # (n_draws, K) posterior weight samples
+    cutpoint_draws: np.ndarray     # (n_draws, 4) posterior cutpoints
+    sigma_scenario_draws: np.ndarray  # (n_draws,) scenario RE SD
+    y_rep: Optional[np.ndarray] = None  # (n_draws, N) posterior predictive
+
+    # ── Posterior summaries (populated post-fit) ──
+    weights_posterior_mean: dict = field(default_factory=dict)
+    weights_posterior_sd: dict = field(default_factory=dict)
+    weights_posterior_ci: dict = field(default_factory=dict)
+
+    # ── MCMC diagnostics ──
+    n_divergences: int = 0
+    max_rhat: float = 0.0
+    min_ess_bulk: float = 0.0
+    n_samples: int = 0
+
+    # ── Compatibility attributes (EstimationResult interface) ──
+    # These mirror EstimationResult fields so SEC 8C+ code requires no changes.
+    weights: dict = field(default_factory=dict)
+    lambda_rationality: float = 1.0
+    hessian_se: dict = field(default_factory=dict)
+    bootstrap_se: dict = field(default_factory=dict)
+    covariance_matrix: np.ndarray = field(
+        default_factory=lambda: np.zeros((9, 9))
+    )
+    condition_number: float = 0.0
+    ridge_applied: bool = False
+    w10_w11_w14_collapsed: bool = True
+    loss_value: float = 0.0        # placeholder for dashboard compatibility
+    n_scenarios: int = 0
+    converged: bool = True
+    estimation_method: dict = field(default_factory=dict)
+    jackknife_se: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
+        """Serialise to JSON-safe dict matching EstimationResult.to_dict() schema."""
         return {
             "weights": self.weights,
             "lambda_rationality": round(self.lambda_rationality, 4),
@@ -2088,569 +2795,1293 @@ class EstimationResult:
             "n_scenarios": self.n_scenarios,
             "converged": self.converged,
             "estimation_method": self.estimation_method,
-            "factor_regression_stats": self.factor_regression_stats,
+            "jackknife_se": {k: round(v, 4) for k, v in self.jackknife_se.items()},
+            # Stan-specific extras
+            "n_divergences": self.n_divergences,
+            "max_rhat": round(self.max_rhat, 4),
+            "min_ess_bulk": round(self.min_ess_bulk, 1),
+            "n_samples": self.n_samples,
+            "weights_posterior_sd": {
+                k: round(v, 4) for k, v in self.weights_posterior_sd.items()
+            },
+            "weights_posterior_ci": self.weights_posterior_ci,
         }
 
 
-def estimate_parameters(
+# Type alias so downstream references to EstimationResult still resolve.
+EstimationResult = StanEstimationResult
+
+
+def prepare_stan_data(
+    likert_long_df: "pd.DataFrame",
     phi: np.ndarray,
     anchored: np.ndarray,
-    p_llm: np.ndarray,
-    action_lists: list[list[str]],
-    n_starts: int = 10,
-    bootstrap_B: int = 500,
-) -> EstimationResult:
-    """Stage 4: Estimate utility weights via MLE softmax choice model.
+    sa_id_map: dict,
+    scenario_id_map: dict,
+    vote_data: Optional[dict] = None,
+) -> dict:
+    """Build the data dict for ordinal_utility.stan.
 
-    Lambda (inverse temperature) is NOT jointly estimated with weights —
-    they are not identifiable together (any EU difference can be produced
-    by small-lambda × large-weights OR large-lambda × small-weights).
-    Instead, we profile over a grid of fixed lambda values and pick the
-    one with best cross-entropy.
+    Parameters
+    ----------
+    likert_long_df:
+        Long-form Likert data with columns:
+        ``scenario_id``, ``action``, ``rating`` (int in 1..5).
+    phi:
+        (S, K) basis-function matrix, one row per unique (scenario, action)
+        pair, indexed by the 0-based row indices stored in ``sa_id_map``.
+    anchored:
+        (S,) anchored utility contribution per (scenario, action) pair.
+    sa_id_map:
+        dict mapping ``(scenario_id, action)`` -> 0-based row index in phi.
+    scenario_id_map:
+        dict mapping ``scenario_id`` -> 1-based integer (Stan is 1-indexed).
+    vote_data:
+        dict with keys ``vote_x_strike``, ``vote_x_overwh``, ``has_strike``,
+        ``has_overwh`` — arrays of length S for nonlinear vote penalties.
+
+    Returns
+    -------
+    dict
+        Stan data block with all keys required by ordinal_utility.stan,
+        using Python native int/float/list types (not NumPy scalars).
     """
-    from scipy.optimize import minimize
+    import pandas as pd  # local import — pandas already on path
 
-    logger.info("Stage 4: Estimating parameters via cross-entropy minimisation...")
-    logger.info("Strategy: profile likelihood over lambda grid, weights-only optimisation")
+    S, K = phi.shape
+    N_scenarios = int(len(scenario_id_map))
 
-    n_sc, max_a, n_w = phi.shape
+    # Per-(scenario,action) pair: which scenario does it belong to?
+    # scenario_id[s] (1-based) for each row s in phi.
+    scenario_id_per_sa = [0] * S
+    for (sid, _action), row_idx in sa_id_map.items():
+        scenario_id_per_sa[row_idx] = int(scenario_id_map[sid])
 
-    # Build action masks
-    action_masks = np.zeros((n_sc, max_a), dtype=bool)
-    for i, actions in enumerate(action_lists):
-        for j in range(len(actions)):
-            action_masks[i, j] = True
+    # Build observation-level arrays from likert_long_df.
+    # Each row is one Likert rating.  We look up the 1-based sa_id for
+    # the (scenario_id, action) pair associated with that rating.
+    y_list: list[int] = []
+    sa_id_list: list[int] = []
 
-    # Bounds: weights >= 0
-    bounds_w = [(0, None)] * n_w
+    for _, row in likert_long_df.iterrows():
+        sid = row["scenario_id"]
+        action = row["action"]
+        rating = int(row["score"])
+        key = (sid, action)
+        if key not in sa_id_map:
+            logger.warning(
+                f"prepare_stan_data: skipping observation with unknown key {key}"
+            )
+            continue
+        if not (1 <= rating <= 5):
+            logger.warning(
+                f"prepare_stan_data: skipping out-of-range rating {rating} for {key}"
+            )
+            continue
+        y_list.append(rating)
+        sa_id_list.append(int(sa_id_map[key]) + 1)  # convert to 1-based
 
-    # Lambda grid: profile over these fixed values
-    lambda_grid = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
-    grid_results = []
+    N = len(y_list)
+    if N == 0:
+        raise ValueError(
+            "prepare_stan_data: no valid Likert observations found. "
+            "Check that likert_long_df contains columns 'scenario_id', "
+            "'action', 'score' and that scenario/action keys match sa_id_map."
+        )
 
-    rng = np.random.default_rng(42)
-
-    for lam_fixed in lambda_grid:
-        log_lam = np.log(lam_fixed)
-
-        def _loss_w(w_vec, _phi=phi, _anch=anchored,
-                    _p=p_llm, _m=action_masks, _ll=log_lam):
-            full_vec = np.concatenate([w_vec, [_ll]])
-            return _cross_entropy_loss(full_vec, _phi, _anch, _p, _m)
-
-        def _grad_w(w_vec, _phi=phi, _anch=anchored,
-                    _p=p_llm, _m=action_masks, _ll=log_lam):
-            full_vec = np.concatenate([w_vec, [_ll]])
-            g = _cross_entropy_gradient(full_vec, _phi, _anch, _p, _m)
-            return g[:n_w]
-
-        best_lam_loss = np.inf
-        best_lam_x = None
-
-        # Multiple starting points for each lambda
-        x0_spec = np.array([SPEC_DEFAULTS[p] for p in WEIGHT_PARAM_NAMES])
-        starts_w = [x0_spec.copy()]
-        for _ in range(n_starts - 1):
-            w_start = np.array([
-                max(0.0, rng.normal(SPEC_DEFAULTS[p], 0.3 * max(SPEC_DEFAULTS[p], 0.1)))
-                for p in WEIGHT_PARAM_NAMES
-            ])
-            starts_w.append(w_start)
-
-        for x0 in starts_w:
-            try:
-                res = minimize(
-                    _loss_w, x0,
-                    method="L-BFGS-B",
-                    jac=_grad_w,
-                    bounds=bounds_w,
-                    options={"maxiter": 1000, "ftol": 1e-10},
-                )
-                if res.success and res.fun < best_lam_loss:
-                    best_lam_loss = res.fun
-                    best_lam_x = res.x.copy()
-            except Exception:
-                pass
-
-        if best_lam_x is not None:
-            grid_results.append((lam_fixed, best_lam_loss, best_lam_x))
-            logger.info(f"  lambda={lam_fixed:5.2f}: loss={best_lam_loss:.6f}")
-
-    # Pick best lambda
-    if not grid_results:
-        logger.error("All lambda grid points failed. Using spec defaults.")
-        opt_lambda = 1.0
-        best_x = np.array([SPEC_DEFAULTS[p] for p in WEIGHT_PARAM_NAMES])
-        best_loss = float("inf")
-        converged = False
+    # Vote data arrays (default to zeros if not provided)
+    S_int = int(S)
+    if vote_data is not None:
+        vx_strike = [float(v) for v in vote_data["vote_x_strike"]]
+        vx_overwh = [float(v) for v in vote_data["vote_x_overwh"]]
+        h_strike = [int(v) for v in vote_data["has_strike"]]
+        h_overwh = [int(v) for v in vote_data["has_overwh"]]
     else:
-        opt_lambda, best_loss, best_x = min(grid_results, key=lambda t: t[1])
-        converged = True
-        logger.info(f"Best lambda: {opt_lambda:.2f} (loss={best_loss:.6f})")
+        vx_strike = [0.0] * S_int
+        vx_overwh = [0.0] * S_int
+        h_strike = [0] * S_int
+        h_overwh = [0] * S_int
 
-        # Log all grid results for comparison
-        for lam, loss, _ in sorted(grid_results, key=lambda t: t[1]):
-            marker = " <-- best" if lam == opt_lambda else ""
-            logger.info(f"  lambda={lam:5.2f}: loss={loss:.6f}{marker}")
+    stan_data = {
+        "N": int(N),
+        "S": S_int,
+        "K": int(K),
+        "y": [int(v) for v in y_list],
+        "sa_id": [int(v) for v in sa_id_list],
+        "phi": phi.tolist(),
+        "anchored": anchored.tolist(),
+        "N_scenarios": int(N_scenarios),
+        "scenario_id": [int(v) for v in scenario_id_per_sa],
+        "vote_x_strike": vx_strike,
+        "vote_x_overwh": vx_overwh,
+        "has_strike": h_strike,
+        "has_overwh": h_overwh,
+        "mu_scale": 1.0,  # placeholder — set by fit_ordinal_probit from init mu range
+    }
 
-    # Estimated weights
-    opt_weights = {p: round(float(best_x[i]), 4)
-                   for i, p in enumerate(WEIGHT_PARAM_NAMES)}
-    # Include fixed (unidentifiable) params at spec defaults for display
-    for fp in FIXED_PARAM_NAMES:
-        opt_weights[fp] = SPEC_DEFAULTS[fp]
+    n_strike = sum(h_strike)
+    n_overwh = sum(h_overwh)
+    logger.info(
+        f"prepare_stan_data: N={N} obs, S={S_int} (scenario,action) pairs, "
+        f"K={K} linear weights, {N_scenarios} unique scenarios, "
+        f"vote: {n_strike} strike / {n_overwh} overwhelming"
+    )
+    return stan_data
 
-    logger.info(f"Fixed params (unidentifiable from softmax): "
-                f"{', '.join(f'{p}={SPEC_DEFAULTS[p]}' for p in FIXED_PARAM_NAMES)}")
-    logger.info(f"Estimated params: "
-                f"{', '.join(f'{p}={opt_weights[p]}' for p in WEIGHT_PARAM_NAMES)}")
 
-    # Build full parameter vector for Hessian/bootstrap (weights + fixed log_lambda)
-    full_x = np.concatenate([best_x, [np.log(opt_lambda)]])
-    n_params = n_w + 1
+def fit_ordinal_probit(
+    stan_data: dict,
+    stan_model_path: Optional[str] = None,
+    chains: int = 4,
+    iter_warmup: int = 1000,
+    iter_sampling: int = 2000,
+    adapt_delta: float = 0.99,
+    max_treedepth: int = 15,
+    seed: int = 42,
+) -> dict:
+    """Compile and sample ordinal_utility.stan via CmdStanPy.
 
-    # Hessian SE via finite differences (weights only, lambda fixed)
-    hessian_se = {}
-    cov_matrix = np.eye(n_params) * 0.01
-    condition_number = 1.0
-    ridge_applied = False
+    Parameters
+    ----------
+    stan_data:
+        Data dict produced by ``prepare_stan_data()``.
+    stan_model_path:
+        Absolute path to ``ordinal_utility.stan``.  Defaults to
+        ``<PROJECT_ROOT>/models/ordinal_utility.stan``.
+    chains, iter_warmup, iter_sampling, adapt_delta, max_treedepth, seed:
+        CmdStanPy sampling arguments.
+
+    Returns
+    -------
+    dict with keys:
+        ``fit``         — CmdStanMCMC object
+        ``w``           — np.ndarray (n_draws, K) posterior weight draws
+        ``w_strike``    — np.ndarray (n_draws,) vote strike penalty draws
+        ``w_overwh``    — np.ndarray (n_draws,) vote overwhelming penalty draws
+        ``cutpoints``   — np.ndarray (n_draws, 4)
+        ``sigma_scenario`` — np.ndarray (n_draws,)
+        ``y_rep``       — np.ndarray (n_draws, N)  or None if GQ not available
+        ``n_divergences`` — int
+        ``max_rhat``    — float
+        ``min_ess_bulk`` — float
+        ``n_samples``   — int  (chains × iter_sampling)
+    """
+    import platform
+
+    # Ensure C++ toolchain is discoverable on Windows (same as fit_belief_model_stan.py)
+    if platform.system() == "Windows" and "MAKE" not in os.environ:
+        _rtools_make = r"C:\rtools40\usr\bin\make.exe"
+        _rtools_gpp = r"C:\rtools40\ucrt64\bin"
+        if os.path.isfile(_rtools_make):
+            os.environ["MAKE"] = _rtools_make
+            os.environ["PATH"] = (
+                _rtools_gpp + os.pathsep
+                + os.path.dirname(_rtools_make) + os.pathsep
+                + os.environ.get("PATH", "")
+            )
 
     try:
-        from scipy.optimize import approx_fprime
-        h = 1e-5
-        # Hessian over weights only (n_w × n_w)
-        H_w = np.zeros((n_w, n_w))
-        for k in range(n_w):
-            def grad_k(w_vec, _k=k):
-                fv = np.concatenate([w_vec, [np.log(opt_lambda)]])
-                g = _cross_entropy_gradient(fv, phi, anchored, p_llm, action_masks)
-                return g[_k]
-            H_w[k, :] = approx_fprime(best_x, grad_k, h)
-        H_w = (H_w + H_w.T) / 2
+        from cmdstanpy import CmdStanModel
+    except ImportError as exc:
+        raise ImportError(
+            "CmdStanPy is required for fit_ordinal_probit(). "
+            "Install with: pip install cmdstanpy"
+        ) from exc
 
-        condition_number = float(np.linalg.cond(H_w))
-        if condition_number > 1000:
-            ridge_applied = True
-            H_w += 0.01 * np.eye(n_w)
-            logger.warning(f"Hessian ill-conditioned (cond={condition_number:.0f}), ridge applied")
+    # ── Resolve Stan model path ──
+    if stan_model_path is None:
+        stan_model_path = str(PROJECT_ROOT / "models" / "ordinal_utility.stan")
 
-        try:
-            cov_w = np.linalg.inv(H_w)
-            se = np.sqrt(np.maximum(np.diag(cov_w), 0.0))
-            for i, p in enumerate(WEIGHT_PARAM_NAMES):
-                hessian_se[p] = round(float(se[i]), 4)
-            hessian_se["lambda_rationality"] = 0.0  # profiled, no SE
-            for fp in FIXED_PARAM_NAMES:
-                hessian_se[fp] = 0.0  # fixed at spec default, no SE
-            # Embed in full covariance matrix for dashboard
-            cov_matrix = np.zeros((n_params, n_params))
-            cov_matrix[:n_w, :n_w] = cov_w
-        except np.linalg.LinAlgError:
-            logger.warning("Hessian not invertible")
-            for p in WEIGHT_PARAM_NAMES:
-                hessian_se[p] = float("nan")
-            hessian_se["lambda_rationality"] = 0.0
-            for fp in FIXED_PARAM_NAMES:
-                hessian_se[fp] = 0.0
-    except Exception as e:
-        logger.warning(f"Hessian computation failed: {e}")
-        for p in WEIGHT_PARAM_NAMES:
-            hessian_se[p] = float("nan")
-        hessian_se["lambda_rationality"] = 0.0
-        for fp in FIXED_PARAM_NAMES:
-            hessian_se[fp] = 0.0
+    # Delete cached exe so CmdStanPy always recompiles from source
+    exe_path = stan_model_path.replace(".stan", ".exe")
+    if os.path.exists(exe_path):
+        os.remove(exe_path)
+        logger.info(f"fit_ordinal_probit: deleted cached {exe_path}")
 
-    # w10/w11/w14 already collapsed to w_inaction pre-estimation
-    w10_w11_w14_collapsed = True
+    logger.info(f"fit_ordinal_probit: compiling {stan_model_path}")
+    model = CmdStanModel(stan_file=stan_model_path)
 
-    # Bootstrap SE (weights only, lambda fixed)
-    bootstrap_se = {}
-    bounds_boot = [(0, None)] * n_w
-    try:
-        logger.info(f"Computing bootstrap SE (B={bootstrap_B})...")
-        boot_estimates = []
-        rng_boot = np.random.default_rng(123)
-        log_lam_fixed = np.log(opt_lambda)
+    # ── Build init values at spec defaults (direct w parameterization) ──
+    # No transforms needed — w values are the parameters themselves.
+    # Order: [w_inaction_base, w_inaction_no_review, w_inaction_delay,
+    #          w1, w_removal, w_remove_ceo_overwhelming, w15]
+    K = stan_data["K"]
+    N_scenarios = stan_data["N_scenarios"]
+    w_init_raw = [
+        3.0,    # w_inaction_base
+        2.0,    # w_inaction_no_review
+        1.5,    # w_inaction_delay
+        0.5,    # w1
+        0.5,    # w_remove_ceo_overwhelming (w_raw_6)
+        1.3,    # delta_removal (w_removal - w_remove_ceo_overwhelming)
+        5.0,    # w15
+    ]
+    w_strike_init = float(VOTE_PARAM_DEFAULTS["w_strike"])    # 2.0
+    w_overwh_init = float(VOTE_PARAM_DEFAULTS["w_overwhelming"])  # 3.0
 
-        def _boot_loss(w_vec, _phi_b, _anch_b, _p_b, _m_b):
-            full = np.concatenate([w_vec, [log_lam_fixed]])
-            return _cross_entropy_loss(full, _phi_b, _anch_b, _p_b, _m_b)
+    # Compute init mu from init weights to set cutpoints and mu_scale.
+    # w_init for mu computation: direct from spec defaults
+    w_init = [
+        w_init_raw[0],  # w_inaction_base
+        w_init_raw[1],  # w_inaction_no_review
+        w_init_raw[2],  # w_inaction_delay
+        w_init_raw[3],  # w1
+        w_init_raw[4] + w_init_raw[5],  # w_removal = w_rceo + delta
+        w_init_raw[4],  # w_remove_ceo_overwhelming
+        w_init_raw[6],  # w15
+    ]
+    phi_arr = np.array(stan_data["phi"])       # (S, K)
+    anch_arr = np.array(stan_data["anchored"])  # (S,)
+    mu_init = phi_arr @ np.array(w_init) + anch_arr
+    # Include vote penalty in mu_init (linear in vote excess)
+    vx_s = np.array(stan_data["vote_x_strike"])
+    vx_o = np.array(stan_data["vote_x_overwh"])
+    hs = np.array(stan_data["has_strike"])
+    ho = np.array(stan_data["has_overwh"])
+    mu_init -= hs * w_strike_init * vx_s
+    mu_init -= ho * w_overwh_init * vx_o
 
-        def _boot_grad(w_vec, _phi_b, _anch_b, _p_b, _m_b):
-            full = np.concatenate([w_vec, [log_lam_fixed]])
-            g = _cross_entropy_gradient(full, _phi_b, _anch_b, _p_b, _m_b)
-            return g[:n_w]
+    mu_lo, mu_hi = float(mu_init.min()), float(mu_init.max())
+    mu_span = mu_hi - mu_lo
 
-        for b in range(bootstrap_B):
-            idx_sample = rng_boot.choice(n_sc, size=n_sc, replace=True)
-            phi_b = phi[idx_sample]
-            anch_b = anchored[idx_sample]
-            p_b = p_llm[idx_sample]
-            mask_b = action_masks[idx_sample]
+    # mu_scale: normalise so eta/mu_scale spans ~6 probit units [-3, 3].
+    # This ensures the probit link has meaningful gradients for all observations,
+    # not just the few near the cutpoint boundary.
+    mu_scale = max(mu_span / 6.0, 1.0)
+    stan_data["mu_scale"] = float(mu_scale)
 
-            try:
-                res_b = minimize(
-                    _boot_loss, best_x,
-                    args=(phi_b, anch_b, p_b, mask_b),
-                    method="L-BFGS-B",
-                    jac=_boot_grad,
-                    bounds=bounds_boot,
-                    options={"maxiter": 500, "ftol": 1e-8},
-                )
-                if res_b.success:
-                    boot_estimates.append(res_b.x)
-            except Exception:
-                pass
-
-        if boot_estimates:
-            boot_arr = np.array(boot_estimates)
-            boot_sd = np.std(boot_arr, axis=0)
-            for i, p in enumerate(WEIGHT_PARAM_NAMES):
-                bootstrap_se[p] = round(float(boot_sd[i]), 4)
-            bootstrap_se["lambda_rationality"] = 0.0  # profiled
-            for fp in FIXED_PARAM_NAMES:
-                bootstrap_se[fp] = 0.0  # fixed, no SE
-            logger.info(f"Bootstrap: {len(boot_estimates)}/{bootstrap_B} converged")
-        else:
-            for p in FREE_PARAM_NAMES:
-                bootstrap_se[p] = float("nan")
-            for fp in FIXED_PARAM_NAMES:
-                bootstrap_se[fp] = 0.0
-    except Exception as e:
-        logger.warning(f"Bootstrap failed: {e}")
-        for p in FREE_PARAM_NAMES:
-            bootstrap_se[p] = float("nan")
-        for fp in FIXED_PARAM_NAMES:
-            bootstrap_se[fp] = 0.0
-
-    # Rescaling check (spec section 6.6)
-    expected_car_contrib = W_CAR_NEG * 0.05  # CAR = -5%
-    logger.info(f"Rescaling check: CAR=-5% contribution = {expected_car_contrib:.3f} "
-                f"(expected -1.038)")
-
-    return EstimationResult(
-        weights=opt_weights,
-        lambda_rationality=opt_lambda,
-        hessian_se=hessian_se,
-        bootstrap_se=bootstrap_se,
-        covariance_matrix=cov_matrix,
-        condition_number=condition_number,
-        ridge_applied=ridge_applied,
-        w10_w11_w14_collapsed=w10_w11_w14_collapsed,
-        loss_value=float(best_loss),
-        n_scenarios=n_sc,
-        converged=converged,
-        estimation_method={p: "softmax_mle" for p in WEIGHT_PARAM_NAMES}
-                         | {fp: "pending_4b" for fp in FIXED_PARAM_NAMES}
-                         | {"lambda_rationality": "profiled"},
+    # Cutpoints on the normalised scale (4 evenly spaced in [-2, 2])
+    cutpoints_init = [-1.5, -0.5, 0.5, 1.5]
+    logger.info(
+        f"fit_ordinal_probit: mu_init range [{mu_lo:.2f}, {mu_hi:.2f}], "
+        f"mu_scale={mu_scale:.2f}, "
+        f"cutpoints_init = [{', '.join(f'{c:.2f}' for c in cutpoints_init)}]"
     )
 
+    init_dict = {
+        "w_raw_1": w_init_raw[0],
+        "w_raw_2": w_init_raw[1],
+        "w_raw_3": w_init_raw[2],
+        "w_raw_4": w_init_raw[3],
+        "w_raw_6": w_init_raw[4],
+        "delta_removal": w_init_raw[5],
+        "w_raw_7": w_init_raw[6],
+        "w_strike": w_strike_init,
+        "w_overwh": w_overwh_init,
+        "cutpoints": cutpoints_init,
+        "z_scenario": [0.0] * N_scenarios,
+        "sigma_scenario": 0.5,
+    }
 
-# ── SEC 8B: Stage 4B — Factor rating regression for scenario-level params ────
+    logger.info(
+        f"fit_ordinal_probit: sampling "
+        f"(chains={chains}, warmup={iter_warmup}, sampling={iter_sampling}, "
+        f"adapt_delta={adapt_delta}, max_treedepth={max_treedepth})"
+    )
+    fit = model.sample(
+        data=stan_data,
+        inits=init_dict,
+        chains=chains,
+        iter_warmup=iter_warmup,
+        iter_sampling=iter_sampling,
+        adapt_delta=adapt_delta,
+        max_treedepth=max_treedepth,
+        seed=seed,
+        show_console=False,
+        show_progress=True,
+    )
 
-def _extract_scenario_phi(scenario: "Scenario") -> dict[str, float]:
-    """Extract scenario-level phi values (same for all actions).
+    # ── Extract posterior draws ──
+    # w: (n_draws, K) — columns from transformed parameters w[1]..w[K]
+    K = stan_data["K"]
+    N = stan_data["N"]
+    n_draws = chains * iter_sampling
 
-    Returns dict with phi values for each scenario-level parameter, plus
-    raw features (prefixed with '_') for regression where the phi transform
-    has poor identification properties.
-    """
-    sv = scenario.state_vector
-    V = sv.get("vote_outcome_V", 0.0)
-    strike = sv.get("strike", False)
-    overwhelming = sv.get("overwhelming", False)
-    ceo_res = sv.get("ceo_status_at_start", "present") == "resigned_early"
+    w_draws = np.column_stack(
+        [fit.stan_variable("w")[:, k] for k in range(K)]
+    )
+    cutpoint_draws = fit.stan_variable("cutpoints")    # (n_draws, 4)
+    sigma_scenario_draws = fit.stan_variable("sigma_scenario")  # (n_draws,)
+
+    # Vote penalty draws
+    w_strike_draws = fit.stan_variable("w_strike")       # (n_draws,)
+    w_overwh_draws = fit.stan_variable("w_overwh")       # (n_draws,)
+
+    y_rep = None
+    try:
+        y_rep = fit.stan_variable("y_rep")             # (n_draws, N)
+    except Exception:
+        logger.warning("fit_ordinal_probit: y_rep not available in fit object")
+
+    # ── MCMC diagnostics ──
+    summary = fit.summary()
+    rhat_cols = [c for c in summary.columns if "R_hat" in c or "rhat" in c.lower()]
+    ess_cols = [c for c in summary.columns if "ESS_bulk" in c or "ess_bulk" in c.lower()]
+
+    max_rhat = float("nan")
+    min_ess_bulk = float("nan")
+    if rhat_cols:
+        max_rhat = float(summary[rhat_cols[0]].max())
+    if ess_cols:
+        min_ess_bulk = float(summary[ess_cols[0]].min())
+
+    n_divergences = int(fit.divergences.sum()) if hasattr(fit, "divergences") else 0
+
+    if max_rhat > 1.01:
+        logger.warning(
+            f"fit_ordinal_probit: max R-hat = {max_rhat:.4f} > 1.01 — "
+            "convergence may be inadequate"
+        )
+    if n_divergences > 0:
+        logger.warning(
+            f"fit_ordinal_probit: {n_divergences} divergent transitions — "
+            "consider increasing adapt_delta or reparameterising"
+        )
+
+    logger.info(
+        f"fit_ordinal_probit: done. "
+        f"n_draws={n_draws}, max_rhat={max_rhat:.4f}, "
+        f"min_ESS_bulk={min_ess_bulk:.0f}, divergences={n_divergences}"
+    )
 
     return {
-        "w1": float(ceo_res),           # |phi| = 1 if CEO resigned early
-        "w2": (max(V - 0.25, 0.0) ** 2) if V > 0.25 else 0.0,  # quadratic vote penalty
-        "w3": float(overwhelming),       # binary: vote >= 50%
-        "w4": V * float(strike),         # V × strike interaction
-        "w9": float(overwhelming),       # reputational spill (same basis as w3)
-        "_V": V,                         # raw vote % for w2 regression
+        "fit": fit,
+        "w": w_draws,
+        "w_strike": w_strike_draws,
+        "w_overwh": w_overwh_draws,
+        "cutpoints": cutpoint_draws,
+        "sigma_scenario": sigma_scenario_draws,
+        "y_rep": y_rep,
+        "n_divergences": n_divergences,
+        "max_rhat": max_rhat,
+        "min_ess_bulk": min_ess_bulk,
+        "n_samples": n_draws,
     }
 
 
-def estimate_scenario_level_params(
-    scenarios: list["Scenario"],
-    estimation_df: pd.DataFrame,
-    stage4a_result: EstimationResult,
-) -> dict:
+def estimate_parameters_stan(
+    phi: np.ndarray,
+    anchored: np.ndarray,
+    likert_long_df: "pd.DataFrame",
+    sa_id_map: dict,
+    scenario_id_map: dict,
+    vote_data: Optional[dict] = None,
+    chains: int = 4,
+    iter_warmup: int = 1000,
+    iter_sampling: int = 2000,
+    adapt_delta: float = 0.99,
+    max_treedepth: int = 15,
+    seed: int = 42,
+) -> StanEstimationResult:
+    """Stage 4 (Bayesian): estimate utility weights via ordinal probit Stan model.
+
+    Orchestrates: build Stan data → compile and sample → extract posteriors →
+    compute summaries → return StanEstimationResult with full EstimationResult
+    interface compatibility.
+
+    Parameters
+    ----------
+    phi:
+        (S, K) basis function matrix from ``compute_phi_matrix()``.
+    anchored:
+        (S,) anchored utility contributions from ``compute_phi_matrix()``.
+    likert_long_df:
+        Long-form Likert observations with columns
+        ``scenario_id``, ``action``, ``rating``.
+    sa_id_map:
+        ``(scenario_id, action)`` -> 0-based int, from ``compute_phi_matrix()``.
+    scenario_id_map:
+        ``scenario_id`` -> 1-based int, from ``compute_phi_matrix()``.
+    chains, iter_warmup, iter_sampling, adapt_delta, max_treedepth, seed:
+        Passed directly to ``fit_ordinal_probit()``.
+
+    Returns
+    -------
+    StanEstimationResult
+        Posterior summaries plus all EstimationResult-compatible attributes so
+        existing downstream code (SEC 8C diagnostics, dashboard rendering,
+        _save_parameter_estimates, run_feature_selection) works unchanged.
     """
-    Stage 4B: Estimate scenario-level parameters (w1, w2, w3, w4, w9) via
-    factor rating regression.
+    logger.info(
+        "Stage 4 (Stan): Bayesian ordinal probit weight estimation — "
+        f"{len(ESTIMABLE_PARAM_NAMES)} weight params, "
+        f"model: models/ordinal_utility.stan"
+    )
+    logger.info(f"  MCMC: {chains} chains × {iter_sampling} draws "
+                f"(warmup {iter_warmup}), adapt_delta={adapt_delta}")
 
-    These parameters have phi that is constant across actions within a scenario,
-    so they cancel in the softmax choice model and have zero gradient.
-    Instead, we use the LLM's factor ratings (1-5 Likert) which DO respond to
-    scenario-level features.
+    S, K = phi.shape
 
-    Model: mean_rating_{i,f} = alpha_f + beta * |phi_k(scenario_i)| + epsilon
+    # ── 1. Prepare Stan data ──
+    stan_data = prepare_stan_data(
+        likert_long_df=likert_long_df,
+        phi=phi,
+        anchored=anchored,
+        sa_id_map=sa_id_map,
+        scenario_id_map=scenario_id_map,
+        vote_data=vote_data,
+    )
+    N_scenarios = stan_data["N_scenarios"]
 
-    The coefficient beta measures Likert-points-per-unit-phi. We convert to
-    utility weight scale using w_removal from Stage 4A as a bridge.
+    # ── 2. Fit model ──
+    fit_result = fit_ordinal_probit(
+        stan_data=stan_data,
+        chains=chains,
+        iter_warmup=iter_warmup,
+        iter_sampling=iter_sampling,
+        adapt_delta=adapt_delta,
+        max_treedepth=max_treedepth,
+        seed=seed,
+    )
 
-    Returns dict with keys:
-        weights: {param: estimated_value}
-        se: {param: standard_error}
-        regression_stats: {param: {beta, alpha, r_squared, p_value, n_obs, factors_used}}
+    w_draws = fit_result["w"]           # (n_draws, K)
+    w_strike_draws = fit_result["w_strike"]       # (n_draws,)
+    w_overwh_draws = fit_result["w_overwh"]       # (n_draws,)
+    cutpoint_draws = fit_result["cutpoints"]      # (n_draws, 4)
+    sigma_draws = fit_result["sigma_scenario"]    # (n_draws,)
+    y_rep = fit_result["y_rep"]                   # (n_draws, N) or None
+    n_draws = fit_result["n_samples"]
+
+    # ── 3. Posterior summaries ──
+    w_mean = np.mean(w_draws, axis=0)   # (K,)
+    w_sd = np.std(w_draws, axis=0)      # (K,)
+    w_q025 = np.percentile(w_draws, 2.5, axis=0)
+    w_q975 = np.percentile(w_draws, 97.5, axis=0)
+
+    weights_posterior_mean = {
+        p: round(float(w_mean[i]), 4)
+        for i, p in enumerate(WEIGHT_PARAM_NAMES)
+    }
+    weights_posterior_sd = {
+        p: round(float(w_sd[i]), 4)
+        for i, p in enumerate(WEIGHT_PARAM_NAMES)
+    }
+    weights_posterior_ci = {
+        p: [round(float(w_q025[i]), 4), round(float(w_q975[i]), 4)]
+        for i, p in enumerate(WEIGHT_PARAM_NAMES)
+    }
+
+    # Vote penalty posterior summaries
+    for vp_name, vp_draws in [("w_strike", w_strike_draws),
+                               ("w_overwhelming", w_overwh_draws)]:
+        vp_mean = float(np.mean(vp_draws))
+        vp_sd = float(np.std(vp_draws))
+        vp_q025 = float(np.percentile(vp_draws, 2.5))
+        vp_q975 = float(np.percentile(vp_draws, 97.5))
+        weights_posterior_mean[vp_name] = round(vp_mean, 4)
+        weights_posterior_sd[vp_name] = round(vp_sd, 4)
+        weights_posterior_ci[vp_name] = [round(vp_q025, 4), round(vp_q975, 4)]
+
+    # Posterior mean weights (primary point estimates, for EstimationResult compat)
+    opt_weights = weights_posterior_mean.copy()
+
+    # Posterior SD as "hessian_se" slot (closest analogue for dashboard)
+    hessian_se = {p: weights_posterior_sd[p]
+                  for p in WEIGHT_PARAM_NAMES + VOTE_PARAM_NAMES}
+    hessian_se["lambda_rationality"] = 0.0
+
+    # Bootstrap SE slot: 95% CI half-width  (CI / 2*1.96 ~ SE)
+    bootstrap_se = {
+        p: round(float((w_q975[i] - w_q025[i]) / (2 * 1.96)), 4)
+        for i, p in enumerate(WEIGHT_PARAM_NAMES)
+    }
+    for vp_name in VOTE_PARAM_NAMES:
+        ci = weights_posterior_ci[vp_name]
+        bootstrap_se[vp_name] = round(float((ci[1] - ci[0]) / (2 * 1.96)), 4)
+    bootstrap_se["lambda_rationality"] = 0.0
+
+    # Jackknife SE: leave-one-chain-out SD (lightweight proxy, not full jackknife)
+    n_per_chain = iter_sampling
+    chain_means = np.array([
+        np.mean(w_draws[c * n_per_chain:(c + 1) * n_per_chain], axis=0)
+        for c in range(chains)
+    ])  # (chains, K)
+    loo_sd = np.zeros(K)
+    for c in range(chains):
+        loo = np.delete(chain_means, c, axis=0)
+        loo_sd += (np.mean(loo, axis=0) - w_mean) ** 2
+    jackknife_se_arr = np.sqrt(((chains - 1) / chains) * loo_sd)
+    jackknife_se = {
+        p: round(float(jackknife_se_arr[i]), 4)
+        for i, p in enumerate(WEIGHT_PARAM_NAMES)
+    }
+    # Vote param jackknife (same leave-one-chain-out approach)
+    for vp_name, vp_draws in [("w_strike", w_strike_draws),
+                               ("w_overwhelming", w_overwh_draws)]:
+        vp_chain_means = [
+            float(np.mean(vp_draws[c * n_per_chain:(c + 1) * n_per_chain]))
+            for c in range(chains)
+        ]
+        vp_overall = float(np.mean(vp_draws))
+        vp_loo = 0.0
+        for c in range(chains):
+            loo_mean = np.mean([m for j, m in enumerate(vp_chain_means) if j != c])
+            vp_loo += (loo_mean - vp_overall) ** 2
+        jackknife_se[vp_name] = round(float(np.sqrt(((chains - 1) / chains) * vp_loo)), 4)
+    jackknife_se["lambda_rationality"] = 0.0
+
+    # Posterior covariance of w (for dashboard covariance_matrix display)
+    # Include vote params in covariance
+    all_w_draws = np.column_stack([w_draws, w_strike_draws, w_overwh_draws])
+    cov_w_posterior = np.cov(all_w_draws, rowvar=False)  # (K+2, K+2)
+    n_cov = K + 2 + 1  # K linear + 2 vote + lambda slot
+    cov_matrix = np.zeros((n_cov, n_cov))
+    cov_matrix[:K + 2, :K + 2] = cov_w_posterior
+
+    all_param_names = WEIGHT_PARAM_NAMES + VOTE_PARAM_NAMES
+    logger.info(
+        f"Stage 4 (Stan) complete: "
+        f"posterior mean weights = "
+        f"{', '.join(f'{p}={opt_weights[p]}' for p in all_param_names)}"
+    )
+    logger.info(
+        f"  MCMC health: max_rhat={fit_result['max_rhat']:.4f}, "
+        f"min_ESS_bulk={fit_result['min_ess_bulk']:.0f}, "
+        f"divergences={fit_result['n_divergences']}"
+    )
+
+    return StanEstimationResult(
+        # Stan-specific draws
+        w_draws=w_draws,
+        cutpoint_draws=cutpoint_draws,
+        sigma_scenario_draws=sigma_draws,
+        y_rep=y_rep,
+        # Posterior summaries
+        weights_posterior_mean=weights_posterior_mean,
+        weights_posterior_sd=weights_posterior_sd,
+        weights_posterior_ci=weights_posterior_ci,
+        # MCMC diagnostics
+        n_divergences=fit_result["n_divergences"],
+        max_rhat=fit_result["max_rhat"],
+        min_ess_bulk=fit_result["min_ess_bulk"],
+        n_samples=n_draws,
+        # EstimationResult-compatible attributes
+        weights=opt_weights,
+        lambda_rationality=1.0,
+        hessian_se=hessian_se,
+        bootstrap_se=bootstrap_se,
+        covariance_matrix=cov_matrix,
+        condition_number=float(np.linalg.cond(cov_w_posterior)),
+        ridge_applied=False,
+        w10_w11_w14_collapsed=True,
+        loss_value=0.0,
+        n_scenarios=N_scenarios,
+        converged=True,
+        estimation_method=(
+            {p: "stan_ordinal_probit" for p in WEIGHT_PARAM_NAMES}
+            | {p: "stan_ordinal_probit" for p in VOTE_PARAM_NAMES}
+            | {fp: "excluded" for fp in EXCLUDED_PARAMS}
+            | {"lambda_rationality": "fixed"}
+        ),
+        jackknife_se=jackknife_se,
+    )
+
+
+# Back-compat alias: callers that invoke estimate_parameters() directly
+# (e.g. the Stage 4 block in main()) will now go through the Stan pipeline.
+# The function accepts the same (phi, anchored, p_llm, action_lists, ...)
+# positional signature so the existing call site requires no edits; p_llm and
+# action_lists are accepted but ignored (Stan uses individual Likert ratings,
+# not scenario-level softmax targets).
+def estimate_parameters(
+    phi: np.ndarray,
+    anchored: np.ndarray,
+    p_llm: "np.ndarray | None" = None,
+    action_lists: "list | None" = None,
+    n_starts: int = 10,
+    bootstrap_B: int = 500,
+    theta_reg: float = 0.05,
+    likert_long_df: "Optional[pd.DataFrame]" = None,
+    sa_id_map: Optional[dict] = None,
+    scenario_id_map: Optional[dict] = None,
+    chains: int = 4,
+    iter_warmup: int = 1000,
+    iter_sampling: int = 2000,
+    adapt_delta: float = 0.99,
+    max_treedepth: int = 15,
+    seed: int = 42,
+) -> StanEstimationResult:
+    """Stage 4 entry point — delegates to estimate_parameters_stan().
+
+    Legacy positional arguments (p_llm, action_lists, n_starts, bootstrap_B,
+    theta_reg) are accepted for call-site compatibility but are not used by
+    the Stan pipeline.
+
+    If ``likert_long_df`` / ``sa_id_map`` / ``scenario_id_map`` are not
+    supplied the function raises ValueError with a clear message, since the
+    Stan model requires individual Likert ratings rather than aggregated
+    scenario-level choice probabilities.
     """
-    from scipy import stats as sp_stats
+    if likert_long_df is None or sa_id_map is None or scenario_id_map is None:
+        raise ValueError(
+            "estimate_parameters() now delegates to the Bayesian ordinal "
+            "probit Stan pipeline and requires three additional keyword "
+            "arguments: likert_long_df (long-form Likert DataFrame), "
+            "sa_id_map (dict from compute_phi_matrix), and scenario_id_map "
+            "(dict from compute_phi_matrix).  Pass these from the Stage 4 "
+            "block in main()."
+        )
 
-    logger.info("Stage 4B: Estimating scenario-level params via factor rating regression...")
+    return estimate_parameters_stan(
+        phi=phi,
+        anchored=anchored,
+        likert_long_df=likert_long_df,
+        sa_id_map=sa_id_map,
+        scenario_id_map=scenario_id_map,
+        chains=chains,
+        iter_warmup=iter_warmup,
+        iter_sampling=iter_sampling,
+        adapt_delta=adapt_delta,
+        max_treedepth=max_treedepth,
+        seed=seed,
+    )
 
-    valid_sids = set(estimation_df["scenario_id"].tolist())
-    valid_scenarios = [s for s in scenarios if s.scenario_id in valid_sids]
 
-    # Build scenario-level data: phi values + factor ratings
-    rows = []
-    for scenario in valid_scenarios:
-        row_data = estimation_df[estimation_df["scenario_id"] == scenario.scenario_id]
-        if row_data.empty:
-            continue
-        phi_s = _extract_scenario_phi(scenario)
-        ratings = json.loads(row_data.iloc[0]["mean_factor_ratings"])
-        if len(ratings) < 10:
-            continue
-        rows.append({
-            "scenario_id": scenario.scenario_id,
-            "phi": phi_s,
-            "ratings": ratings,  # 10-element list (0-indexed: F1=ratings[0], F10=ratings[9])
-        })
+def compute_action_probabilities_from_posterior(
+    stan_result: StanEstimationResult,
+    scenarios: list[Scenario],
+    phi_by_sa: np.ndarray,
+    anchored_by_sa: np.ndarray,
+    sa_id_map: dict,
+    action_lists: list[list[str]],
+    scenario_ids: list[str],
+) -> dict[str, dict[str, dict]]:
+    """Compute action probabilities from posterior weight draws.
 
-    if not rows:
-        logger.warning("Stage 4B: No valid scenarios for factor rating regression")
-        return {"weights": {}, "se": {}, "regression_stats": {}}
+    For each posterior draw d:
+      1. Compute EU(a) = phi(s,a) . w_d + anchored(s,a) for each action
+      2. argmax_a EU(a)
+      3. Record winning action
 
-    # ── Step 1: Compute bridge scale factor using w_removal ──
-    # w_removal is estimated from Stage 4A (action-varying, known scale).
-    # Factor 6 (direct costs of governance reform) maps to removal cost.
-    # Factor 8 (implementation complexity) also maps to removal.
-    # Use their correlation with |phi_removal| across scenarios to get
-    # Likert-per-util conversion.
-    w_removal_4a = stage4a_result.weights.get("w_removal", 1.0)
-    logger.info(f"  Bridge parameter: w_removal = {w_removal_4a:.4f} (from Stage 4A)")
+    P(action a is optimal | data) = count(a wins) / n_posterior_draws
 
-    # Compute |phi_removal| per scenario (it varies by action, so use Drev_sack_ceo
-    # where phi_removal = 1, vs other actions where it's 0)
-    # But for bridge scaling, we need a DIFFERENT approach:
-    # The factor ratings are SCENARIO-level (one set per scenario, not per action).
-    # So we can't use action-varying phi for the bridge.
-    #
-    # Instead, we use the REGRESSION SLOPE directly as the weight estimate.
-    # The factor rating model is: F_rating = alpha + beta * |phi_k|
-    # The utility model is: EU_k = w_k * phi_k
-    # If the LLM's factor ratings linearly reflect perceived disutility,
-    # then beta captures relative importance on the Likert scale.
-    #
-    # To convert beta (Likert/unit_phi) to w_k (utils/unit_phi):
-    #   w_k = beta * (w_ref / beta_ref)
-    # where w_ref and beta_ref come from a parameter identified by both methods.
-    #
-    # Since w3 and w9 share the same phi (both = overwhelming indicator),
-    # we need to handle them differently. w3 uses F9+F10 (activist escalation +
-    # board cohesion) while w9 uses F7 (reputational contagion).
+    Returns:
+        {scenario_id: {action: {"prob_optimal": float, "eu_mean": float,
+                                "eu_sd": float, "eu_ci": (lo, hi)}}}
+    """
+    w_draws = stan_result.w_draws  # (n_posterior_draws, K)
+    n_posterior = w_draws.shape[0]
 
-    results = {"weights": {}, "se": {}, "regression_stats": {}}
+    results = {}
+    for sc_idx, sid in enumerate(scenario_ids):
+        actions = action_lists[sc_idx]
+        n_actions = len(actions)
 
-    # ── Step 2: Run OLS for each scenario-level parameter ──
-    for param in FIXED_PARAM_NAMES:
-        mapping = FACTOR_PARAM_MAP.get(param)
-        if not mapping:
-            logger.warning(f"  {param}: no factor mapping defined, using spec default")
-            results["weights"][param] = SPEC_DEFAULTS[param]
-            results["se"][param] = 0.0
-            results["regression_stats"][param] = {"status": "no_mapping"}
-            continue
+        # Build EU matrix: (n_posterior_draws, n_actions)
+        eu_matrix = np.zeros((n_posterior, n_actions))
+        for j, action in enumerate(actions):
+            sa_key = (sid, action)
+            if sa_key not in sa_id_map:
+                continue
+            s_idx = sa_id_map[sa_key]
+            phi_vec = phi_by_sa[s_idx]  # (K,)
+            anch = anchored_by_sa[s_idx]
+            eu_matrix[:, j] = w_draws @ phi_vec + anch
 
-        factor_indices = mapping["factors"]  # 1-based
+        # Argmax per posterior draw
+        best_action_idx = np.argmax(eu_matrix, axis=1)
 
-        # Build regressor and response.
-        # For w2, the phi transform (V-0.25)² compresses variation near zero,
-        # giving poor R². Factor ratings respond more linearly to V itself.
-        # We regress on V directly and convert the coefficient via the
-        # marginal relationship: dEU/dV = 2*w2*(V-0.25), so
-        # w2_likert = gamma / (2*(V_ref - 0.25)) where V_ref is mean V
-        # across scenarios with strikes.
-        use_raw_V = (param == "w2")
-        x_vals = []
-        y_vals = []
-        for r in rows:
-            if use_raw_V:
-                x_val = r["phi"].get("_V", 0.0)
-            else:
-                x_val = abs(r["phi"].get(param, 0.0))
-            avg_rating = np.mean([r["ratings"][fi - 1] for fi in factor_indices])
-            x_vals.append(x_val)
-            y_vals.append(avg_rating)
-
-        x_arr = np.array(x_vals)
-        y_arr = np.array(y_vals)
-
-        # Need variation in x to run regression
-        if np.std(x_arr) < 1e-8:
-            logger.warning(f"  {param}: no variation in phi across scenarios, "
-                           f"using spec default {SPEC_DEFAULTS[param]}")
-            results["weights"][param] = SPEC_DEFAULTS[param]
-            results["se"][param] = 0.0
-            results["regression_stats"][param] = {
-                "status": "no_variation",
-                "n_obs": len(x_arr),
-                "factors_used": factor_indices,
+        action_results = {}
+        for j, action in enumerate(actions):
+            is_best = (best_action_idx == j)
+            eu_draws = eu_matrix[:, j]
+            action_results[action] = {
+                "prob_optimal": round(float(np.mean(is_best)), 4),
+                "eu_mean": round(float(np.mean(eu_draws)), 4),
+                "eu_sd": round(float(np.std(eu_draws)), 4),
+                "eu_ci": (
+                    round(float(np.percentile(eu_draws, 2.5)), 4),
+                    round(float(np.percentile(eu_draws, 97.5)), 4),
+                ),
             }
-            continue
 
-        # OLS: y = alpha + beta * x
-        slope, intercept, r_value, p_value, std_err = sp_stats.linregress(x_arr, y_arr)
+        results[sid] = action_results
 
-        # For w2, convert slope on V to coefficient on (V-0.25)²
-        if use_raw_V:
-            # gamma = dF/dV. EU contribution = w2*(V-0.25)². dEU/dV = 2*w2*(V-0.25).
-            # At V_ref: w2_likert = gamma / (2*(V_ref - 0.25))
-            strike_x = x_arr[x_arr > 0.25]
-            V_ref = float(np.mean(strike_x)) if len(strike_x) > 0 else 0.40
-            denom = 2.0 * max(V_ref - 0.25, 0.05)  # floor to avoid division by tiny number
-            effective_slope = slope / denom
-            effective_se = std_err / denom
-            logger.info(f"  {param}: raw gamma={slope:.4f} (on V), V_ref={V_ref:.3f}, "
-                        f"converted beta={effective_slope:.4f} (on (V-0.25)²), "
-                        f"R²={r_value**2:.4f}, p={p_value:.4f}, n={len(x_arr)}, "
-                        f"factors={factor_indices}")
+    return results
+
+
+# ── SEC 8B: Recursive EU tree computation for dashboard ──────────────────────
+
+# Non-Board probabilities: configurable defaults for dashboard tree display.
+# These are assumptions about other actors' behaviour, NOT estimated from data.
+# D0_ceo: Beta(12.5, 0.5) prior → P(resign) ≈ 0.962
+# A2: conditional on d1_action (ASA is more likely to strike when Board does less)
+# V: conditional on A2 action (strike recommendation shifts vote distribution upward)
+# D4/D4_post: conditional on vote outcome (CEO more likely to leave after bad vote)
+# R: Beta(10, 5) → P(adverse) ≈ 0.667
+TREE_DEFAULT_PROBS = {
+    "D0_ceo": {"CEO_resign": 0.962, "CEO_stay": 0.038},
+    "A2": {
+        "D0_minimal":        {"A2_no_strike": 0.10, "A2_rec_strike": 0.90},
+        "D1_review":         {"A2_no_strike": 0.20, "A2_rec_strike": 0.80},
+        "D3_ceo_transition": {"A2_no_strike": 0.40, "A2_rec_strike": 0.60},
+    },
+    "V": {
+        "A2_no_strike":  {"no_strike": 0.55, "first_strike": 0.30, "overwhelming": 0.15},
+        "A2_rec_strike": {"no_strike": 0.15, "first_strike": 0.40, "overwhelming": 0.45},
+    },
+    "D4": {
+        "no_strike":    {"D4_stay": 0.95, "D4_resign": 0.03, "D4_negotiate_exit": 0.02},
+        "first_strike": {"D4_stay": 0.10, "D4_resign": 0.30, "D4_negotiate_exit": 0.60},
+        "overwhelming": {"D4_stay": 0.02, "D4_resign": 0.26, "D4_negotiate_exit": 0.72},
+    },
+    "R": {"adverse": 0.667, "positive": 0.333},
+    "D4_post": {
+        "no_strike":    {"D4_stay": 0.05, "D4_resign": 0.40, "D4_negotiate_exit": 0.55},
+        "first_strike": {"D4_stay": 0.02, "D4_resign": 0.35, "D4_negotiate_exit": 0.63},
+        "overwhelming": {"D4_stay": 0.01, "D4_resign": 0.30, "D4_negotiate_exit": 0.69},
+    },
+}
+
+# Representative vote percentages for computing EU at each vote outcome bucket.
+VOTE_REPRESENTATIVES = {
+    "no_strike": 0.15,
+    "first_strike": 0.35,
+    "overwhelming": 0.70,
+}
+
+# Representative review outcomes for computing EU.
+REVIEW_REPRESENTATIVES = {
+    "adverse": {"review_car": -0.05, "review_direct_cost": 0.00096},
+    "positive": {"review_car": 0.03, "review_direct_cost": 0.00096},
+}
+
+
+def _tree_state_to_decompose_args(ts: dict) -> dict:
+    """Convert tree state dict into kwargs for decompose_utility_board()."""
+    return {
+        "vote_percent": ts.get("vote_percent", 0.0),
+        "strike": ts.get("strike", False),
+        "overwhelming": ts.get("overwhelming", False),
+        "d1_action": ts.get("d1_action", "D0_minimal"),
+        "d_rev_action": ts.get("d_rev_action", "Drev_no_action"),
+        "d_rev_post_action": ts.get("d_rev_post_action", "Drev_no_action"),
+        "CEO_removed": ts.get("CEO_removed", False),
+        "CEO_resigned_early": ts.get("CEO_resigned_early", False),
+        "review_commissioned": ts.get("review_commissioned", False),
+        "review_adverse": ts.get("review_adverse", False),
+        "review_car": ts.get("review_car", 0.0),
+        "review_direct_cost": ts.get("review_direct_cost", 0.00096),
+    }
+
+
+def _tree_state_to_anchored_args(ts: dict) -> dict:
+    """Convert tree state dict into kwargs for _compute_anchored_contribution()."""
+    return {
+        "vote_percent": ts.get("vote_percent", 0.0),
+        "strike": ts.get("strike", False),
+        "overwhelming": ts.get("overwhelming", False),
+        "review_commissioned": ts.get("review_commissioned", False),
+        "review_car": ts.get("review_car", 0.0),
+        "review_direct_cost": ts.get("review_direct_cost", 0.00096),
+    }
+
+
+def _tree_apply_action(ts: dict, node: str, action: str) -> dict:
+    """Apply action at node to tree state, returning a new state dict."""
+    ns = dict(ts)
+    if node == "D0_ceo":
+        if action == "CEO_resign":
+            ns["ceo_present"] = False
+            ns["CEO_resigned_early"] = True
+            ns["CEO_removed"] = True
+        # CEO_stay: no state change
+    elif node == "D1":
+        ns["d1_action"] = action
+        if action == "D3_ceo_transition":
+            ns["ceo_present"] = False
+            ns["CEO_removed"] = True
+        if action == "D1_review":
+            ns["review_commissioned"] = True
+    elif node == "A2":
+        ns["a2_action"] = action
+    elif node == "V":
+        vpct = VOTE_REPRESENTATIVES.get(action, 0.15)
+        ns["vote_percent"] = vpct
+        ns["strike"] = action in ("first_strike", "overwhelming")
+        ns["overwhelming"] = action == "overwhelming"
+    elif node in ("D4", "D4_post"):
+        if action in ("D4_resign", "D4_negotiate_exit"):
+            ns["ceo_present"] = False
+            ns["CEO_removed"] = True
+    elif node in ("D_rev", "D_rev_post"):
+        if node == "D_rev":
+            ns["d_rev_action"] = action
         else:
-            effective_slope = slope
-            effective_se = std_err
-            logger.info(f"  {param}: beta={effective_slope:.4f}, R²={r_value**2:.4f}, "
-                        f"p={p_value:.4f}, n={len(x_arr)}, "
-                        f"factors={factor_indices}")
+            ns["d_rev_post_action"] = action
+        if action == "Drev_commission_review":
+            ns["review_commissioned"] = True
+        elif action == "Drev_sack_ceo":
+            ns["ceo_present"] = False
+            ns["CEO_removed"] = True
+    elif node == "R":
+        if action == "adverse":
+            ns["review_adverse"] = True
+            rep = REVIEW_REPRESENTATIVES["adverse"]
+        else:
+            ns["review_adverse"] = False
+            rep = REVIEW_REPRESENTATIVES["positive"]
+        ns["review_car"] = rep["review_car"]
+        ns["review_direct_cost"] = rep["review_direct_cost"]
+    return ns
 
-        results["regression_stats"][param] = {
-            "status": "estimated",
-            "beta": round(float(effective_slope), 4),
-            "alpha": round(float(intercept), 4),
-            "r_squared": round(float(r_value ** 2), 4),
-            "p_value": round(float(p_value), 6),
-            "std_err": round(float(effective_se), 4),
-            "n_obs": len(x_arr),
-            "factors_used": factor_indices,
+
+def _tree_get_vote_key(ts: dict) -> str:
+    """Get vote outcome key for D4 probability lookup."""
+    if ts.get("overwhelming"):
+        return "overwhelming"
+    elif ts.get("strike"):
+        return "first_strike"
+    return "no_strike"
+
+
+def _tree_feasible_actions(node: str, ts: dict) -> list[str]:
+    """Return feasible actions for a node given the current tree state."""
+    cp = ts.get("ceo_present", True)
+    if node == "D0_ceo":
+        return ["CEO_resign", "CEO_stay"]
+    elif node == "D1":
+        acts = ["D0_minimal", "D1_review"]
+        if cp:
+            acts.append("D3_ceo_transition")
+        return acts
+    elif node == "A2":
+        return ["A2_no_strike", "A2_rec_strike"]
+    elif node == "V":
+        return ["no_strike", "first_strike", "overwhelming"]
+    elif node in ("D4", "D4_post"):
+        if not cp:
+            return []  # skip (pass-through)
+        return ["D4_stay", "D4_resign", "D4_negotiate_exit"]
+    elif node == "D_rev":
+        acts = ["Drev_no_action"]
+        if not ts.get("review_commissioned", False):
+            acts.append("Drev_commission_review")
+        if cp:
+            acts.append("Drev_sack_ceo")
+        return acts
+    elif node == "R":
+        return ["adverse", "positive"]
+    elif node == "D_rev_post":
+        acts = ["Drev_no_action"]
+        if cp:
+            acts.append("Drev_sack_ceo")
+        return acts
+    return []
+
+
+def _tree_node_type(node: str) -> tuple[str, str]:
+    """Return (type, owner) for a node name."""
+    types = {
+        "D0_ceo": ("decision", "CEO"),
+        "D1": ("decision", "Board"),
+        "A2": ("decision", "ASA"),
+        "V": ("chance", "Nature"),
+        "D4": ("decision", "CEO"),
+        "D_rev": ("decision", "Board"),
+        "R": ("chance", "Nature"),
+        "D4_post": ("decision", "CEO"),
+        "D_rev_post": ("decision", "Board"),
+        "Terminal": ("terminal", "Nature"),
+    }
+    return types.get(node, ("terminal", "Nature"))
+
+
+def _tree_next_node(node: str) -> str:
+    """Return the next node in the game tree sequence."""
+    seq = {
+        "D0_ceo": "D1",
+        "D1": "A2",
+        "A2": "V",
+        "V": "D4",
+        "D4": "D_rev",
+        "D_rev": "Terminal",       # or R if commission
+        "R": "D4_post",            # or Terminal if positive + no CEO
+        "D4_post": "D_rev_post",
+        "D_rev_post": "Terminal",
+    }
+    return seq.get(node, "Terminal")
+
+
+def _tree_get_probs(node: str, ts: dict, probs: dict) -> dict[str, float]:
+    """Get action/outcome probabilities for non-Board nodes."""
+    if node == "D0_ceo":
+        return probs["D0_ceo"]
+    elif node == "A2":
+        d1a = ts.get("d1_action", "D0_minimal")
+        return probs["A2"].get(d1a, probs["A2"]["D0_minimal"])
+    elif node == "V":
+        a2a = ts.get("a2_action", "A2_rec_strike")
+        return probs["V"].get(a2a, probs["V"]["A2_rec_strike"])
+    elif node == "D4":
+        vk = _tree_get_vote_key(ts)
+        return probs["D4"].get(vk, probs["D4"]["first_strike"])
+    elif node == "R":
+        return probs["R"]
+    elif node == "D4_post":
+        vk = _tree_get_vote_key(ts)
+        return probs["D4_post"].get(vk, probs["D4_post"]["first_strike"])
+    return {}
+
+
+def _build_tree_node(node_id: str, node_name: str, ts: dict,
+                     w_draws: np.ndarray, probs: dict,
+                     param_names: list[str],
+                     laplacian: bool = True) -> tuple[dict, np.ndarray]:
+    """Recursively build the expanded tree with probabilities and EUs.
+
+    Returns (tree_dict, eu_draws) where:
+      - tree_dict: nested dict for JSON serialization (label, type, owner, eu, edges)
+      - eu_draws: shape (n_posterior,) array of per-draw EU values at this node
+
+    Per-draw EU arrays propagate upward:
+      Terminal: eu_draws = w_draws @ phi + anchored
+      Chance:   eu_draws = sum(p_i * child_eu_draws_i)
+      Board:    eu_draws = max over actions (per draw)
+    """
+    ntype, owner = _tree_node_type(node_name)
+    n_posterior = w_draws.shape[0]
+
+    if ntype == "terminal":
+        phi_dict = decompose_utility_board(**_tree_state_to_decompose_args(ts))
+        anchored_val = _compute_anchored_contribution(**_tree_state_to_anchored_args(ts))
+        phi_vec = np.array([phi_dict.get(p, 0.0) for p in param_names])
+        eu_draws = w_draws @ phi_vec + anchored_val
+        tree = {
+            "id": node_id,
+            "label": "Terminal",
+            "type": "terminal",
+            "owner": "Nature",
+            "eu": round(float(np.mean(eu_draws)), 4),
+            "edges": [],
         }
-        if use_raw_V:
-            results["regression_stats"][param]["regressor"] = "V (linear)"
-            results["regression_stats"][param]["V_ref"] = round(V_ref, 4)
-            results["regression_stats"][param]["raw_gamma"] = round(float(slope), 4)
+        return tree, eu_draws
 
-        # Store effective beta and SE for scale conversion below
-        results["weights"][param] = float(effective_slope)
-        results["se"][param] = float(effective_se)
+    feasible = _tree_feasible_actions(node_name, ts)
 
-    # ── Step 3: Scale conversion ──
-    # The betas are in Likert-points-per-unit-phi. We need to convert to
-    # utility-weight scale. The key insight: the beta for each parameter
-    # tells us how many Likert points the LLM assigns per unit of phi.
-    # A higher beta means the LLM perceives that feature as more important.
-    #
-    # We use the RELATIVE betas to set the RELATIVE weights, then anchor
-    # the overall scale using one parameter with known utility impact.
-    #
-    # w3 (overwhelming penalty) is identified by F9+F10 and also appears
-    # in action-varying combinations (it interacts with action through w12).
-    # But the cleanest bridge is the total utility impact:
-    #   For a scenario going from non-overwhelming to overwhelming,
-    #   the total utility change = -(w3 + w9) (from phi_w3 and phi_w9).
-    #   The LLM responds with ~1.5 Likert point increase across factors.
-    #
-    # Simpler approach: use the spec defaults as the scale anchor.
-    # beta_k measures "perceived importance per unit phi" in Likert units.
-    # SPEC_DEFAULTS[k] is the expert-specified weight in utility units.
-    # If the LLM agrees with the spec, then beta_k ∝ SPEC_DEFAULTS[k].
-    # We set: w_k = beta_k * (sum(SPEC_DEFAULTS[fixed]) / sum(|beta_k|))
-    #
-    # Even simpler: use w_removal from 4A as a reference.
-    # Factor 4 (CEO knowledge loss) and Factor 6 (direct costs) relate to removal.
-    # For scenarios where removal varies, we can compute beta_removal.
+    # Pass-through: D4/D4_post with CEO absent
+    if not feasible:
+        next_node = _tree_next_node(node_name)
+        return _build_tree_node(node_id, next_node, ts, w_draws, probs, param_names,
+                                laplacian=laplacian)
 
-    # Compute bridge: run same regression for w_removal using F4+F6
-    removal_x = []
-    removal_y = []
-    for r in rows:
-        # phi_removal depends on action, but we can still check if the SCENARIO
-        # involves CEO removal by checking if the state has ceo_present_at_end=False
-        sv_check = r.get("phi", {})
-        # Use the scenario's inherent CEO removal status
-        # Actually, phi_removal is action-dependent, not scenario-level.
-        # So we can't directly bridge via regression.
-        pass
+    # Helper to route child nodes (handles D_rev→R, R→D4_post, R→Terminal)
+    def _build_child(action, new_ts, child_id):
+        if node_name == "D_rev" and action == "Drev_commission_review":
+            return _build_tree_node(child_id, "R", new_ts, w_draws, probs, param_names,
+                                    laplacian=laplacian)
+        # D_rev with review already commissioned at D1: route to R for findings
+        if node_name == "D_rev" and new_ts.get("review_commissioned", False):
+            return _build_tree_node(child_id, "R", new_ts, w_draws, probs, param_names,
+                                    laplacian=laplacian)
+        if node_name == "R" and action == "adverse" and new_ts.get("ceo_present"):
+            return _build_tree_node(child_id, "D4_post", new_ts, w_draws, probs, param_names,
+                                    laplacian=laplacian)
+        if node_name == "R" and (action == "positive" or
+                                  (action == "adverse" and not new_ts.get("ceo_present"))):
+            return _build_tree_node(child_id, "Terminal", new_ts, w_draws, probs, param_names,
+                                    laplacian=laplacian)
+        return _build_tree_node(child_id, _tree_next_node(node_name), new_ts,
+                                w_draws, probs, param_names, laplacian=laplacian)
 
-    # Since w_removal is action-dependent, we can't use factor ratings (which
-    # are scenario-level) to bridge directly. Instead, use the SPEC_DEFAULTS
-    # ratio as the scale anchor:
-    #
-    # w_k_estimated = |beta_k| * (SPEC_DEFAULTS[k] / beta_k_expected)
-    #
-    # where beta_k_expected = slope from regressing rating on |phi| IF the
-    # spec defaults were the true weights. But we don't know that either.
-    #
-    # The cleanest approach: the betas ARE the estimates, in "Likert units".
-    # We report them as-is, and note that the scale is "per Likert point of
-    # perceived importance". The user can decide the conversion factor.
-    #
-    # ACTUALLY — the most principled approach: betas from the factor rating
-    # regressions are already on a meaningful scale (Likert/unit_phi). We
-    # convert them to the SAME scale as the Stage 4A weights by noting that
-    # the Stage 4A weights are "utility units per unit phi". If we define
-    # 1 Likert point ≈ k utility units, then w = beta * k.
-    #
-    # To find k: use w3 which has phi varying between 0 and 1 across scenarios.
-    # The scenarios that cross the overwhelming threshold show the jump in F9+F10.
-    # The spec default w3=3.0 means losing 3 utility units when overwhelming=1.
-    # If beta_w3 ≈ 1.5 (the Likert jump), then k = 3.0/1.5 = 2.0.
-    # But this is circular if we're trying to ESTIMATE w3.
-    #
-    # RESOLUTION: Report the betas directly as the weight estimates.
-    # The factor rating scale (1-5) already provides a natural unit of
-    # "perceived importance". A beta of 2.0 means going from phi=0 to phi=1
-    # adds 2 Likert points of perceived concern. This is interpretable.
-    # The absolute scale relative to CAR/cost terms is fixed by the anchored
-    # parameters (W_CAR=15, LAMBDA_LA=2.25), so the betas need to be on a
-    # comparable scale.
-    #
-    # Final decision: the betas represent the utility weight in
-    # "Likert-perceived-importance" units. We scale them to match the
-    # 4A weight scale by normalising to the average 4A weight magnitude.
+    if owner == "Board":
+        # Build children and collect per-draw EU arrays
+        child_trees = {}
+        child_eu_arrays = {}
+        for action in feasible:
+            new_ts = _tree_apply_action(ts, node_name, action)
+            child_id = node_id + "__" + action.lower()
+            child_tree, child_eu = _build_child(action, new_ts, child_id)
+            child_trees[action] = child_tree
+            child_eu_arrays[action] = child_eu
 
-    # Scale: average |w| from Stage 4A for non-near-zero params
-    stage4a_weights = [abs(stage4a_result.weights.get(p, 0))
-                       for p in ESTIMABLE_PARAM_NAMES
-                       if abs(stage4a_result.weights.get(p, 0)) > 0.05]
-    if stage4a_weights:
-        avg_4a_weight = np.mean(stage4a_weights)
+        # Stack into (n_posterior, n_actions) matrix for vectorized argmax
+        eu_mat = np.column_stack([child_eu_arrays[a] for a in feasible])
+
+        # Board action probs: fraction of draws where each action is argmax.
+        # Laplacian smoothing (alpha=1) ensures no action has zero probability.
+        if len(feasible) > 1:
+            best_idx = np.argmax(eu_mat, axis=1)
+            n_draws = len(best_idx)
+            K = len(feasible)
+            alpha = 1.0 if laplacian else 0.0
+            action_probs = {}
+            for j, a in enumerate(feasible):
+                count = float(np.sum(best_idx == j))
+                action_probs[a] = (count + alpha) / (n_draws + K * alpha)
+        else:
+            action_probs = {feasible[0]: 1.0}
+
+        # Node EU per draw = max over actions
+        node_eu_draws = np.max(eu_mat, axis=1)
+
+        edges = []
+        for j, action in enumerate(feasible):
+            edges.append({
+                "action": action,
+                "prob": round(action_probs[action], 4),
+                "eu": round(float(np.mean(eu_mat[:, j])), 4),
+                "child": child_trees[action],
+            })
+
+        tree = {
+            "id": node_id,
+            "label": node_name,
+            "type": ntype,
+            "owner": owner,
+            "eu": round(float(np.mean(node_eu_draws)), 4),
+            "edges": edges,
+        }
+        return tree, node_eu_draws
     else:
-        avg_4a_weight = 1.0
+        # Opponent/chance node: probability-weighted EU
+        action_probs = _tree_get_probs(node_name, ts, probs)
+        edges = []
+        node_eu_draws = np.zeros(n_posterior)
+        for action in feasible:
+            p = action_probs.get(action, 0.0)
+            new_ts = _tree_apply_action(ts, node_name, action)
+            child_id = node_id + "__" + action.lower()
+            child_tree, child_eu = _build_child(action, new_ts, child_id)
+            edges.append({
+                "action": action,
+                "prob": round(p, 4),
+                "eu": round(float(np.mean(child_eu)), 4),
+                "child": child_tree,
+            })
+            node_eu_draws += p * child_eu
 
-    # Average |beta| for params that had valid regressions
-    valid_betas = [abs(results["weights"][p]) for p in FIXED_PARAM_NAMES
-                   if results["regression_stats"].get(p, {}).get("status") == "estimated"
-                   and abs(results["weights"][p]) > 0.01]
-    if valid_betas:
-        avg_beta = np.mean(valid_betas)
-        scale_factor = avg_4a_weight / avg_beta
-    else:
-        scale_factor = 1.0
+        tree = {
+            "id": node_id,
+            "label": node_name,
+            "type": ntype,
+            "owner": owner,
+            "eu": round(float(np.mean(node_eu_draws)), 4),
+            "edges": edges,
+        }
+        return tree, node_eu_draws
 
-    logger.info(f"  Scale bridge: avg |4A weight| = {avg_4a_weight:.4f}, "
-                f"avg |beta| = {np.mean(valid_betas) if valid_betas else 0:.4f}, "
-                f"scale_factor = {scale_factor:.4f}")
 
-    # Apply scale conversion
-    for param in FIXED_PARAM_NAMES:
-        if results["regression_stats"].get(param, {}).get("status") == "estimated":
-            raw_beta = results["weights"][param]
-            scaled_w = abs(raw_beta) * scale_factor
-            results["weights"][param] = round(scaled_w, 4)
-            results["se"][param] = round(results["se"][param] * scale_factor, 4)
-            results["regression_stats"][param]["scaled_weight"] = round(scaled_w, 4)
-            results["regression_stats"][param]["scale_factor"] = round(scale_factor, 4)
-            logger.info(f"  {param}: raw beta={raw_beta:.4f} → "
-                        f"scaled weight={scaled_w:.4f}")
+def compute_recursive_tree(
+    est_result: StanEstimationResult,
+    probs: dict = None,
+    max_draws: int = 500,
+    laplacian: bool = True,
+) -> dict:
+    """Compute complete game tree with recursive EU using posterior weights.
+
+    For Board decision nodes, action probabilities are computed from the
+    fraction of posterior draws where each action is optimal (argmax EU).
+    Laplacian smoothing (alpha=1) is applied by default so no action has
+    zero probability.  Disable with laplacian=False.
+
+    For other nodes, fixed probabilities from TREE_DEFAULT_PROBS are used.
+
+    Args:
+        est_result: StanEstimationResult with w_draws.
+        probs: Override non-Board probabilities (default: TREE_DEFAULT_PROBS).
+        max_draws: Maximum posterior draws to use (subsampled for speed).
+        laplacian: Apply Laplacian smoothing to Board decision probs (default True).
+
+    Returns a nested dict tree suitable for JSON serialization in the dashboard.
+    """
+    if probs is None:
+        probs = TREE_DEFAULT_PROBS
+
+    w_draws = est_result.w_draws  # (n_posterior, K)
+    # Subsample posterior draws for performance
+    if w_draws.shape[0] > max_draws:
+        rng = np.random.default_rng(42)
+        idx = rng.choice(w_draws.shape[0], size=max_draws, replace=False)
+        w_draws = w_draws[idx]
+    param_names = list(ESTIMABLE_PARAM_NAMES)
+    logger.info(f"Computing recursive EU tree ({w_draws.shape[0]} posterior draws, "
+                f"{w_draws.shape[1]} weights)...")
+
+    initial_state = {
+        "ceo_present": True,
+        "CEO_resigned_early": False,
+        "CEO_removed": False,
+        "review_commissioned": False,
+        "review_adverse": False,
+        "vote_percent": 0.0,
+        "strike": False,
+        "overwhelming": False,
+        "d1_action": "D0_minimal",
+        "d_rev_action": "Drev_no_action",
+        "d_rev_post_action": "Drev_no_action",
+        "review_car": 0.0,
+        "review_direct_cost": 0.00096,
+    }
+
+    tree, _eu_draws = _build_tree_node("root", "D0_ceo", initial_state,
+                                        w_draws, probs, param_names,
+                                        laplacian=laplacian)
+    logger.info("Recursive EU tree computed successfully.")
+    return tree
+
+
+# ── SEC 8C: Post-estimation diagnostics and feature selection ─────────────────
+
+
+def run_feature_selection(
+    est_result: "EstimationResult",
+) -> dict:
+    """Post-estimation feature selection using posterior weight draws.
+
+    For the Bayesian ordinal probit pipeline, LR tests are not applicable.
+    Instead, relevance is assessed from the posterior distribution of each
+    weight:
+
+    - ``Pr(w_k > 0.1)``: probability that the weight exceeds a practically
+      meaningful threshold of 0.1.  Parameters where this probability is
+      below 0.50 are flagged as low-relevance.
+    - ``cv``: posterior SD / |posterior mean| (coefficient of variation).
+      Parameters with CV > 50% are flagged as poorly estimated.
+    - ``posterior_ci``: 95% credible interval from ``w_draws``.
+
+    Future work: use LOO-CV (leave-one-scenario-out cross-validation) for
+    formal Bayesian model comparison and feature selection.
+
+    Returns dict with:
+        relevance: {param: {pr_gt_threshold, mean, sd, ci_lo, ci_hi}}
+        cv: {param: coefficient_of_variation}
+        excluded_params: list of params with Pr(w > 0.1) < 0.50
+        poorly_estimated: list of params with CV > 0.50
+        dominant_params: list of params with Pr(w > 0.1) >= 0.95
+    """
+    logger.info("Running post-estimation feature selection (posterior relevance)...")
+
+    w_draws = getattr(est_result, "w_draws", None)
+    threshold = 0.1
+
+    # Prior variance for lognormal(log(default), sigma=1.0):
+    # Var[w] = (exp(sigma²) - 1) * exp(2*mu + sigma²) where mu=log(default), sigma=1.0
+    # = (e - 1) * default² * e ≈ 4.67 * default²
+    _e = float(np.e)
+    _lognormal_var_factor = (_e - 1.0) * _e  # ≈ 4.6708
+
+    results = {
+        "relevance": {},
+        "cv": {},
+        "prior_shrinkage": {},
+        "excluded_params": [],
+        "poorly_estimated": [],
+        "dominant_params": [],
+    }
+
+    for k, param in enumerate(ESTIMABLE_PARAM_NAMES):
+        w_mean = est_result.weights.get(param, 0.0)
+        w_sd = est_result.hessian_se.get(param, 0.0)
+
+        if w_draws is not None and w_draws.ndim == 2 and k < w_draws.shape[1]:
+            draws_k = w_draws[:, k]
+            pr_gt = float(np.mean(draws_k > threshold))
+            ci_lo = float(np.percentile(draws_k, 2.5))
+            ci_hi = float(np.percentile(draws_k, 97.5))
+            w_sd_post = float(np.std(draws_k))
+        else:
+            # Fall back to approximate normal if draws unavailable
+            from scipy.stats import norm
+            pr_gt = float(1.0 - norm.cdf(threshold, loc=w_mean, scale=max(w_sd, 1e-9)))
+            ci_lo = round(w_mean - 1.96 * w_sd, 4)
+            ci_hi = round(w_mean + 1.96 * w_sd, 4)
+            w_sd_post = w_sd
+
+        cv = abs(w_sd_post / w_mean) if abs(w_mean) > 1e-12 else float("nan")
+
+        # Prior shrinkage: 1 - posterior_var / prior_var
+        # Shrinkage near 1.0 = data dominates (uninformative prior)
+        # Shrinkage near 0.0 = prior dominates (informative prior)
+        spec_default = SPEC_DEFAULTS.get(param, 1.0)
+        prior_var = _lognormal_var_factor * spec_default ** 2
+        posterior_var = w_sd_post ** 2
+        shrinkage = max(0.0, 1.0 - posterior_var / prior_var) if prior_var > 1e-12 else 0.0
+        results["prior_shrinkage"][param] = round(shrinkage, 3)
+
+        results["relevance"][param] = {
+            "pr_gt_threshold": round(pr_gt, 4),
+            "threshold": threshold,
+            "mean": round(w_mean, 4),
+            "sd": round(w_sd_post, 4),
+            "ci_lo": round(ci_lo, 4),
+            "ci_hi": round(ci_hi, 4),
+        }
+        results["cv"][param] = round(cv, 4) if not np.isnan(cv) else None
+
+        shrinkage_label = "data-driven" if shrinkage >= 0.5 else "prior-sensitive"
+        cv_str = f"{cv:.2%}" if not np.isnan(cv) else "N/A"
+        logger.info(
+            f"  {param}: Pr(w>{threshold})={pr_gt:.3f}, "
+            f"mean={w_mean:.4f}, sd={w_sd_post:.4f}, CV={cv_str}, "
+            f"shrinkage={shrinkage:.3f} ({shrinkage_label})"
+        )
+
+    # Vote penalty params: use posterior summary (normal approx) for relevance
+    for param in VOTE_PARAM_NAMES:
+        vp_mean = est_result.weights_posterior_mean.get(param, est_result.weights.get(param, 0.0))
+        vp_sd = est_result.weights_posterior_sd.get(param, est_result.hessian_se.get(param, 0.0))
+        vp_ci = est_result.weights_posterior_ci.get(param)
+        from scipy.stats import norm as _norm
+        pr_gt = float(1.0 - _norm.cdf(threshold, loc=vp_mean, scale=max(vp_sd, 1e-9)))
+        ci_lo = vp_ci[0] if vp_ci else round(vp_mean - 1.96 * vp_sd, 4)
+        ci_hi = vp_ci[1] if vp_ci else round(vp_mean + 1.96 * vp_sd, 4)
+        cv = abs(vp_sd / vp_mean) if abs(vp_mean) > 1e-12 else float("nan")
+
+        # Prior shrinkage for vote params (also lognormal priors)
+        spec_default = SPEC_DEFAULTS.get(param, 1.0)
+        prior_var = _lognormal_var_factor * spec_default ** 2
+        posterior_var = vp_sd ** 2
+        shrinkage = max(0.0, 1.0 - posterior_var / prior_var) if prior_var > 1e-12 else 0.0
+        results["prior_shrinkage"][param] = round(shrinkage, 3)
+
+        results["relevance"][param] = {
+            "pr_gt_threshold": round(pr_gt, 4),
+            "threshold": threshold,
+            "mean": round(vp_mean, 4),
+            "sd": round(vp_sd, 4),
+            "ci_lo": round(ci_lo, 4),
+            "ci_hi": round(ci_hi, 4),
+        }
+        results["cv"][param] = round(cv, 4) if not np.isnan(cv) else None
+
+        shrinkage_label = "data-driven" if shrinkage >= 0.5 else "prior-sensitive"
+        logger.info(
+            f"  {param}: Pr(w>{threshold})={pr_gt:.3f}, "
+            f"mean={vp_mean:.4f}, sd={vp_sd:.4f}, "
+            f"CV={cv:.2%}, shrinkage={shrinkage:.3f} ({shrinkage_label})" if not np.isnan(cv) else
+            f"  {param}: Pr(w>{threshold})={pr_gt:.3f}, mean={vp_mean:.4f}, sd={vp_sd:.4f}, "
+            f"CV=N/A, shrinkage={shrinkage:.3f} ({shrinkage_label})"
+        )
+
+    # All estimated params (linear + vote) for flagging
+    all_estimated = ESTIMABLE_PARAM_NAMES + VOTE_PARAM_NAMES
+
+    # Flag low-relevance parameters (Pr(w > threshold) < 0.50)
+    for param in all_estimated:
+        pr = results["relevance"][param]["pr_gt_threshold"]
+        if pr < 0.50:
+            results["excluded_params"].append(param)
+            logger.warning(
+                f"  Feature selection: {param} flagged as low-relevance "
+                f"(Pr(w>{threshold})={pr:.3f})"
+            )
+
+    # Flag poorly estimated params (CV > 50%)
+    results["poorly_estimated"] = [
+        p for p in all_estimated
+        if results["cv"].get(p) is not None and results["cv"][p] > 0.50
+    ]
+    if results["poorly_estimated"]:
+        logger.warning(f"  Poorly estimated (CV > 50%): {results['poorly_estimated']}")
+
+    # Flag dominant params (Pr(w > threshold) >= 0.95)
+    results["dominant_params"] = [
+        p for p in all_estimated
+        if results["relevance"][p]["pr_gt_threshold"] >= 0.95
+    ]
+    if results["dominant_params"]:
+        logger.info(f"  Dominant parameters (Pr > 0.95): {results['dominant_params']}")
 
     return results
 
@@ -2659,9 +4090,14 @@ def estimate_scenario_level_params(
 
 def _diagnose_loss_aversion(
     scenarios: list[Scenario],
-    estimation_df: pd.DataFrame,
+    likert_summary_df: pd.DataFrame,
 ) -> dict:
-    """Test 8.1: Loss aversion via matched gain/loss CAR pairs."""
+    """Test 8.1: Loss aversion via matched gain/loss CAR pairs.
+
+    Compares mean Likert scores for the Drev_commission_review action between
+    matched positive-CAR and negative-CAR scenario pairs.  A higher mean score
+    in the negative-CAR scenario indicates loss-aversion (losses loom larger).
+    """
     from scipy import stats
 
     la_scenarios = [s for s in scenarios if s.target_parameter == "loss_aversion"]
@@ -2682,20 +4118,24 @@ def _diagnose_loss_aversion(
     for mag, pair in pairs.items():
         if "pos" not in pair or "neg" not in pair or mag == 0:
             continue
-        row_pos = estimation_df[estimation_df["scenario_id"] == pair["pos"]]
-        row_neg = estimation_df[estimation_df["scenario_id"] == pair["neg"]]
+        # Retrieve mean Likert score for the review action in each scenario
+        row_pos = likert_summary_df[
+            (likert_summary_df["scenario_id"] == pair["pos"]) &
+            (likert_summary_df["action"] == "Drev_commission_review")
+        ]
+        row_neg = likert_summary_df[
+            (likert_summary_df["scenario_id"] == pair["neg"]) &
+            (likert_summary_df["action"] == "Drev_commission_review")
+        ]
         if row_pos.empty or row_neg.empty:
             continue
-        probs_pos = json.loads(row_pos.iloc[0]["mean_prob_vector"])
-        probs_neg = json.loads(row_neg.iloc[0]["mean_prob_vector"])
-
-        # Sensitivity: change in P(commission_review) or P(sack)
-        # Use Drev_commission_review as the review-related action
-        p_rev_pos = probs_pos.get("Drev_commission_review", 0)
-        p_rev_neg = probs_neg.get("Drev_commission_review", 0)
-        p_baseline = 0.33  # uniform prior
-        delta_pos = abs(p_rev_pos - p_baseline) + 1e-8
-        delta_neg = abs(p_rev_neg - p_baseline) + 1e-8
+        score_pos = float(row_pos.iloc[0]["mean_score"])
+        score_neg = float(row_neg.iloc[0]["mean_score"])
+        # Ratio: negative-frame sensitivity / positive-frame sensitivity
+        # relative to the midpoint score (3.0 on a 1-5 scale)
+        midpoint = 3.0
+        delta_pos = abs(score_pos - midpoint) + 1e-8
+        delta_neg = abs(score_neg - midpoint) + 1e-8
         ratio = delta_neg / delta_pos
         ratios.append(ratio)
 
@@ -2723,26 +4163,33 @@ def _diagnose_loss_aversion(
 
 def _diagnose_nonlinearity(
     scenarios: list[Scenario],
-    estimation_df: pd.DataFrame,
+    likert_summary_df: pd.DataFrame,
     est_result: EstimationResult,
 ) -> dict:
-    """Test 8.2: Non-linearity in vote penalty and diminishing marginal disutility."""
+    """Test 8.2: Non-linearity in vote penalty and diminishing marginal disutility.
+
+    Uses mean Likert score for D1_review as a proxy for penalty sensitivity
+    across scenarios with varying vote levels.  Compares AIC of four functional
+    forms (quadratic, linear, cubic, log-linear) via OLS regression of mean
+    score against vote-excess (V - 0.25).
+    """
     from scipy import stats
 
     # Vote penalty functional form comparison
-    w2_scenarios = [s for s in scenarios if s.target_parameter == "w2"]
+    vote_scenarios = [s for s in scenarios if s.state_vector.get("vote_outcome_V", 0) > 0.25]
     vote_points = []
-    for s in w2_scenarios:
-        row = estimation_df[estimation_df["scenario_id"] == s.scenario_id]
-        if row.empty:
-            continue
+    for s in vote_scenarios:
         v = s.state_vector.get("vote_outcome_V", 0)
         if v <= 0.25:
             continue
-        probs = json.loads(row.iloc[0]["mean_prob_vector"])
-        # Use P(D1_review) as a proxy for penalty sensitivity
-        p_review = probs.get("D1_review", 0)
-        vote_points.append((v, p_review))
+        row = likert_summary_df[
+            (likert_summary_df["scenario_id"] == s.scenario_id) &
+            (likert_summary_df["action"] == "D1_review")
+        ]
+        if row.empty:
+            continue
+        mean_score = float(row.iloc[0]["mean_score"])
+        vote_points.append((v, mean_score))
 
     aic_results = {}
     if len(vote_points) >= 3:
@@ -2766,13 +4213,11 @@ def _diagnose_nonlinearity(
             except Exception:
                 aic_results[name] = float("inf")
 
-    # Diminishing marginal disutility — count active penalties per Tier 2 scenario
+    # Diminishing marginal disutility: mean score of most severe action vs
+    # number of active penalties per Tier 2 scenario
     t2_scenarios = [s for s in scenarios if s.tier == 2]
     penalty_counts = []
     for s in t2_scenarios:
-        row = estimation_df[estimation_df["scenario_id"] == s.scenario_id]
-        if row.empty:
-            continue
         sv = s.state_vector
         n_active = sum([
             sv.get("strike", False),
@@ -2781,14 +4226,18 @@ def _diagnose_nonlinearity(
             not sv.get("ceo_present_at_end", True),
             sv.get("vote_outcome_V", 0) > 0.25,
         ])
-        probs = json.loads(row.iloc[0]["mean_prob_vector"])
-        # Use max probability of "severe" action as proxy for total disutility
-        p_severe = max(
-            probs.get("D3_ceo_transition", 0),
-            probs.get("Drev_sack_ceo", 0),
-            probs.get("D1_review", 0),
-        )
-        penalty_counts.append((n_active, p_severe))
+        # Use the maximum mean Likert score across severe actions as a proxy
+        severe_actions = ["D3_ceo_transition", "Drev_sack_ceo", "D1_review"]
+        scores = []
+        for action in severe_actions:
+            row = likert_summary_df[
+                (likert_summary_df["scenario_id"] == s.scenario_id) &
+                (likert_summary_df["action"] == action)
+            ]
+            if not row.empty:
+                scores.append(float(row.iloc[0]["mean_score"]))
+        if scores:
+            penalty_counts.append((n_active, max(scores)))
 
     dmd_result = {}
     if len(penalty_counts) >= 4:
@@ -2818,34 +4267,42 @@ def _diagnose_nonlinearity(
 
 def _diagnose_optimism_bias(
     scenarios: list[Scenario],
-    estimation_df: pd.DataFrame,
+    likert_summary_df: pd.DataFrame,
 ) -> dict:
-    """Test 8.3: Optimism bias — explicit vs implicit adverse probability."""
+    """Test 8.3: Optimism bias — explicit vs implicit adverse probability.
+
+    Compares mean Likert scores for Drev_commission_review between scenarios
+    where the adverse outcome probability is stated explicitly vs left implicit.
+    Optimism bias is confirmed if explicit framing produces higher mean scores
+    (i.e., the board responds more strongly when forced to confront numbers).
+    """
     opt_scenarios = [s for s in scenarios if s.target_parameter == "optimism_bias"]
     explicit = []
     implicit = []
     for s in opt_scenarios:
-        row = estimation_df[estimation_df["scenario_id"] == s.scenario_id]
+        row = likert_summary_df[
+            (likert_summary_df["scenario_id"] == s.scenario_id) &
+            (likert_summary_df["action"] == "Drev_commission_review")
+        ]
         if row.empty:
             continue
-        probs = json.loads(row.iloc[0]["mean_prob_vector"])
-        p_review = probs.get("Drev_commission_review", 0)
+        mean_score = float(row.iloc[0]["mean_score"])
         if s.state_vector.get("explicit_adverse_prob"):
-            explicit.append(p_review)
+            explicit.append(mean_score)
         else:
-            implicit.append(p_review)
+            implicit.append(mean_score)
 
     if not explicit or not implicit:
         return {"test": "optimism_bias", "decision": "insufficient_data"}
 
     from scipy import stats
     t_stat, p_val = stats.ttest_ind(explicit, implicit) if len(explicit) > 1 and len(implicit) > 1 else (0, 1)
-    effect_size = float(np.mean(implicit) - np.mean(explicit))
+    effect_size = float(np.mean(explicit) - np.mean(implicit))
 
     return {
         "test": "optimism_bias",
-        "mean_p_review_explicit": round(float(np.mean(explicit)), 4),
-        "mean_p_review_implicit": round(float(np.mean(implicit)), 4),
+        "mean_score_explicit": round(float(np.mean(explicit)), 4),
+        "mean_score_implicit": round(float(np.mean(implicit)), 4),
         "effect_size": round(effect_size, 4),
         "t_stat": round(float(t_stat), 3),
         "p_value": round(float(p_val), 4),
@@ -2855,23 +4312,31 @@ def _diagnose_optimism_bias(
 
 def _diagnose_self_assessment(
     scenarios: list[Scenario],
-    estimation_df: pd.DataFrame,
+    likert_summary_df: pd.DataFrame,
 ) -> dict:
-    """Test 8.4: Self-assessment bias — board vs external review origin."""
+    """Test 8.4: Self-assessment bias — board vs external review origin.
+
+    Compares mean Likert scores for Drev_sack_ceo between scenarios where
+    the review was board-initiated vs externally mandated.  Self-assessment
+    bias is confirmed if board-initiated reviews produce lower sack scores
+    (board is lenient on its own process / CEO).
+    """
     sa_scenarios = [s for s in scenarios if s.target_parameter == "self_assessment_bias"]
     board_init = []
     ext_mandated = []
     for s in sa_scenarios:
-        row = estimation_df[estimation_df["scenario_id"] == s.scenario_id]
+        row = likert_summary_df[
+            (likert_summary_df["scenario_id"] == s.scenario_id) &
+            (likert_summary_df["action"] == "Drev_sack_ceo")
+        ]
         if row.empty:
             continue
-        probs = json.loads(row.iloc[0]["mean_prob_vector"])
-        p_sack = probs.get("Drev_sack_ceo", 0)
+        mean_score = float(row.iloc[0]["mean_score"])
         origin = s.state_vector.get("review_origin", "board_initiated")
         if origin == "board_initiated":
-            board_init.append(p_sack)
+            board_init.append(mean_score)
         else:
-            ext_mandated.append(p_sack)
+            ext_mandated.append(mean_score)
 
     if not board_init or not ext_mandated:
         return {"test": "self_assessment_bias", "decision": "insufficient_data"}
@@ -2881,8 +4346,8 @@ def _diagnose_self_assessment(
 
     return {
         "test": "self_assessment_bias",
-        "mean_p_sack_board_initiated": round(float(np.mean(board_init)), 4),
-        "mean_p_sack_externally_mandated": round(float(np.mean(ext_mandated)), 4),
+        "mean_score_sack_board_initiated": round(float(np.mean(board_init)), 4),
+        "mean_score_sack_externally_mandated": round(float(np.mean(ext_mandated)), 4),
         "t_stat": round(float(t_stat), 3),
         "p_value": round(float(p_val), 4),
         "decision": "confirmed" if p_val < 0.05 and np.mean(board_init) < np.mean(ext_mandated) else "null",
@@ -2891,23 +4356,31 @@ def _diagnose_self_assessment(
 
 def _diagnose_ikea_effect(
     scenarios: list[Scenario],
-    estimation_df: pd.DataFrame,
+    likert_summary_df: pd.DataFrame,
 ) -> dict:
-    """Test 8.5: Ikea effect — CEO appointment and review ownership."""
+    """Test 8.5: Ikea effect — CEO appointment and review ownership.
+
+    Compares mean Likert scores for Drev_sack_ceo between scenarios where
+    the CEO was appointed by the current board vs inherited from a prior board.
+    The Ikea effect predicts lower sack scores when the board appointed the CEO
+    (greater ownership reduces willingness to remove).
+    """
     ikea_scenarios = [s for s in scenarios if s.target_parameter == "ikea_effect"]
     appointed = []
     inherited = []
     for s in ikea_scenarios:
-        row = estimation_df[estimation_df["scenario_id"] == s.scenario_id]
+        row = likert_summary_df[
+            (likert_summary_df["scenario_id"] == s.scenario_id) &
+            (likert_summary_df["action"] == "Drev_sack_ceo")
+        ]
         if row.empty:
             continue
-        probs = json.loads(row.iloc[0]["mean_prob_vector"])
-        p_sack = probs.get("Drev_sack_ceo", 0)
+        mean_score = float(row.iloc[0]["mean_score"])
         appt = s.state_vector.get("ceo_appointment", "appointed_by_current_board")
         if appt == "appointed_by_current_board":
-            appointed.append(p_sack)
+            appointed.append(mean_score)
         else:
-            inherited.append(p_sack)
+            inherited.append(mean_score)
 
     if not appointed or not inherited:
         return {"test": "ikea_effect", "decision": "insufficient_data"}
@@ -2917,81 +4390,144 @@ def _diagnose_ikea_effect(
 
     return {
         "test": "ikea_effect",
-        "mean_p_sack_appointed": round(float(np.mean(appointed)), 4),
-        "mean_p_sack_inherited": round(float(np.mean(inherited)), 4),
+        "mean_score_sack_appointed": round(float(np.mean(appointed)), 4),
+        "mean_score_sack_inherited": round(float(np.mean(inherited)), 4),
         "t_stat": round(float(t_stat), 3),
         "p_value": round(float(p_val), 4),
         "decision": "confirmed" if p_val < 0.05 and np.mean(appointed) < np.mean(inherited) else "null",
     }
 
 
-def _diagnose_factor_order_effects(
+def _diagnose_action_order_effects(
     elicitation_path: Path,
 ) -> dict:
-    """Test 8.6: Factor rating order effects."""
+    """Test 8.6: Action presentation order effects on Likert scores.
+
+    Tests whether the position of each action in the randomised presentation
+    order (action_order field in elicitation_results.csv) affects its mean
+    Likert score.  A significant negative slope indicates primacy bias
+    (earlier-presented actions rated higher); positive slope indicates
+    recency bias.
+
+    Factor ratings no longer exist in the Likert pipeline; this test
+    replaces the old _diagnose_factor_order_effects() function.
+    """
     from scipy import stats
 
     df = pd.read_csv(elicitation_path, encoding="utf-8")
     df_ok = df[df["parse_status"].isin(["success", "repaired"])].copy()
 
     if df_ok.empty:
-        return {"test": "factor_order_effects", "decision": "insufficient_data"}
+        return {"test": "action_order_effects", "decision": "insufficient_data"}
 
-    results_per_factor = {}
-    for factor_idx in range(1, 11):
-        positions = []
-        ratings = []
-        for _, row in df_ok.iterrows():
-            try:
-                order = json.loads(row["factor_order"])
-                fr = json.loads(row["factor_ratings"])
-                pos = order.index(factor_idx) + 1 if factor_idx in order else None
-                rating = fr[factor_idx - 1] if len(fr) >= factor_idx else None
-                if pos is not None and rating is not None:
-                    positions.append(pos)
-                    ratings.append(rating)
-            except Exception:
-                continue
+    # Build long table: (action, position, score)
+    long_records = []
+    for _, row in df_ok.iterrows():
+        try:
+            scores_dict = json.loads(row["action_scores"])
+            action_order = json.loads(row["action_order"]) if row.get("action_order") else []
+        except Exception:
+            continue
+        for action, score in scores_dict.items():
+            position = action_order.index(action) + 1 if action in action_order else None
+            if position is not None:
+                long_records.append({
+                    "action": action,
+                    "position": position,
+                    "score": int(score),
+                })
 
-        if len(positions) >= 10:
-            slope, intercept, r, p, se = stats.linregress(positions, ratings)
-            results_per_factor[f"factor_{factor_idx}"] = {
+    if not long_records:
+        return {"test": "action_order_effects", "decision": "insufficient_data"}
+
+    long_df = pd.DataFrame(long_records)
+
+    # Aggregate per action: regress score ~ position
+    results_per_action = {}
+    for action, grp in long_df.groupby("action"):
+        if len(grp) < 10:
+            continue
+        try:
+            slope, intercept, r, p, se = stats.linregress(
+                grp["position"].values, grp["score"].values
+            )
+            results_per_action[action] = {
                 "slope": round(float(slope), 4),
                 "p_value": round(float(p), 4),
-                "effect": "primacy" if slope < 0 and p < 0.05 else
-                          "recency" if slope > 0 and p < 0.05 else "none",
+                "n": int(len(grp)),
+                "effect": (
+                    "primacy" if slope < 0 and p < 0.05 else
+                    "recency" if slope > 0 and p < 0.05 else "none"
+                ),
             }
+        except Exception:
+            continue
+
+    # Overall test: pool all observations
+    overall_result = {}
+    if len(long_df) >= 20:
+        try:
+            slope, intercept, r, p, se = stats.linregress(
+                long_df["position"].values, long_df["score"].values
+            )
+            overall_result = {
+                "slope": round(float(slope), 4),
+                "p_value": round(float(p), 4),
+                "r_squared": round(float(r**2), 4),
+            }
+        except Exception:
+            pass
 
     any_effect = any(
         v.get("effect", "none") != "none"
-        for v in results_per_factor.values()
+        for v in results_per_action.values()
     )
 
     return {
-        "test": "factor_order_effects",
-        "per_factor": results_per_factor,
+        "test": "action_order_effects",
+        "per_action": results_per_action,
+        "overall": overall_result,
         "any_order_effect_detected": any_effect,
+        "decision": "detected" if any_effect else "null",
     }
 
 
 def run_diagnostics(
     scenarios: list[Scenario],
-    estimation_df: pd.DataFrame,
+    likert_summary_df: pd.DataFrame,
     est_result: EstimationResult,
     elicitation_path: Path,
     output_path: Path,
 ) -> dict:
-    """Stage 5: Run all behavioural diagnostics."""
+    """Stage 5: Run all behavioural diagnostics.
+
+    Parameters
+    ----------
+    scenarios:
+        Full scenario list (all tiers).
+    likert_summary_df:
+        One row per (scenario_id, action) with columns mean_score and sd_score.
+        Produced by ``preprocess_likert_data()`` Stage 3.
+    est_result:
+        StanEstimationResult with .w_draws for posterior-based diagnostics.
+    elicitation_path:
+        Path to elicitation_results.csv (used for action order effects test).
+    output_path:
+        Destination CSV for diagnostic summary rows.
+    """
     logger.info("Stage 5: Running behavioural diagnostics...")
 
-    diagnostics = {
-        "loss_aversion": _diagnose_loss_aversion(scenarios, estimation_df),
-        "nonlinearity": _diagnose_nonlinearity(scenarios, estimation_df, est_result),
-        "optimism_bias": _diagnose_optimism_bias(scenarios, estimation_df),
-        "self_assessment_bias": _diagnose_self_assessment(scenarios, estimation_df),
-        "ikea_effect": _diagnose_ikea_effect(scenarios, estimation_df),
-        "factor_order_effects": _diagnose_factor_order_effects(elicitation_path),
-    }
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Precision loss", category=RuntimeWarning)
+        diagnostics = {
+            "loss_aversion": _diagnose_loss_aversion(scenarios, likert_summary_df),
+            "nonlinearity": _diagnose_nonlinearity(scenarios, likert_summary_df, est_result),
+            "optimism_bias": _diagnose_optimism_bias(scenarios, likert_summary_df),
+            "self_assessment_bias": _diagnose_self_assessment(scenarios, likert_summary_df),
+            "ikea_effect": _diagnose_ikea_effect(scenarios, likert_summary_df),
+            "action_order_effects": _diagnose_action_order_effects(elicitation_path),
+        }
 
     # Save to CSV
     rows = []
@@ -3016,40 +4552,89 @@ def run_diagnostics(
 def _compute_scenario_fit(
     phi: np.ndarray,
     anchored: np.ndarray,
-    p_llm: np.ndarray,
-    action_masks: np.ndarray,
+    sa_id_map: dict,
     est_result: EstimationResult,
     scenario_ids: list[str],
     action_lists: list[list[str]],
+    likert_summary_df: Optional[pd.DataFrame] = None,
 ) -> list[dict]:
-    """Compute per-scenario KL divergence and residuals."""
-    weights = np.array([est_result.weights[p] for p in WEIGHT_PARAM_NAMES])
-    lam = est_result.lambda_rationality
+    """Compute per-scenario posterior predictive fit.
 
-    n_sc = phi.shape[0]
-    eps = 1e-12
+    For the Bayesian ordinal probit pipeline, fit is assessed by comparing
+    observed mean Likert scores to posterior predicted mean scores.  For each
+    scenario and action the posterior predicted score is computed as:
+
+        E[score | w] = sum_k k * Pr(score = k | EU, cutpoints)
+
+    averaged over posterior draws.  When ``likert_summary_df`` is not
+    provided (e.g., during validation-only runs), the function falls back to
+    reporting posterior mean EU values and a normalised EU residual relative to
+    the across-action mean.
+
+    The ``kl_divergence`` field is retained for dashboard compatibility but is
+    now a normalised root-mean-square residual (RMSE) of mean Likert scores,
+    which plays the same diagnostic role.
+    """
+    w_draws = getattr(est_result, "w_draws", None)
+
+    n_sc = len(scenario_ids)
     fit_rows = []
 
     for i in range(n_sc):
-        mask = action_masks[i]
-        eu = phi[i] @ weights + anchored[i]
-        probs = _softmax_probs(lam * eu, mask)
+        sid = scenario_ids[i]
+        actions = action_lists[i]
 
-        kl = 0.0
+        # Posterior mean EU per action (averaged over weight draws)
+        eu_mean_per_action = {}
+        for action in actions:
+            sa_idx = sa_id_map.get((sid, action))
+            if sa_idx is None:
+                continue
+            phi_vec = phi[sa_idx]
+            anch_val = anchored[sa_idx]
+            if w_draws is not None and w_draws.ndim == 2:
+                eu_draws = w_draws @ phi_vec + anch_val  # (D,)
+                eu_mean_per_action[action] = float(np.mean(eu_draws))
+            else:
+                weights = np.array([est_result.weights.get(p, 0.0) for p in WEIGHT_PARAM_NAMES])
+                eu_mean_per_action[action] = float(phi_vec @ weights + anch_val)
+
+        # Residuals: observed mean Likert score minus posterior predicted EU
+        # (on comparable scales; residual is in score-units if normalised)
         residuals = {}
-        for j, action in enumerate(action_lists[i]):
-            if mask[j]:
-                p_l = max(p_llm[i, j], eps)
-                p_m = max(probs[j], eps)
-                kl += p_l * np.log(p_l / p_m)
-                residuals[action] = round(float(p_llm[i, j] - probs[j]), 4)
+        sq_residuals = []
+
+        for action in actions:
+            eu_pred = eu_mean_per_action.get(action, 0.0)
+
+            if likert_summary_df is not None:
+                obs_row = likert_summary_df[
+                    (likert_summary_df["scenario_id"] == sid) &
+                    (likert_summary_df["action"] == action)
+                ]
+                if not obs_row.empty:
+                    obs_score = float(obs_row.iloc[0]["mean_score"])
+                    # Normalise EU to [1,5] scale for comparison: shift+scale
+                    # using the across-action EU range for this scenario
+                    eu_vals = list(eu_mean_per_action.values())
+                    eu_min, eu_max = min(eu_vals), max(eu_vals)
+                    eu_range = eu_max - eu_min if (eu_max - eu_min) > 1e-9 else 1.0
+                    eu_scaled = 1.0 + 4.0 * (eu_pred - eu_min) / eu_range
+                    resid = obs_score - eu_scaled
+                    residuals[action] = round(float(resid), 4)
+                    sq_residuals.append(resid ** 2)
+            else:
+                residuals[action] = round(eu_pred, 4)
+
+        rmse = float(np.sqrt(np.mean(sq_residuals))) if sq_residuals else 0.0
 
         fit_rows.append({
-            "scenario_id": scenario_ids[i],
-            "kl_divergence": round(float(kl), 6),
+            "scenario_id": sid,
+            "kl_divergence": round(rmse, 6),   # retained for dashboard compat
             "residuals": json.dumps(residuals, ensure_ascii=True),
             "model_probs": json.dumps(
-                {a: round(float(probs[j]), 4) for j, a in enumerate(action_lists[i]) if mask[j]},
+                {a: round(eu_mean_per_action.get(a, 0.0), 4)
+                 for a in actions if a in eu_mean_per_action},
                 ensure_ascii=True,
             ),
         })
@@ -3063,47 +4648,74 @@ def _validate_historical(
     est_result: EstimationResult,
     phi: np.ndarray,
     anchored: np.ndarray,
-    action_masks: np.ndarray,
     scenario_ids: list[str],
     action_lists: list[list[str]],
 ) -> dict:
-    """Validate against Tier 4 historical scenario (Qantas AGM Nov 2023)."""
+    """Validate against Tier 4 historical scenario (Qantas AGM Nov 2023).
+
+    Uses posterior action probabilities (``prob_optimal`` from
+    ``compute_action_probabilities_from_posterior``) rather than softmax
+    of point-estimate weights.  Falls back to posterior-mean EU ranking
+    when full posterior draws are unavailable.
+    """
     t4 = [s for s in scenarios if s.tier == 4]
     if not t4:
         return {"available": False}
 
     s = t4[0]
-    # Compute model prediction for Tier 4
-    weights = np.array([est_result.weights[p] for p in WEIGHT_PARAM_NAMES])
-    lam = est_result.lambda_rationality
+    w_draws = getattr(est_result, "w_draws", None)
 
-    predictions = {}
+    # Compute per-action EU using posterior mean weights
+    weights = np.array([est_result.weights.get(p, 0.0) for p in WEIGHT_PARAM_NAMES])
+
+    eu_per_action = {}
+    prob_optimal_per_action = {}
+
     for action in s.feasible_actions:
         args = _scenario_to_outcome_args(s.state_vector, action)
         phi_k = decompose_utility_board(**args)
         phi_vec = np.array([phi_k.get(p, 0.0) for p in WEIGHT_PARAM_NAMES])
-        anch = _compute_anchored_car_contribution(
+        anch = _compute_anchored_contribution(
+            args["vote_percent"], args["strike"], args["overwhelming"],
             args["review_commissioned"], args["review_car"], args["review_direct_cost"],
         )
-        # Add fixed params contribution
-        fixed_contrib = sum(SPEC_DEFAULTS[fp] * phi_k.get(fp, 0.0) for fp in FIXED_PARAM_NAMES)
-        eu = float(phi_vec @ weights + anch + fixed_contrib)
-        predictions[action] = eu
+        eu_per_action[action] = float(phi_vec @ weights + anch)
 
-    # Softmax
-    eus = np.array([predictions[a] for a in s.feasible_actions])
-    mask = np.ones(len(s.feasible_actions), dtype=bool)
-    probs = _softmax_probs(lam * eus, mask)
+        # Posterior probability that this action has the highest EU
+        if w_draws is not None and w_draws.ndim == 2:
+            eu_draws_a = w_draws @ phi_vec + anch  # (D,)
+            prob_optimal_per_action[action] = eu_draws_a
 
-    predicted_probs = {a: round(float(p), 4) for a, p in zip(s.feasible_actions, probs)}
+    # Compute Pr(action = argmax EU) across posterior draws
+    if prob_optimal_per_action:
+        all_actions = list(prob_optimal_per_action.keys())
+        eu_matrix = np.stack(
+            [prob_optimal_per_action[a] for a in all_actions], axis=1
+        )  # (D, n_actions)
+        best_idx = np.argmax(eu_matrix, axis=1)  # (D,)
+        predicted_probs = {
+            a: round(float(np.mean(best_idx == j)), 4)
+            for j, a in enumerate(all_actions)
+        }
+    else:
+        # Fall back: proportional to EU (softmax at lambda=1 would be one option;
+        # here we use rank-probability to avoid introducing a tuning parameter)
+        ranked_eu = sorted(eu_per_action.items(), key=lambda x: -x[1])
+        n = len(ranked_eu)
+        weights_rank = {a: (n - rank) / sum(range(n + 1)) for rank, (a, _) in enumerate(ranked_eu)}
+        predicted_probs = {a: round(float(w), 4) for a, w in weights_rank.items()}
+
     ranked = sorted(predicted_probs.items(), key=lambda x: -x[1])
 
     return {
         "available": True,
         "scenario_id": s.scenario_id,
         "predicted_probs": predicted_probs,
-        "rank_of_D1_review": [i+1 for i, (a, _) in enumerate(ranked) if a == "D1_review"][0]
-            if "D1_review" in predicted_probs else None,
+        "posterior_mean_eu": {a: round(v, 4) for a, v in eu_per_action.items()},
+        "rank_of_D1_review": (
+            [i + 1 for i, (a, _) in enumerate(ranked) if a == "D1_review"][0]
+            if "D1_review" in predicted_probs else None
+        ),
         "top_action": ranked[0][0],
         "top_prob": ranked[0][1],
     }
@@ -3115,26 +4727,33 @@ def run_validation(
     est_result: EstimationResult,
     phi: np.ndarray,
     anchored: np.ndarray,
-    p_llm: np.ndarray,
-    action_masks: np.ndarray,
+    sa_id_map: dict,
     scenario_ids: list[str],
     action_lists: list[list[str]],
     output_dir: Path,
+    likert_summary_df: Optional[pd.DataFrame] = None,
 ) -> dict:
-    """Stage 6: Run validation checks."""
+    """Stage 6: Run validation checks.
+
+    Parameters
+    ----------
+    scenarios, estimation_df, est_result, phi, anchored:
+        Standard pipeline arguments.
+    sa_id_map:
+        Mapping (scenario_id, action) -> row index in phi/anchored.
+    scenario_ids, action_lists, output_dir:
+        Scenario structure and output path.
+    likert_summary_df:
+        Optional (scenario_id, action) summary with ``mean_score`` column.
+        When provided, per-scenario fit uses observed vs predicted Likert
+        scores (RMSE).  When omitted, fit is reported as posterior mean EU.
+    """
     logger.info("Stage 6: Running validation...")
 
-    # Build action masks for consistency
-    n_sc, max_a = p_llm.shape
-    if action_masks is None:
-        action_masks = np.zeros((n_sc, max_a), dtype=bool)
-        for i, actions in enumerate(action_lists):
-            for j in range(len(actions)):
-                action_masks[i, j] = True
-
-    # Within-sample fit
+    # Within-sample fit (posterior predictive check)
     fit_rows = _compute_scenario_fit(
-        phi, anchored, p_llm, action_masks, est_result, scenario_ids, action_lists,
+        phi, anchored, sa_id_map, est_result,
+        scenario_ids, action_lists, likert_summary_df,
     )
     kl_values = [r["kl_divergence"] for r in fit_rows]
     mean_kl = float(np.mean(kl_values)) if kl_values else float("nan")
@@ -3143,40 +4762,34 @@ def run_validation(
     fit_df = pd.DataFrame(fit_rows)
     fit_df.to_csv(output_dir / "scenario_fit.csv", index=False, encoding="utf-8")
 
-    # 5 worst-fitting
+    # 5 worst-fitting scenarios by RMSE
     sorted_fit = sorted(fit_rows, key=lambda x: -x["kl_divergence"])
     worst_5 = sorted_fit[:5]
 
-    # Historical validation
+    # Historical validation (Qantas AGM Nov 2023 — Tier 4 scenario)
     historical = _validate_historical(
-        scenarios, estimation_df, est_result, phi, anchored, action_masks,
+        scenarios, estimation_df, est_result, phi, anchored,
         scenario_ids, action_lists,
     )
 
-    # Factor rating regression
-    factor_regression = {}
-    try:
-        from scipy import stats
-        for f_idx in range(10):
-            eu_contribs = []
-            mean_ratings_list = []
-            for _, row in estimation_df.iterrows():
-                ratings = json.loads(row["mean_factor_ratings"])
-                if len(ratings) > f_idx:
-                    mean_ratings_list.append(ratings[f_idx])
-                    eu_contribs.append(f_idx + 1)  # placeholder
-
-            if len(mean_ratings_list) >= 5:
-                slope, intercept, r, p, se = stats.linregress(eu_contribs, mean_ratings_list)
-                factor_regression[f"factor_{f_idx+1}"] = {
-                    "slope": round(float(slope), 4),
-                    "r_squared": round(float(r**2), 4),
-                    "p_value": round(float(p), 4),
-                }
-    except Exception as e:
-        logger.warning(f"Factor regression failed: {e}")
+    # MCMC convergence summary from StanEstimationResult
+    mcmc_summary = {}
+    if hasattr(est_result, "n_divergences"):
+        mcmc_summary = {
+            "n_divergences": est_result.n_divergences,
+            "max_rhat": round(est_result.max_rhat, 4),
+            "min_ess_bulk": round(est_result.min_ess_bulk, 1),
+            "n_samples": est_result.n_samples,
+        }
 
     validation = {
+        "within_sample_fit": {
+            "mean_rmse": round(mean_kl, 6),
+            "metric": "rmse_likert_score" if likert_summary_df is not None else "posterior_mean_eu",
+            "target": 0.05,
+            "meets_target": mean_kl < 0.05,
+        },
+        # Keep old key for dashboard template compatibility
         "within_sample_kl": {
             "mean": round(mean_kl, 6),
             "target": 0.05,
@@ -3187,14 +4800,14 @@ def run_validation(
             for r in worst_5
         ],
         "historical_prediction": historical,
-        "factor_regression": factor_regression,
+        "mcmc_diagnostics": mcmc_summary,
     }
 
     # Save validation results
     with open(output_dir / "validation_results.json", "w", encoding="utf-8") as f:
         json.dump(validation, f, ensure_ascii=True, indent=2)
 
-    logger.info(f"Validation: mean KL = {mean_kl:.4f} (target < 0.05)")
+    logger.info(f"Validation: mean RMSE = {mean_kl:.4f} (target < 0.05)")
     return validation
 
 
@@ -3216,9 +4829,9 @@ def _compute_interaction_effects(
         if not s:
             continue
         sv = s.state_vector
-        vote = sv.get("vote_outcome", 0.0)
-        strike = float(vote > 0.25)
-        overwhelming = float(vote > 0.50)
+        vote = sv.get("vote_outcome_V", sv.get("vote_outcome", 0.0))
+        strike = float(sv.get("strike", vote > 0.25))
+        overwhelming = float(sv.get("overwhelming", vote > 0.50))
         ceo_present = float(sv.get("ceo_present_at_end", True))
         node = sv.get("decision_node", s.decision_node)
         residuals = json.loads(fr["residuals"])
@@ -3328,14 +4941,20 @@ class DashboardData:
     cost_summary: Optional[dict] = None
     encoding_stats: Optional[dict] = None
     output_files: Optional[dict] = None
+    preflight_checks: Optional[dict] = None
+    feature_selection: Optional[dict] = None
+    posterior_action_probs: Optional[dict] = None
+    tree_data: Optional[dict] = None
 
     def to_json(self) -> str:
         d = {}
         for k in [
             "run_status", "run_start", "generated_at", "model",
             "scenarios", "elicitation_summary", "elicited_probabilities",
-            "estimation_dataset_summary",
-            "parameter_estimates", "covariance_matrix", "behavioural_diagnostics",
+            "estimation_dataset_summary", "preflight_checks",
+            "parameter_estimates", "covariance_matrix", "feature_selection",
+            "posterior_action_probs", "tree_data",
+            "behavioural_diagnostics",
             "interaction_effects", "validation_results", "cost_summary",
             "encoding_stats", "output_files",
         ]:
@@ -3384,7 +5003,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14
 font-weight:500;white-space:nowrap}
 .tab.active{border-bottom-color:var(--primary);color:var(--primary)}
 .tab:hover{color:var(--primary)}
-.content{padding:20px;max-width:1400px;margin:0 auto}
+.content{padding:20px;max-width:2100px;margin:0 auto}
 .panel{display:none;animation:fadeIn .3s}
 .panel.active{display:block}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
@@ -3409,6 +5028,7 @@ text-decoration:none;border-radius:4px;margin:4px}
 .chart{min-height:400px;margin:12px 0}
 </style>
 __PLOTLY_SCRIPT__
+<script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
 <script>const RESULTS_DATA = __RESULTS_DATA__;</script>
@@ -3420,7 +5040,7 @@ __PLOTLY_SCRIPT__
 <script>
 const TAB_NAMES = [
   "Overview","Cost & Usage","Scenario Battery","Elicitation Results",
-  "Elicited Probabilities","Parameter Estimates","Covariance",
+  "Elicited Probabilities","Decision Tree","Parameter Estimates","Covariance",
   "Behavioural Diagnostics","Interaction Effects","Validation","Linearity Diagnostics","Raw Data"
 ];
 const D = RESULTS_DATA;
@@ -3448,6 +5068,7 @@ const D = RESULTS_DATA;
       document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
       t.classList.add('active');
       document.getElementById('panel_'+i).classList.add('active');
+      document.getElementById('content').style.maxWidth=(i===5)?'none':'1400px';
     };
     bar.appendChild(t);
     const p=document.createElement('div');
@@ -3503,6 +5124,29 @@ function makeTable(headers,rows,id){
     html+='<div class="card"><h3>Fit Quality</h3><p>Mean KL divergence: <strong>'+
       (kl.mean||'--')+'</strong> (target &lt; 0.05, '+(kl.meets_target?'MET':'NOT MET')+')</p></div>';
   }
+  // Pre-flight checks
+  const pf=D.preflight_checks||{};
+  if(pf.checks&&pf.checks.length>0){
+    html+='<div class="card"><h3>Pre-flight Checks</h3>';
+    html+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">';
+    pf.checks.forEach(c=>{
+      const bg=c.passed?(c.warning?'#fff3cd':'#d4edda'):'#f8d7da';
+      const fg=c.passed?(c.warning?'#856404':'#155724'):'#721c24';
+      const icon=c.passed?(c.warning?'\u26A0':'\u2713'):'\u2717';
+      html+='<span style="background:'+bg+';color:'+fg+';padding:4px 10px;border-radius:4px;font-size:0.9em">'+icon+' '+c.name+'</span>';
+    });
+    html+='</div>';
+    html+='<table style="border-collapse:collapse;font-size:0.85em;width:100%">';
+    html+='<thead><tr><th style="border:1px solid #ddd;padding:3px">Check</th><th style="border:1px solid #ddd;padding:3px">Status</th><th style="border:1px solid #ddd;padding:3px">Detail</th><th style="border:1px solid #ddd;padding:3px">Threshold</th></tr></thead><tbody>';
+    pf.checks.forEach(c=>{
+      const s=c.passed?(c.warning?'WARN':'PASS'):'FAIL';
+      html+='<tr><td style="border:1px solid #ddd;padding:3px">'+c.name+'</td>';
+      html+='<td style="border:1px solid #ddd;padding:3px;font-weight:bold;color:'+(c.passed?'#155724':'#721c24')+'">'+s+'</td>';
+      html+='<td style="border:1px solid #ddd;padding:3px">'+c.detail+'</td>';
+      html+='<td style="border:1px solid #ddd;padding:3px;color:#666">'+(c.threshold||'')+'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+  }
   p.innerHTML=html;
 })();
 
@@ -3526,17 +5170,54 @@ function makeTable(headers,rows,id){
   const p=document.getElementById('panel_2');
   const sc=D.scenarios||[];
   if(!sc.length){placeholder(2,'No scenarios generated yet.');return;}
+  // Tier/node summary counts
+  const tierCounts={};sc.forEach(s=>{tierCounts[s.tier]=(tierCounts[s.tier]||0)+1;});
+  const nodeCounts={};sc.forEach(s=>{nodeCounts[s.decision_node]=(nodeCounts[s.decision_node]||0)+1;});
   let html='<div class="card"><h3>Scenario Battery ('+sc.length+' scenarios)</h3>';
+  html+='<div style="display:flex;gap:24px;margin-bottom:12px;font-size:0.9em;color:var(--text-muted)">';
+  html+='<span><strong>By tier:</strong> '+Object.entries(tierCounts).sort((a,b)=>a[0]-b[0]).map(([t,n])=>'T'+t+':&nbsp;'+n).join(', ')+'</span>';
+  html+='<span><strong>By node:</strong> '+Object.entries(nodeCounts).map(([n,c])=>n+':&nbsp;'+c).join(', ')+'</span>';
+  html+='</div>';
   html+='<input class="search-box" placeholder="Filter scenarios..." oninput="filterScenarios(this.value)">';
-  const headers=['ID','Tier','Target','Node','Vote','CEO End'];
+  // Node filter buttons
+  const nodeList=Object.keys(nodeCounts).sort();
+  html+='<div style="margin:8px 0"><strong style="font-size:0.85em">Filter node:</strong> ';
+  html+='<button class="node-btn" data-node="all" style="margin:2px 4px;padding:3px 10px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:var(--primary);color:#fff;font-size:0.85em">All</button>';
+  nodeList.forEach(n=>{
+    html+='<button class="node-btn" data-node="'+n+'" style="margin:2px 4px;padding:3px 10px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:var(--card);font-size:0.85em">'+n+'</button>';
+  });
+  html+='</div>';
+  const headers=['ID','Tier','Target','Node','CEO Start','D1 Action',
+    'Vote %','Strike','Overwh.','Review','Review Result','CEO End','Actions'];
   const rows=sc.map(s=>{
     const sv=s.state_vector||{};
+    const v=sv.vote_outcome_V||0;
+    const ceoStart=sv.ceo_status_at_start==='resigned_early'?'Resigned':'Present';
+    const d1Act=sv.d1_action||'--';
+    const votePct=v>0?(v*100).toFixed(0)+'%':'--';
+    const strike=v>=0.25?'\u2714':'--';
+    const overwh=v>=0.50?'\u2714':'--';
+    const review=sv.review_commissioned?'\u2714':'--';
+    const revResult=sv.review_adverse===true?'Adverse':sv.review_adverse===false?'Positive':'--';
+    const ceoEnd=sv.ceo_present_at_end?'Present':'Removed';
+    const actions=(s.feasible_actions||[]).join(', ');
     return [s.scenario_id,s.tier,s.target_parameter,s.decision_node,
-      (sv.vote_outcome_V||0).toFixed(2),sv.ceo_present_at_end?'Present':'Removed'];
+      ceoStart,d1Act,votePct,strike,overwh,review,revResult,ceoEnd,actions];
   });
   html+=makeTable(headers,rows,'scenarioTable');
   html+='</div>';
   p.innerHTML=html;
+  // Node filter click handler
+  document.querySelectorAll('.node-btn').forEach(btn=>{
+    btn.onclick=function(){
+      document.querySelectorAll('.node-btn').forEach(b=>{b.style.background='var(--card)';b.style.color='inherit';});
+      this.style.background='var(--primary)';this.style.color='#fff';
+      const node=this.dataset.node;
+      document.querySelectorAll('#scenarioTable tbody tr').forEach(r=>{
+        r.style.display=(node==='all'||r.cells[3].textContent===node)?'':'none';
+      });
+    };
+  });
 })();
 window.filterScenarios=function(q){
   const rows=document.querySelectorAll('#scenarioTable tbody tr');
@@ -3548,24 +5229,181 @@ window.filterScenarios=function(q){
 (function(){
   const p=document.getElementById('panel_3');
   const es=D.elicitation_summary||{};
-  if(!es.total_calls){placeholder(3,'Elicitation not yet run.');return;}
-  let html='<div class="card"><h3>Elicitation Summary</h3><div class="stat-grid">';
-  html+='<div class="stat"><div class="value">'+(es.total_calls||0)+'</div><div class="label">Total Calls</div></div>';
-  html+='<div class="stat"><div class="value">'+(es.success_rate||0).toFixed(1)+'%</div><div class="label">Parse Success</div></div>';
-  html+='<div class="stat"><div class="value">'+(es.cache_hit_rate||0).toFixed(1)+'%</div><div class="label">Cache Hit Rate</div></div>';
+  const ep=D.elicited_probabilities||[];
+  const cs=D.cost_summary||{};
+  // If no explicit summary but elicited_probabilities data exists, derive summary
+  const hasExplicitSummary=es&&es.total_calls>0;
+  const hasData=ep.length>0;
+  if(!hasExplicitSummary&&!hasData){placeholder(3,'Elicitation not yet run.');return;}
+
+  let html='';
+
+  // Summary stats card
+  const totalScenarios=hasData?ep.length:0;
+  const totalDraws=hasData?ep.reduce((s,e)=>s+(e.n_draws||0),0):0;
+  const totalCost=cs.total_cost_usd||0;
+  const totalTokens=cs.total_tokens||0;
+  html+='<div class="card"><h3>Elicitation Summary</h3><div class="stat-grid">';
+  if(hasExplicitSummary){
+    html+='<div class="stat"><div class="value">'+(es.total_calls||0)+'</div><div class="label">Total API Calls</div></div>';
+    html+='<div class="stat"><div class="value">'+(es.success_rate||0).toFixed(1)+'%</div><div class="label">Parse Success</div></div>';
+    html+='<div class="stat"><div class="value">'+(es.cache_hit_rate||0).toFixed(1)+'%</div><div class="label">Cache Hit Rate</div></div>';
+  } else {
+    html+='<div class="stat"><div class="value">'+totalScenarios+'</div><div class="label">Scenarios Elicited</div></div>';
+    html+='<div class="stat"><div class="value">'+totalDraws.toLocaleString()+'</div><div class="label">Total Draws</div></div>';
+  }
+  html+='<div class="stat"><div class="value">'+totalTokens.toLocaleString()+'</div><div class="label">Total Tokens</div></div>';
+  html+='<div class="stat"><div class="value">$'+totalCost.toFixed(2)+'</div><div class="label">Total Cost</div></div>';
   html+='</div></div>';
-  html+='<div class="card"><h3>Parse Status Breakdown</h3><div id="parseChart" class="chart"></div></div>';
+
+  if(hasExplicitSummary&&es.parse_status_counts){
+    html+='<div class="card"><h3>Parse Status Breakdown</h3><div id="parseChart" class="chart"></div></div>';
+  }
+
+  // Per-scenario results table
+  if(hasData){
+    // Draws per tier
+    const tierStats={};
+    ep.forEach(e=>{
+      const t=e.tier;
+      if(!tierStats[t])tierStats[t]={count:0,draws:0};
+      tierStats[t].count++;
+      tierStats[t].draws+=(e.n_draws||0);
+    });
+    html+='<div class="card"><h3>Coverage by Tier</h3>';
+    html+='<table style="border-collapse:collapse;font-size:0.9em;width:auto">';
+    html+='<thead><tr><th style="border:1px solid var(--border);padding:6px 12px">Tier</th><th style="border:1px solid var(--border);padding:6px 12px">Scenarios</th><th style="border:1px solid var(--border);padding:6px 12px">Total Draws</th><th style="border:1px solid var(--border);padding:6px 12px">Mean Draws/Scenario</th></tr></thead><tbody>';
+    Object.entries(tierStats).sort((a,b)=>a[0]-b[0]).forEach(([t,s])=>{
+      html+='<tr><td style="border:1px solid var(--border);padding:6px 12px;text-align:center">T'+t+'</td>';
+      html+='<td style="border:1px solid var(--border);padding:6px 12px;text-align:right">'+s.count+'</td>';
+      html+='<td style="border:1px solid var(--border);padding:6px 12px;text-align:right">'+s.draws+'</td>';
+      html+='<td style="border:1px solid var(--border);padding:6px 12px;text-align:right">'+(s.draws/s.count).toFixed(0)+'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+
+    // Action preference distribution across scenarios
+    const allActions=new Set();
+    ep.forEach(e=>{Object.keys(e.mean_scores||{}).forEach(a=>allActions.add(a));});
+    const actionList=Array.from(allActions).sort();
+    // Count how many scenarios each action "wins" (highest mean score)
+    const actionWins={};actionList.forEach(a=>{actionWins[a]=0;});
+    ep.forEach(e=>{
+      const scores=e.mean_scores||{};
+      let best='',bestV=-Infinity;
+      for(const[a,v]of Object.entries(scores)){if(v>bestV){bestV=v;best=a;}}
+      if(best)actionWins[best]=(actionWins[best]||0)+1;
+    });
+    html+='<div class="card"><h3>Preferred Action Distribution</h3>';
+    html+='<p style="color:var(--text-muted);font-size:0.85em">Number of scenarios where each action has the highest mean Likert score.</p>';
+    html+='<div id="actionWinsChart" class="chart"></div></div>';
+
+    // Mean score distribution chart
+    html+='<div class="card"><h3>Mean Likert Score Distribution</h3>';
+    html+='<p style="color:var(--text-muted);font-size:0.85em">Distribution of mean Likert scores across all scenarios, by action.</p>';
+    html+='<div id="scoreDistChart" class="chart"></div></div>';
+
+    // Scenario detail table
+    html+='<div class="card"><h3>Per-Scenario Results ('+ep.length+' scenarios)</h3>';
+    html+='<input id="elicResultsSearch" type="text" placeholder="Filter by scenario ID or target..." style="width:100%;max-width:400px;padding:6px 10px;margin-bottom:8px;border:1px solid var(--border);border-radius:4px">';
+    html+='<div style="overflow-x:auto"><table id="elicResultsTable" style="width:100%;border-collapse:collapse;font-size:13px">';
+    html+='<thead><tr style="background:#f1f3f5">';
+    ['Scenario','Tier','Target','Node','Vote %','CEO Start','Strike','Overwh.','Review Result','CEO End','Draws'].forEach(h=>{
+      html+='<th style="padding:6px 8px;border:1px solid var(--border);text-align:left;cursor:pointer" onclick="sortTable(this.closest(\'table\'),'+['Scenario','Tier','Target','Node','Vote %','CEO Start','Strike','Overwh.','Review Result','CEO End','Draws'].indexOf(h)+')">'+h+'</th>';
+    });
+    actionList.forEach(a=>{
+      html+='<th style="padding:6px 8px;border:1px solid var(--border);text-align:right">'+a+'</th>';
+    });
+    html+='<th style="padding:6px 8px;border:1px solid var(--border);text-align:left">Best Action</th>';
+    html+='</tr></thead><tbody>';
+    ep.forEach(e=>{
+      const scores=e.mean_scores||{};
+      let best='',bestV=-Infinity;
+      for(const[a,v]of Object.entries(scores)){if(v>bestV){bestV=v;best=a;}}
+      const votePct=e.vote_pct!=null&&e.vote_pct>0?(e.vote_pct*100).toFixed(0)+'%':'--';
+      const ceoStart=(e.ceo_status==='resigned_early')?'Resigned':'Present';
+      const revResult=e.review_adverse===true?'Adverse':e.review_adverse===false?'Positive':'--';
+      html+='<tr data-search="'+(e.scenario_id+' '+e.target_parameter).toLowerCase()+'">';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border);font-family:monospace;font-size:12px">'+e.scenario_id+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border);text-align:center">T'+e.tier+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border)">'+e.target_parameter+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border)">'+e.decision_node+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border);text-align:right">'+votePct+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border)">'+ceoStart+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border);text-align:center">'+(e.strike?'\u2714':'--')+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border);text-align:center">'+(e.overwhelming?'\u2714':'--')+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border)">'+revResult+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border)">'+(e.ceo_present_at_end?'Present':'Removed')+'</td>';
+      html+='<td style="padding:5px 8px;border:1px solid var(--border);text-align:right">'+(e.n_draws||0)+'</td>';
+      actionList.forEach(a=>{
+        const sv=scores[a]||0;
+        const isBest=a===best&&bestV>0;
+        const bg=isBest?'background:#d4edda':'';
+        html+='<td style="padding:5px 8px;border:1px solid var(--border);text-align:right;'+bg+'">'+sv.toFixed(2)+'</td>';
+      });
+      html+='<td style="padding:5px 8px;border:1px solid var(--border);font-weight:bold">'+best+'</td>';
+      html+='</tr>';
+    });
+    html+='</tbody></table></div></div>';
+  }
+
   p.innerHTML=html;
-  if(typeof Plotly!=='undefined'&&es.parse_status_counts){
-    const labels=Object.keys(es.parse_status_counts);
-    const vals=Object.values(es.parse_status_counts);
-    Plotly.newPlot('parseChart',[{labels,values:vals,type:'pie',hole:0.4,
-      marker:{colors:['#50C878','#E85D5D','#FFB347','#4A90D9','#AAAAAA']}}],
-      {margin:{t:20,b:20,l:20,r:20},height:300},{responsive:true});
+
+  // Search handler for results table
+  const searchBox=document.getElementById('elicResultsSearch');
+  if(searchBox){
+    searchBox.oninput=function(){
+      const q=this.value.toLowerCase();
+      document.querySelectorAll('#elicResultsTable tbody tr').forEach(r=>{
+        r.style.display=(r.dataset.search||'').includes(q)?'':'none';
+      });
+    };
+  }
+
+  // Plotly charts
+  if(typeof Plotly!=='undefined'){
+    // Parse status pie (if available)
+    if(hasExplicitSummary&&es.parse_status_counts){
+      const labels=Object.keys(es.parse_status_counts);
+      const vals=Object.values(es.parse_status_counts);
+      Plotly.newPlot('parseChart',[{labels,values:vals,type:'pie',hole:0.4,
+        marker:{colors:['#50C878','#E85D5D','#FFB347','#4A90D9','#AAAAAA']}}],
+        {margin:{t:20,b:20,l:20,r:20},height:300},{responsive:true});
+    }
+    // Action wins bar chart
+    if(hasData&&document.getElementById('actionWinsChart')){
+      const aw={};
+      ep.forEach(e=>{
+        const sc=e.mean_scores||{};let best='',bv=-Infinity;
+        for(const[a,v]of Object.entries(sc)){if(v>bv){bv=v;best=a;}}
+        if(best)aw[best]=(aw[best]||0)+1;
+      });
+      const actLabels=Object.keys(aw);
+      const actVals=Object.values(aw);
+      Plotly.newPlot('actionWinsChart',[{x:actLabels,y:actVals,type:'bar',
+        marker:{color:'#4A90D9'}}],
+        {margin:{t:20,b:40,l:50,r:20},height:300,
+         yaxis:{title:'# Scenarios'},xaxis:{title:'Action'}},{responsive:true});
+    }
+    // Score distribution box plot
+    if(hasData&&document.getElementById('scoreDistChart')){
+      const allAct=new Set();
+      ep.forEach(e=>{Object.keys(e.mean_scores||{}).forEach(a=>allAct.add(a));});
+      const traces=[];
+      const colors=['#4A90D9','#50C878','#E85D5D','#FFB347','#9B59B6','#1ABC9C'];
+      let ci=0;
+      Array.from(allAct).sort().forEach(a=>{
+        const vals=ep.map(e=>(e.mean_scores||{})[a]).filter(v=>v!=null);
+        traces.push({y:vals,type:'box',name:a,marker:{color:colors[ci%colors.length]},boxpoints:'outliers'});
+        ci++;
+      });
+      Plotly.newPlot('scoreDistChart',traces,
+        {margin:{t:20,b:40,l:50,r:20},height:350,
+         yaxis:{title:'Mean Likert Score (1-5)'}},{responsive:true});
+    }
   }
 })();
 
-// Panel 4: Elicited Probabilities
+// Panel 4: Elicited Likert Scores
 (function(){
   const p=document.getElementById('panel_4');
   const ep=D.elicited_probabilities;
@@ -3573,12 +5411,12 @@ window.filterScenarios=function(q){
 
   // Collect all action codes across all scenarios
   const allActions=new Set();
-  ep.forEach(s=>{Object.keys(s.mean_probs||{}).forEach(a=>allActions.add(a));});
+  ep.forEach(s=>{Object.keys(s.mean_scores||{}).forEach(a=>allActions.add(a));});
   const actionList=Array.from(allActions).sort();
 
   // Summary stats
-  let html='<div class="card"><h3>Elicited Action Probabilities by Scenario</h3>';
-  html+='<p style="color:var(--text-muted)">Mean probabilities across LLM seeds per scenario. Use the tier filter and search box to explore.</p>';
+  let html='<div class="card"><h3>Elicited Likert Scores by Scenario</h3>';
+  html+='<p style="color:var(--text-muted)">Mean Likert scores (1\u20135) across draws per scenario. Highest-scored action highlighted green.</p>';
 
   // Tier filter buttons
   const tiers=[...new Set(ep.map(s=>s.tier))].sort();
@@ -3601,15 +5439,15 @@ window.filterScenarios=function(q){
   html+='<th style="padding:8px;border:1px solid var(--border);text-align:left">Node</th>';
   html+='<th style="padding:8px;border:1px solid var(--border);text-align:right">Vote%</th>';
   actionList.forEach(a=>{
-    html+='<th style="padding:8px;border:1px solid var(--border);text-align:right">P('+a+')</th>';
+    html+='<th style="padding:8px;border:1px solid var(--border);text-align:right">'+a+'</th>';
   });
-  html+='<th style="padding:8px;border:1px solid var(--border);text-align:right">Seeds</th>';
+  html+='<th style="padding:8px;border:1px solid var(--border);text-align:right">Draws</th>';
   html+='</tr></thead><tbody>';
 
   // Table rows
   ep.forEach(s=>{
-    const probs=s.mean_probs||{};
-    const maxP=Math.max(...actionList.map(a=>probs[a]||0));
+    const scores=s.mean_scores||{};
+    const maxS=Math.max(...actionList.map(a=>scores[a]||0));
     html+='<tr data-tier="'+s.tier+'" data-search="'+(s.scenario_id+' '+s.target_parameter).toLowerCase()+'">';
     html+='<td style="padding:6px 8px;border:1px solid var(--border);font-family:monospace;font-size:12px">'+s.scenario_id+'</td>';
     html+='<td style="padding:6px 8px;border:1px solid var(--border);text-align:center">T'+s.tier+'</td>';
@@ -3617,18 +5455,18 @@ window.filterScenarios=function(q){
     html+='<td style="padding:6px 8px;border:1px solid var(--border)">'+s.decision_node+'</td>';
     html+='<td style="padding:6px 8px;border:1px solid var(--border);text-align:right">'+(s.vote_pct!=null?(s.vote_pct*100).toFixed(0)+'%':'--')+'</td>';
     actionList.forEach(a=>{
-      const pv=probs[a]||0;
-      const bg=pv>=maxP-0.001&&pv>0.01?'background:#d4edda':'';
-      html+='<td style="padding:6px 8px;border:1px solid var(--border);text-align:right;'+bg+'">'+pv.toFixed(3)+'</td>';
+      const sv=scores[a]||0;
+      const bg=sv>=maxS-0.01&&sv>0?'background:#d4edda':'';
+      html+='<td style="padding:6px 8px;border:1px solid var(--border);text-align:right;'+bg+'">'+sv.toFixed(1)+'</td>';
     });
-    html+='<td style="padding:6px 8px;border:1px solid var(--border);text-align:right">'+s.n_seeds+'</td>';
+    html+='<td style="padding:6px 8px;border:1px solid var(--border);text-align:right">'+(s.n_draws||0)+'</td>';
     html+='</tr>';
   });
   html+='</tbody></table></div></div>';
 
   // Grouped bar chart: one trace per action, x = scenario_id
-  html+='<div class="card"><h3>Action Probability Distribution</h3>';
-  html+='<p style="color:var(--text-muted)">Grouped bar chart of mean LLM-elicited probabilities. Click tier buttons above to filter.</p>';
+  html+='<div class="card"><h3>Mean Likert Score by Action</h3>';
+  html+='<p style="color:var(--text-muted)">Grouped bar chart of mean Likert scores (1\u20135). Click tier buttons above to filter.</p>';
   html+='<div id="epBarChart" class="chart"></div></div>';
 
   p.innerHTML=html;
@@ -3662,7 +5500,7 @@ window.filterScenarios=function(q){
     const ids=filtered.map(s=>s.scenario_id);
     const traces=actionList.map((a,idx)=>({
       x:ids,
-      y:filtered.map(s=>(s.mean_probs||{})[a]||0),
+      y:filtered.map(s=>(s.mean_scores||{})[a]||0),
       name:a,
       type:'bar',
       marker:{color:colors[idx%colors.length]}
@@ -3672,63 +5510,401 @@ window.filterScenarios=function(q){
       margin:{t:20,b:120,l:60,r:20},
       height:Math.max(400,Math.min(600,ids.length*8)),
       xaxis:{title:'Scenario',tickangle:-45,tickfont:{size:10}},
-      yaxis:{title:'Mean Probability',range:[0,1]},
+      yaxis:{title:'Mean Likert Score',range:[0,5.5]},
       legend:{orientation:'h',y:1.12}
     },{responsive:true});
   }
   if(typeof Plotly!=='undefined') renderBarChart('all');
 })();
 
-// Panel 5: Parameter Estimates
+// Panel 5: Decision Tree
 (function(){
-  const p=document.getElementById('panel_5');
+  var panel=document.getElementById('panel_5');
+  var td=D.tree_data;
+  var ep=D.elicited_probabilities;
+  if(!td&&(!ep||!ep.length)){placeholder(5,'Tree data not yet available.');return;}
+
+  var COL={Board:'#4A90D9',ASA:'#50C878',CEO:'#E85D5D',Nature:'#AAAAAA'};
+  var NW=54,NH=32;
+  var NE={
+    CEO_resign:'CEO resigns',CEO_stay:'CEO stays',
+    D0_minimal:'Do nothing',D1_review:'Commission review',D3_ceo_transition:'Force CEO exit',
+    A2_no_strike:'No strike',A2_rec_strike:'Rec. strike',
+    Drev_no_action:'No action',Drev_commission_review:'Commission review',Drev_sack_ceo:'Sack CEO',
+    D4_stay:'Stay',D4_resign:'Resign',D4_negotiate_exit:'Negotiate exit',
+    no_strike:'No strike',first_strike:'First strike',overwhelming:'Overwhelming',
+    adverse:'Adverse',positive:'Positive',ceo_absent:'(CEO absent)'
+  };
+
+  var nid=0;
+  function nd(name,type,owner){
+    return{id:name+'_'+(nid++),name:name,type:type,owner:owner,eu:0,
+      nice_label:name,colour:COL[owner]||'#888',children:[]};
+  }
+  function ed(label,prob,child,eu){
+    return{label:label,nice_label:NE[label]||label.replace(/_/g,' '),
+      prob:prob,is_actual:false,child_eu:eu||0,commentary:'',child:child};
+  }
+
+  /* Build D3 tree from pre-computed recursive EU tree_data */
+  function buildFromPrecomputed(node){
+    if(!node)return nd('Terminal','terminal','Nature');
+    var n=nd(node.label||'?',node.type||'terminal',node.owner||'Nature');
+    n.eu=node.eu||0;
+    if(node.edges&&node.edges.length){
+      node.edges.forEach(function(e){
+        var childNode=buildFromPrecomputed(e.child);
+        n.children.push(ed(e.action,e.prob,childNode,e.eu));
+      });
+    }
+    return n;
+  }
+
+  /* Fallback: build skeleton from elicitation data (pre-Stage-4) */
+  function buildFallbackTree(){
+    nid=0;
+    function TN(){return nd('Terminal','terminal','Nature');}
+    function avgP(arr){
+      if(!arr||!arr.length)return null;
+      var acts2={};
+      arr.forEach(function(s){for(var a in(s.mean_scores||{}))acts2[a]=true});
+      var scores={};
+      for(var a in acts2){
+        var vs=arr.map(function(s){return(s.mean_scores||{})[a]||0});
+        scores[a]=vs.reduce(function(x,y){return x+y},0)/vs.length;
+      }
+      var sum=0;for(var a in scores)sum+=scores[a];
+      var probs={};
+      if(sum>0){for(var a in scores)probs[a]=scores[a]/sum;}
+      else{for(var a in scores)probs[a]=0;}
+      return{probs:probs,n:arr.length};
+    }
+    function getEP(dn,f){
+      var m=ep.filter(function(s){return s.decision_node===dn});
+      if(f){
+        var filters=[function(s){return!f.cs||s.ceo_status===f.cs}];
+        for(var i=0;i<filters.length;i++){var next=m.filter(filters[i]);if(next.length>0)m=next;}
+      }
+      return avgP(m);
+    }
+    function renorm(el,acts){
+      if(!el)return null;
+      var sum=0;acts.forEach(function(a){sum+=(el.probs[a]||0)});
+      if(sum<=0)return null;
+      var out={};acts.forEach(function(a){out[a]=(el.probs[a]||0)/sum});
+      return{probs:out,n:el.n};
+    }
+    var d0=nd('D0_ceo','decision','CEO');
+    function bD1(cp,cs){
+      var n=nd('D1','decision','Board');
+      var acts=cp?['D0_minimal','D1_review','D3_ceo_transition']:['D0_minimal','D1_review'];
+      var el=renorm(getEP('D1',{cs:cs}),acts);
+      acts.forEach(function(a){
+        var p=el?(el.probs[a]||0):null;
+        var n2=nd('A2','decision','ASA');
+        ['A2_no_strike','A2_rec_strike'].forEach(function(a2){
+          var nv=nd('V','chance','Nature');
+          ['no_strike','first_strike','overwhelming'].forEach(function(v){
+            var nd4=nd('D4','decision','CEO');
+            var ndr=nd('D_rev','decision','Board');
+            ndr.children.push(ed('Drev_no_action',null,TN()));
+            nd4.children.push(ed('D4_stay',null,ndr));
+            nv.children.push(ed(v,null,nd4));
+          });
+          n2.children.push(ed(a2,null,nv));
+        });
+        n.children.push(ed(a,p,n2));
+      });
+      return n;
+    }
+    d0.children.push(ed('CEO_resign',null,bD1(false,'resigned_early')));
+    d0.children.push(ed('CEO_stay',null,bD1(true,'present')));
+    return d0;
+  }
+
+  var treeData=td?buildFromPrecomputed(td):buildFallbackTree();
+
+  /* HTML */
+  panel.style.maxWidth='none';
+  panel.style.width='100%';
+  var srcLabel=td?'Recursive EU (posterior weights)':'Likert scores (pre-estimation fallback)';
+  panel.innerHTML='<div class="card" style="max-width:none">'+
+    '<h3>Game Tree \u2014 Board Decision Probabilities</h3>'+
+    '<p style="color:var(--text-muted)">Full game tree with Board action probabilities from '+srcLabel+'. '+
+    'All edges show p=X%. Click nodes to expand/collapse. Scroll to zoom, drag to pan.</p>'+
+    '<div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">'+
+    '<button id="t5Exp" style="padding:5px 14px;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer;font-size:12px">Expand All</button>'+
+    '<button id="t5Col" style="padding:5px 14px;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer;font-size:12px">Collapse All</button>'+
+    '<button id="t5Fit" style="padding:5px 14px;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer;font-size:12px">Fit to Screen</button>'+
+    '</div>'+
+    '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;margin-bottom:8px">'+
+    '<span><svg width="14" height="14"><rect x="1" y="1" width="12" height="12" rx="2" fill="#4A90D9"/></svg> Board</span>'+
+    '<span><svg width="14" height="14"><rect x="1" y="1" width="12" height="12" rx="2" fill="#50C878"/></svg> ASA</span>'+
+    '<span><svg width="14" height="14"><rect x="1" y="1" width="12" height="12" rx="2" fill="#E85D5D"/></svg> CEO</span>'+
+    '<span><svg width="14" height="14"><ellipse cx="7" cy="7" rx="6" ry="6" fill="#AAAAAA"/></svg> Nature</span>'+
+    '<span><svg width="14" height="14"><polygon points="7,1 13,7 7,13 1,7" fill="#888"/></svg> Terminal</span>'+
+    '</div>'+
+    '<div id="t5Wrap" style="border:1px solid var(--border);border-radius:6px;background:#fafbfc;height:calc(100vh - 220px);min-height:500px;overflow:hidden;position:relative">'+
+    '<svg id="t5Svg" width="100%" height="100%"></svg></div></div>'+
+    '<div id="t5TT" style="position:fixed;padding:10px 14px;background:rgba(20,20,30,0.92);color:#eee;border-radius:6px;'+
+    'font-size:11px;line-height:1.6;max-width:380px;pointer-events:none;z-index:9999;display:none;box-shadow:0 3px 12px rgba(0,0,0,0.3)"></div>';
+
+  if(typeof d3==='undefined'){document.getElementById('t5Wrap').innerHTML='<p style="padding:20px;color:#c00">D3.js not loaded.</p>';return;}
+
+  var ctr=document.getElementById('t5Wrap');
+  var svg=d3.select('#t5Svg');
+  var gMain=svg.append('g');
+  var zm=d3.zoom().scaleExtent([0.1,3]).on('zoom',function(e){gMain.attr('transform',e.transform)});
+  svg.call(zm);
+  svg.on('dblclick.zoom',null);
+  svg.call(zm.transform,d3.zoomIdentity.translate(140,ctr.clientHeight/2).scale(0.7));
+
+  function childrenAccessor(d){
+    if(!d.children||d.children.length===0)return null;
+    return d.children.map(function(e){
+      var ch=Object.assign({},e.child);
+      if(e.child.children)ch.children=e.child.children;
+      ch._edge={label:e.label,nice_label:e.nice_label,prob:e.prob,
+        is_actual:e.is_actual,child_eu:e.child_eu,commentary:e.commentary};
+      return ch;
+    });
+  }
+
+  var root=d3.hierarchy(treeData,childrenAccessor);
+  function walkAll(d,fn){fn(d);(d.children||d._collapsed||[]).forEach(function(c){walkAll(c,fn)})}
+  walkAll(root,function(d){d._allChildren=d.children});
+  walkAll(root,function(d){
+    if(d.depth>=3&&d.children&&d.children.length>1){d._collapsed=d.children;d.children=null}
+  });
+
+  var treeLayout=d3.tree().nodeSize([NH+14,260]);
+
+  function linkPath(s,t){
+    return'M'+s.y+','+s.x+'C'+(s.y+t.y)/2+','+s.x+' '+(s.y+t.y)/2+','+t.x+' '+t.y+','+t.x;
+  }
+  function edgeLabel(d){
+    var e=d.target.data._edge;if(!e)return'';
+    var nice=(e.nice_label||'').replace(/\n/g,' ');
+    if(e.prob!==null&&e.prob!==undefined)return nice+'  p='+(e.prob*100).toFixed(1)+'%';
+    return nice;
+  }
+
+  function update(source){
+    var dur=400;
+    treeLayout(root);
+    /* Links */
+    var links=root.links();
+    var lSel=gMain.selectAll('.lkg').data(links,function(d){return d.target.data.id});
+    var lE=lSel.enter().append('g').attr('class','lkg');
+    lE.append('path').attr('class','lk')
+      .attr('d',function(){return linkPath(source,source)})
+      .style('fill','none').style('stroke','#999').style('stroke-width','1.5').style('stroke-opacity','0.6');
+    lE.append('path').attr('class','lkh')
+      .attr('d',function(){return linkPath(source,source)})
+      .style('fill','none').style('stroke','transparent').style('stroke-width','14').style('cursor','pointer')
+      .on('mouseover',function(ev,d){showTT(ev,d)}).on('mousemove',function(ev){moveTT(ev)}).on('mouseout',hideTT);
+    lE.append('text').attr('class','lkl').attr('dy',-4)
+      .style('font-size','9px').style('fill','#555').style('pointer-events','none');
+    var lM=lE.merge(lSel);
+    lM.select('.lk').transition().duration(dur)
+      .attr('d',function(d){return linkPath(d.source,d.target)})
+      .style('stroke-width',function(d){
+        var e=d.target.data._edge;
+        if(e&&e.prob!==null&&e.prob!==undefined){if(e.prob<0.01)return'0.5';return Math.max(1,e.prob*4)+'';}
+        return'1.5';
+      })
+      .style('stroke-opacity',function(d){
+        var e=d.target.data._edge;
+        if(e&&e.prob!==null&&e.prob<0.01)return'0.25';return'0.6';
+      })
+      .style('stroke',function(d){
+        if(d.source.data.owner==='Board'&&d.source.data.type==='decision')return'#4A90D9';return'#999';
+      });
+    lM.select('.lkh').transition().duration(dur).attr('d',function(d){return linkPath(d.source,d.target)});
+    lM.select('.lkl').transition().duration(dur)
+      .attr('x',function(d){return(d.source.y+d.target.y)/2})
+      .attr('y',function(d){return(d.source.x+d.target.x)/2})
+      .text(function(d){return edgeLabel(d)})
+      .style('fill',function(d){
+        if(d.source.data.owner==='Board'&&d.source.data.type==='decision')return'#2C6FB5';return'#555';
+      })
+      .style('font-weight',function(d){
+        if(d.source.data.owner==='Board'&&d.source.data.type==='decision')return'600';return'400';
+      });
+    lSel.exit().transition().duration(dur).style('opacity',0).remove();
+
+    /* Nodes */
+    var nodes=root.descendants();
+    var nSel=gMain.selectAll('.ng').data(nodes,function(d){return d.data.id});
+    var nE=nSel.enter().append('g').attr('class','ng').style('cursor','pointer')
+      .attr('transform','translate('+(source.y0||0)+','+(source.x0||0)+')');
+    nE.each(function(d){
+      var el=d3.select(this),c=d.data.colour||'#888',sh;
+      if(d.data.type==='terminal'){
+        sh=el.append('polygon')
+          .attr('points','0,'+(-NH/2)+' '+(NW/2)+',0 0,'+(NH/2)+' '+(-NW/2)+',0')
+          .attr('fill',c).attr('stroke',d3.color(c).darker(0.4)).attr('stroke-width','1.5');
+      }else if(d.data.type==='chance'){
+        sh=el.append('ellipse').attr('rx',NW/2).attr('ry',NH/2)
+          .attr('fill',c).attr('stroke',d3.color(c).darker(0.4)).attr('stroke-width','1.5');
+      }else{
+        sh=el.append('rect').attr('x',-NW/2).attr('y',-NH/2).attr('width',NW).attr('height',NH)
+          .attr('rx',4).attr('ry',4)
+          .attr('fill',c).attr('stroke',d3.color(c).darker(0.4)).attr('stroke-width','1.5');
+      }
+      sh.on('pointerdown mousedown',function(ev){ev.stopPropagation()}).on('click',function(ev){ev.stopPropagation();toggle(d)});
+    });
+    nE.append('text').style('fill','#fff').style('font-size','10px')
+      .style('text-anchor','middle').style('dominant-baseline','central').style('pointer-events','none');
+    nE.append('circle').attr('class','ebg').attr('cx',NW/2+2).attr('cy',0).attr('r',9)
+      .style('pointer-events','none');
+    nE.append('text').attr('class','ebt').attr('x',NW/2+2).attr('dy',1)
+      .style('font-size','10px').style('font-weight','600').style('fill','#fff')
+      .style('text-anchor','middle').style('dominant-baseline','central').style('pointer-events','none');
+    var nM=nE.merge(nSel);
+    nM.transition().duration(dur).attr('transform',function(d){return'translate('+d.y+','+d.x+')'});
+    nM.select('text:not(.ebt)').text(function(d){return d.data.name==='Terminal'?'T':d.data.name});
+    function cntD(n){var c=0;(n._collapsed||n.children||[]).forEach(function(k){c+=1+cntD(k)});return c}
+    nM.select('.ebg')
+      .attr('fill',function(d){return(d._collapsed&&d._collapsed.length)?'#E8853D':'none'})
+      .attr('stroke',function(d){return(d._collapsed&&d._collapsed.length)?'#C96E2A':'none'})
+      .attr('stroke-width',1.5);
+    nM.select('.ebt').text(function(d){
+      if(!d._collapsed||!d._collapsed.length)return'';return'+'+cntD(d);
+    });
+    nSel.exit().transition().duration(dur)
+      .attr('transform','translate('+source.y+','+source.x+')').style('opacity',0).remove();
+    nodes.forEach(function(d){d.x0=d.x;d.y0=d.y});
+  }
+
+  function toggle(d){
+    if(d.children){d._collapsed=d.children;d.children=null}
+    else if(d._collapsed){d.children=d._collapsed;d._collapsed=null}
+    update(d);
+  }
+  document.getElementById('t5Exp').onclick=function(){
+    walkAll(root,function(d){if(d._collapsed){d.children=d._collapsed;d._collapsed=null}});update(root);
+  };
+  document.getElementById('t5Col').onclick=function(){
+    walkAll(root,function(d){if(d.depth>=1&&d.children&&d.children.length>1){d._collapsed=d.children;d.children=null}});update(root);
+  };
+  document.getElementById('t5Fit').onclick=function(){
+    var ns=root.descendants();if(!ns.length)return;
+    var x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+    ns.forEach(function(d){x0=Math.min(x0,d.x-NH);x1=Math.max(x1,d.x+NH);y0=Math.min(y0,d.y-NW);y1=Math.max(y1,d.y+NW+80)});
+    var tw=y1-y0,th=x1-x0,pd=40,aw=ctr.clientWidth-pd*2,ah=ctr.clientHeight-pd*2;
+    var sc=Math.min(aw/tw,ah/th,3);
+    var tx=pd-y0*sc+(aw-tw*sc)/2,ty=pd-x0*sc+(ah-th*sc)/2;
+    svg.transition().duration(500).call(zm.transform,d3.zoomIdentity.translate(tx,ty).scale(sc));
+  };
+
+  /* Tooltip — shows EU and probabilities for all node types */
+  var tt=document.getElementById('t5TT');
+  function showTT(ev,d){
+    var e=d.target.data._edge;if(!e)return;
+    var nice=(e.nice_label||'').replace(/\n/g,' ');
+    var h='<div style="font-weight:600;font-size:12px;color:#fff;margin-bottom:4px">'+nice+'</div>';
+    if(e.prob!==null&&e.prob!==undefined)
+      h+='<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#aaa">Probability:</span><span style="font-weight:500">'+(e.prob*100).toFixed(1)+'%</span></div>';
+    if(td&&e.child_eu!==undefined&&e.child_eu!==0)
+      h+='<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#aaa">EU (subtree):</span><span style="font-weight:500">'+e.child_eu.toFixed(3)+'</span></div>';
+    var src=d.source.data;
+    if(src.type==='decision'&&src.children){
+      h+='<div style="border-top:1px solid rgba(255,255,255,0.15);margin:6px 0"></div>';
+      h+='<div style="color:#aaa;margin-bottom:2px;font-size:10px">All actions at '+src.name+' ('+src.owner+'):</div>';
+      src.children.forEach(function(c){
+        var pStr=(c.prob!==null&&c.prob!==undefined)?(c.prob*100).toFixed(1)+'%':'?';
+        h+='<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#aaa">'+(NE[c.label]||c.label)+'</span><span>'+pStr+'</span></div>';
+      });
+    }
+    tt.innerHTML=h;tt.style.display='block';moveTT(ev);
+  }
+  function moveTT(ev){tt.style.left=(ev.clientX+14)+'px';tt.style.top=(ev.clientY-10)+'px'}
+  function hideTT(){tt.style.display='none'}
+
+  update(root);
+  /* Fit-to-screen when tab first becomes visible (panel is display:none at load) */
+  var fitted=false;
+  new MutationObserver(function(muts,obs){
+    if(panel.classList.contains('active')&&!fitted){
+      fitted=true;obs.disconnect();
+      setTimeout(function(){document.getElementById('t5Fit').click()},50);
+    }
+  }).observe(panel,{attributes:true,attributeFilter:['class']});
+})();
+
+
+// Panel 6: Parameter Estimates
+(function(){
+  const p=document.getElementById('panel_6');
   const pe=D.parameter_estimates||{};
-  if(!pe.weights){placeholder(5,'Parameter estimation not yet run.');return;}
-  const w=pe.weights||{},hse=pe.hessian_se||{},bse=pe.bootstrap_se||{};
+  if(!pe.weights){placeholder(6,'Parameter estimation not yet run.');return;}
+  const w=pe.weights||{};
   const em=pe.estimation_method||{};
-  const frs=pe.factor_regression_stats||{};
+  const psd=pe.weights_posterior_sd||{};
+  const pci=pe.weights_posterior_ci||{};
+  const fs=D.feature_selection||{};
   const pnames=__PARAM_NAMES__;
   const pdescs=__PARAM_DESCS__;
   const specs=__SPEC_DEFAULTS__;
-  const fixed=new Set(__FIXED_PARAMS__);
+  const isStan=Object.values(em).some(v=>v==='stan_ordinal_probit');
   let html='<div class="card"><h3>Parameter Estimates</h3>';
   html+='<p style="margin-bottom:8px;color:var(--text-muted)">';
-  html+='<span style="background:#d4edda;padding:2px 6px;border-radius:3px;font-size:0.85em">Softmax MLE</span> = identified from action choice probabilities (Stage 4A). ';
-  html+='<span style="background:#cce5ff;padding:2px 6px;border-radius:3px;font-size:0.85em">Factor Rating</span> = identified from LLM factor ratings via OLS (Stage 4B). ';
-  html+='<span style="background:#fff3cd;padding:2px 6px;border-radius:3px;font-size:0.85em">Fixed</span> = held at spec default (insufficient data).</p>';
-  const headers=['Parameter','Method','Description','Spec Default','Estimate','SE','R\u00B2','p-value'];
-  const rows=pnames.map(pn=>{
+  if(!isStan){
+    html+='<span style="background:#d4edda;padding:2px 6px;border-radius:3px;font-size:0.85em">Softmax MLE</span> = estimated via exp(\u03B8) reparameterized softmax. ';
+    html+='<span style="background:#f8d7da;padding:2px 6px;border-radius:3px;font-size:0.85em">Excluded</span> = removed from model. ';
+    html+='<span style="background:#fff3cd;padding:2px 6px;border-radius:3px;font-size:0.85em">Fixed</span> = fixed value.';
+  }
+  html+='</p>';
+  if(isStan&&pe.n_samples){
+    html+='<p style="margin-bottom:8px;color:var(--text-muted);font-size:0.9em">';
+    html+='MCMC: '+pe.n_samples+' posterior draws | ';
+    html+='Divergences: '+(pe.n_divergences||0)+' | ';
+    html+='Max R\u0302: '+(pe.max_rhat||'--')+' | ';
+    html+='Min ESS(bulk): '+(pe.min_ess_bulk||'--');
+    html+='</p>';
+  }
+  const cvs=fs.cv||{};
+  const shrk=fs.prior_shrinkage||{};
+  const headers=isStan?
+    ['Parameter','Method','Description','Prior Mean','Posterior Mean','Posterior SD','95% CI','<span title="Posterior probability that the utility weight exceeds 0.1 (practical significance threshold). Near 1.0 = parameter reliably contributes to Board utility. Near 0 = negligible contribution.">Pr(relevant)</span>','CV','<span title="Posterior shrinkage: 1 \u2212 Var(posterior)/Var(prior). Near 1.0 = data dominates (prior is uninformative). Near 0 = prior dominates (estimate is prior-sensitive). All priors are lognormal(\u03BC, \u03C3=1.0) centred at the spec default.">Prior</span>']:
+    ['Parameter','Method','Description','Spec Default','Estimate','SE','95% CI','p-value','CV'];
+  const relv=fs.relevance||{};
+  /* In Stan mode, hide excluded params and lambda — they add no information */
+  const displayNames=isStan?pnames.filter(pn=>(em[pn]||'')!=='excluded'):pnames;
+  const rows=displayNames.map(pn=>{
     const method=em[pn]||'fixed';
-    const methodLabel=method==='softmax_mle'?'Softmax MLE':method==='factor_rating'?'Factor Rating':method==='pending_4b'?'Fixed':'Fixed';
+    const methodLabel=method==='stan_ordinal_probit'?'Bayesian':method==='anchored'?'Anchored':method==='excluded'?'Excluded':'Fixed';
     const est=w[pn]!==undefined?w[pn]:specs[pn];
-    const se_val=method==='softmax_mle'?(bse[pn]>0?bse[pn]:hse[pn]):
-                 method==='factor_rating'?hse[pn]:0;
-    const fr=frs[pn]||{};
-    let r2='--',pv='--';
-    if(fr.r_squared!==undefined){r2=fr.r_squared.toFixed(4);}
-    if(fr.p_value!==undefined){pv=fr.p_value<0.001?'<0.001':fr.p_value.toFixed(4);}
-    else if(method==='softmax_mle'&&se_val>0&&est!==0){
-      // Wald test: z = estimate / SE, two-sided p-value
-      const z=Math.abs(est/se_val);
-      // Normal CDF approx: p ≈ 2*(1 - Φ(z)), using Abramowitz & Stegun 26.2.17
-      const t=1/(1+0.2316419*z);
-      const d=0.3989422804*Math.exp(-z*z/2);
-      const p2=d*t*(0.3193815+t*(-0.3565638+t*(1.781478+t*(-1.8212560+t*1.3302744))));
-      const waldP=2*p2;
-      pv=waldP<0.001?'<0.001':waldP.toFixed(4);
-    }
+    const sd=psd[pn]||0;
+    const ci=pci[pn];
+    const ciStr=ci?'['+ci[0].toFixed(2)+', '+ci[1].toFixed(2)+']':'--';
+    const cv_val=cvs[pn]!=null?(cvs[pn]*100).toFixed(1)+'%':'--';
+    const relvP=relv[pn]||{};
+    const prVal=relvP.pr_gt_threshold!=null?relvP.pr_gt_threshold.toFixed(3):'--';
+    const sh=shrk[pn];
+    const priorCell=sh!=null?
+      (sh>=0.5?'<span style="color:#155724" title="Shrinkage '+sh.toFixed(2)+': data dominates">\u2714 data-driven</span>':
+               '<span style="color:#856404" title="Shrinkage '+sh.toFixed(2)+': prior dominates">\u26A0 prior-sensitive</span>'):'--';
     return [pn,methodLabel,pdescs[pn]||'',specs[pn]||'--',
-      typeof est==='number'?est.toFixed(4):est,
-      typeof se_val==='number'&&se_val>0?se_val.toFixed(4):'--',r2,pv];
+      typeof est==='number'?est.toFixed(4):(est||'--'),
+      typeof sd==='number'&&sd>0?sd.toFixed(4):'--',
+      ciStr,prVal,cv_val,priorCell];
   });
-  rows.push(['lambda','Profiled','Rationality (inv. temp.)',specs.lambda_rationality||1.0,
-    (pe.lambda_rationality||0).toFixed(4),'--','--','--']);
+  if(!isStan){
+    rows.push(['lambda','Fixed','Rationality (inv. temp.)',1.0,
+      (pe.lambda_rationality||1.0).toFixed(4),'--','--','--','--']);
+  }
   html+=makeTable(headers,rows,'paramTable');
-  html+='<p style="margin-top:8px;color:var(--text-muted)">Stage 4A condition number: '+
-    (pe.condition_number||'--')+' | Ridge: '+(pe.ridge_applied?'Yes':'No')+
-    ' | w10/w11/w14 collapsed: '+(pe.w10_w11_w14_collapsed?'Yes':'No')+'</p>';
+  if(isStan){
+    html+='<p style="margin-top:8px;color:var(--text-muted)">Posterior covariance condition: '+
+      (pe.condition_number||'--')+'</p>';
+  }else{
+    html+='<p style="margin-top:8px;color:var(--text-muted)">Condition number: '+
+      (pe.condition_number||'--')+' | Ridge: '+(pe.ridge_applied?'Yes':'No')+'</p>';
+  }
   html+='</div>';
-  html+='<div class="card"><h3>Forest Plot (All Estimated Parameters)</h3><div id="forestPlot" class="chart"></div></div>';
+  html+='<div class="card"><h3>Forest Plot (Posterior 95% Credible Intervals)</h3><div id="forestPlot" class="chart"></div></div>';
   p.innerHTML=html;
   // Style rows by estimation method
   const tbl=document.getElementById('paramTable');
@@ -3738,64 +5914,68 @@ window.filterScenarios=function(q){
       const cells=tr.querySelectorAll('td');
       if(cells.length>1){
         const m=cells[1].textContent;
-        if(m==='Factor Rating'){tr.style.background='#cce5ff';tr.style.color='#004085';}
-        else if(m==='Softmax MLE'){tr.style.background='#d4edda';tr.style.color='#155724';}
+        if(m==='Bayesian'){tr.style.background='#d4edda';tr.style.color='#155724';}
+        else if(m==='Anchored'){tr.style.background='#e2d9f3';tr.style.color='#4a235a';}
+        else if(m==='Excluded'){tr.style.background='#f8d7da';tr.style.color='#721c24';}
         else if(m==='Fixed'){tr.style.background='#fff3cd';tr.style.color='#856404';}
       }
     });
   }
   if(typeof Plotly!=='undefined'){
-    // Show ALL estimated params (both 4A and 4B) in forest plot
-    const allEst=pnames.filter(pn=>em[pn]==='softmax_mle'||em[pn]==='factor_rating');
+    const allEst=pnames.filter(pn=>em[pn]==='stan_ordinal_probit');
     const vals=allEst.map(pn=>w[pn]||0);
-    const errs=allEst.map(pn=>{
-      const m=em[pn];
-      let se=0;
-      if(m==='softmax_mle'){const b=bse[pn],h=hse[pn];se=(b&&b>0)?b:(h&&h>0)?h:0;}
-      else if(m==='factor_rating'){se=hse[pn]||0;}
-      return 1.96*se;  // 95% CI
+    /* Use posterior CI directly if available, else fall back to 1.96*SD */
+    const errLo=allEst.map(pn=>{
+      const ci=pci[pn]; return ci?(w[pn]||0)-ci[0]:1.96*(psd[pn]||0);
     });
-    const colors=allEst.map(pn=>em[pn]==='factor_rating'?'#0066CC':'#4A90D9');
-    const symbols=allEst.map(pn=>em[pn]==='factor_rating'?'square':'circle');
+    const errHi=allEst.map(pn=>{
+      const ci=pci[pn]; return ci?ci[1]-(w[pn]||0):1.96*(psd[pn]||0);
+    });
+    let xMax=3;
+    const edges=allEst.map((pn,i)=>Math.max(Math.abs(vals[i])+errHi[i],Math.abs(vals[i])+errLo[i]));
+    if(edges.length>0)xMax=Math.max(3,Math.ceil(Math.max(...edges)*1.2));
     Plotly.newPlot('forestPlot',[
-      {y:allEst,x:vals,error_x:{type:'data',array:errs,visible:true,thickness:2,width:4},
-       type:'scatter',mode:'markers',name:'Estimated (95% CI)',
-       marker:{size:10,color:colors,symbol:symbols}},
+      {y:allEst,x:vals,
+       error_x:{type:'data',array:errHi,arrayminus:errLo,visible:true,thickness:2,width:4},
+       type:'scatter',mode:'markers',name:'Posterior Mean (95% CI)',
+       marker:{size:10,color:'#4A90D9',symbol:'circle'}},
       {y:allEst,x:allEst.map(()=>0),type:'scatter',mode:'lines',name:'Zero',
        line:{color:'#ccc',width:1,dash:'dot'},showlegend:false}
-    ],{margin:{l:120,r:20,t:20,b:40},height:Math.max(400,allEst.length*35),
-       xaxis:{title:'Weight Value (95% CI)',zeroline:true},
+    ],{margin:{l:160,r:20,t:20,b:40},height:Math.max(400,allEst.length*45),
+       xaxis:{title:'Weight (Posterior Mean \u00B1 95% CI)',zeroline:true,range:[-xMax,xMax]},
        legend:{x:0.7,y:1}},{responsive:true});
   }
 })();
 
-// Panel 6: Covariance
+// Panel 7: Covariance
 (function(){
-  const p=document.getElementById('panel_6');
+  const p=document.getElementById('panel_7');
   const pe=D.parameter_estimates||{};
   const cov=D.covariance_matrix;
-  if(!cov){placeholder(6,'Covariance matrix not yet computed.');return;}
-  const fixed=new Set(__FIXED_PARAMS__);
-  const estNames=__PARAM_NAMES__.filter(pn=>!fixed.has(pn));
+  if(!cov){placeholder(7,'Covariance matrix not yet computed.');return;}
+  const estNames=__ESTIMABLE_PARAMS__;
   let html='<div class="card"><h3>Correlation Matrix (Estimated Parameters)</h3><div id="covHeatmap" class="chart"></div></div>';
   html+='<div class="card"><h3>Correlation Values</h3><div id="corrTable" style="overflow-x:auto"></div></div>';
   p.innerHTML=html;
+  const tDiv=document.getElementById('corrTable');
   const n=cov.length;
   const corr=[];
   for(let i=0;i<n;i++){
     corr.push([]);
     for(let j=0;j<n;j++){
       const d=Math.sqrt(Math.abs(cov[i][i])*Math.abs(cov[j][j]));
-      corr[i].push(d>1e-12?cov[i][j]/d:0);
+      const r=d>1e-12?cov[i][j]/d:0;
+      corr[i].push(Math.abs(r)<5e-3?0:r);
     }
   }
-  const labels=estNames.concat(['lambda']);
+  const labels=estNames.concat(['lambda']).slice(0,n);
   const nLabels=labels.length;
   const corrSub=corr.slice(0,nLabels).map(r=>r.slice(0,nLabels));
+  function fmtCorr(v){const s=v.toFixed(2);return s==='-0.00'?'0.00':s;}
   if(typeof Plotly!=='undefined'){
     Plotly.newPlot('covHeatmap',[{z:corrSub,x:labels,y:labels,type:'heatmap',
       colorscale:'RdBu',zmin:-1,zmax:1,reversescale:true,
-      text:corrSub.map(r=>r.map(v=>v.toFixed(2))),texttemplate:'%{text}',
+      text:corrSub.map(r=>r.map(fmtCorr)),texttemplate:'%{text}',
       textfont:{size:10}}],
       {margin:{l:100,r:20,t:20,b:100},height:500},{responsive:true});
   }
@@ -3809,8 +5989,9 @@ window.filterScenarios=function(q){
     warn+='<strong>High Correlations Detected:</strong><ul style="margin:4px 0">';
     highCorrs.forEach(c=>{
       let note='';
-      if((c.a==='w8s'&&c.b==='w_inaction')||(c.a==='w_inaction'&&c.b==='w8s')){
-        note=' — <em>Structural: in strike scenarios, CEO is either removed (w8s fires) or retained (w_inaction fires). Near-complementary by design.</em>';
+      // Annotate structural correlations with explanations
+      if((c.a==='w_removal'&&c.b==='w_remove_ceo_overwhelming')||(c.a==='w_remove_ceo_overwhelming'&&c.b==='w_removal')){
+        note=' &mdash; <em>Structural (by design):</em> the Stan model defines <code>w_removal = w_remove_ceo_overwhelming + softplus(delta)</code>, so any posterior shift in w_remove_ceo_overwhelming mechanically shifts w_removal. The freely estimated parameter is <code>delta_removal</code> (irreducible removal cost that persists even after an overwhelming shareholder mandate), which is uncorrelated with w_remove_ceo_overwhelming by construction. This correlation does not indicate an identification problem; check the SE on <code>delta_removal</code> (theta[5]) instead.';
       }
       warn+='<li>'+c.a+' &harr; '+c.b+': <strong>'+c.r.toFixed(2)+'</strong>'+note+'</li>';
     });
@@ -3830,7 +6011,7 @@ window.filterScenarios=function(q){
       if(i===j){bg='#e8e8e8';}
       else if(abs>0.8){bg=v>0?'#ff9999':'#9999ff';}
       else if(abs>0.5){bg=v>0?'#ffcccc':'#ccccff';}
-      thtml+='<td style="border:1px solid #ddd;padding:4px;text-align:center;background:'+bg+'">'+v.toFixed(2)+'</td>';
+      thtml+='<td style="border:1px solid #ddd;padding:4px;text-align:center;background:'+bg+'">'+fmtCorr(v)+'</td>';
     }
     thtml+='</tr>';
   }
@@ -3838,11 +6019,11 @@ window.filterScenarios=function(q){
   tDiv.innerHTML=thtml;
 })();
 
-// Panel 7: Behavioural Diagnostics
+// Panel 8: Behavioural Diagnostics
 (function(){
-  const p=document.getElementById('panel_7');
+  const p=document.getElementById('panel_8');
   const bd=D.behavioural_diagnostics;
-  if(!bd){placeholder(7,'Diagnostics not yet run.');return;}
+  if(!bd){placeholder(8,'Diagnostics not yet run.');return;}
   let html='';
   const tests=[
     ['loss_aversion','Loss Aversion (8.1)'],
@@ -3850,7 +6031,7 @@ window.filterScenarios=function(q){
     ['optimism_bias','Optimism Bias (8.3)'],
     ['self_assessment_bias','Self-Assessment Bias (8.4)'],
     ['ikea_effect','Ikea Effect (8.5)'],
-    ['factor_order_effects','Factor Order Effects (8.6)']
+    ['action_order_effects','Action Order Effects (8.6)']
   ];
   tests.forEach(([key,title])=>{
     const t=bd[key]||{};
@@ -3868,23 +6049,23 @@ window.filterScenarios=function(q){
     }
     // Self-assessment bias detail
     if(key==='self_assessment_bias'){
-      if(t.mean_p_sack_board_initiated!==undefined){
-        html+='<table style="border-collapse:collapse;margin:8px 0"><thead><tr><th style="border:1px solid #ddd;padding:6px">Review Origin</th><th style="border:1px solid #ddd;padding:6px">Mean P(sack)</th></tr></thead><tbody>';
-        html+='<tr><td style="border:1px solid #ddd;padding:6px">Board-initiated</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_p_sack_board_initiated+'</td></tr>';
-        html+='<tr><td style="border:1px solid #ddd;padding:6px">Externally mandated</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_p_sack_externally_mandated+'</td></tr>';
+      if(t.mean_score_sack_board_initiated!==undefined){
+        html+='<table style="border-collapse:collapse;margin:8px 0"><thead><tr><th style="border:1px solid #ddd;padding:6px">Review Origin</th><th style="border:1px solid #ddd;padding:6px">Mean Likert (sack)</th></tr></thead><tbody>';
+        html+='<tr><td style="border:1px solid #ddd;padding:6px">Board-initiated</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_score_sack_board_initiated+'</td></tr>';
+        html+='<tr><td style="border:1px solid #ddd;padding:6px">Externally mandated</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_score_sack_externally_mandated+'</td></tr>';
         html+='</tbody></table>';
         if(t.t_stat!==undefined) html+='<p>t-statistic: '+t.t_stat+'</p>';
-        html+='<p style="color:var(--text-muted);font-size:0.9em">Hypothesis: board-initiated reviews produce lower P(sack) due to self-serving bias (ownership of review process reduces willingness to act on adverse findings).</p>';
+        html+='<p style="color:var(--text-muted);font-size:0.9em">Hypothesis: board-initiated reviews produce lower sack scores (self-serving bias — ownership of review process reduces willingness to act on adverse findings).</p>';
       } else {
         html+='<p style="color:#856404">Insufficient data: need multiple scenarios per review origin group.</p>';
       }
     }
     // Ikea effect detail
     if(key==='ikea_effect'){
-      if(t.mean_p_sack_appointed!==undefined){
-        html+='<table style="border-collapse:collapse;margin:8px 0"><thead><tr><th style="border:1px solid #ddd;padding:6px">CEO Appointment</th><th style="border:1px solid #ddd;padding:6px">Mean P(sack)</th></tr></thead><tbody>';
-        html+='<tr><td style="border:1px solid #ddd;padding:6px">Appointed by current board</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_p_sack_appointed+'</td></tr>';
-        html+='<tr><td style="border:1px solid #ddd;padding:6px">Inherited from predecessor</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_p_sack_inherited+'</td></tr>';
+      if(t.mean_score_sack_appointed!==undefined){
+        html+='<table style="border-collapse:collapse;margin:8px 0"><thead><tr><th style="border:1px solid #ddd;padding:6px">CEO Appointment</th><th style="border:1px solid #ddd;padding:6px">Mean Likert (sack)</th></tr></thead><tbody>';
+        html+='<tr><td style="border:1px solid #ddd;padding:6px">Appointed by current board</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_score_sack_appointed+'</td></tr>';
+        html+='<tr><td style="border:1px solid #ddd;padding:6px">Inherited from predecessor</td><td style="border:1px solid #ddd;padding:6px;text-align:center">'+t.mean_score_sack_inherited+'</td></tr>';
         html+='</tbody></table>';
         if(t.t_stat!==undefined) html+='<p>t-statistic: '+t.t_stat+'</p>';
         html+='<p style="color:var(--text-muted);font-size:0.9em">Hypothesis: boards are less likely to sack a CEO they appointed (IKEA effect — overvaluing own creation).</p>';
@@ -3892,25 +6073,27 @@ window.filterScenarios=function(q){
         html+='<p style="color:#856404">Insufficient data: need multiple scenarios per appointment group.</p>';
       }
     }
-    // Factor order effects detail
-    if(key==='factor_order_effects'&&t.per_factor){
-      const pf=t.per_factor;
-      const fKeys=Object.keys(pf).sort();
-      if(fKeys.length>0){
+    // Action order effects detail
+    if(key==='action_order_effects'&&t.per_action){
+      const pa=t.per_action;
+      const aKeys=Object.keys(pa).sort();
+      if(aKeys.length>0){
         html+='<table style="border-collapse:collapse;margin:8px 0;font-size:0.95em"><thead><tr>';
-        html+='<th style="border:1px solid #ddd;padding:4px">Factor</th><th style="border:1px solid #ddd;padding:4px">Slope</th>';
+        html+='<th style="border:1px solid #ddd;padding:4px">Action</th><th style="border:1px solid #ddd;padding:4px">N</th>';
+        html+='<th style="border:1px solid #ddd;padding:4px">Slope</th>';
         html+='<th style="border:1px solid #ddd;padding:4px">p-value</th><th style="border:1px solid #ddd;padding:4px">Effect</th></tr></thead><tbody>';
-        fKeys.forEach(fk=>{
-          const f=pf[fk];
-          const eff=f.effect||'none';
+        aKeys.forEach(ak=>{
+          const a=pa[ak];
+          const eff=a.effect||'none';
           const effColor=eff==='none'?'#155724':eff==='primacy'?'#856404':'#721c24';
-          html+='<tr><td style="border:1px solid #ddd;padding:4px">'+fk.replace('_',' ')+'</td>';
-          html+='<td style="border:1px solid #ddd;padding:4px;text-align:center">'+f.slope+'</td>';
-          html+='<td style="border:1px solid #ddd;padding:4px;text-align:center">'+f.p_value+'</td>';
+          html+='<tr><td style="border:1px solid #ddd;padding:4px">'+ak+'</td>';
+          html+='<td style="border:1px solid #ddd;padding:4px;text-align:center">'+(a.n||'--')+'</td>';
+          html+='<td style="border:1px solid #ddd;padding:4px;text-align:center">'+a.slope+'</td>';
+          html+='<td style="border:1px solid #ddd;padding:4px;text-align:center">'+a.p_value+'</td>';
           html+='<td style="border:1px solid #ddd;padding:4px;text-align:center;color:'+effColor+'"><strong>'+eff+'</strong></td></tr>';
         });
         html+='</tbody></table>';
-        html+='<p style="color:var(--text-muted);font-size:0.9em">Slope = change in rating per position. Primacy: factors presented earlier get higher ratings. Recency: factors presented later get higher ratings. Factor order is randomised per elicitation.</p>';
+        html+='<p style="color:var(--text-muted);font-size:0.9em">Slope = change in Likert score per presentation position (1=first, N=last). Primacy: earlier-presented actions get higher scores. Recency: later-presented get higher. Action order is randomised per elicitation draw.</p>';
       }
       if(t.any_order_effect_detected!==undefined){
         html+='<p>Any order effect detected: <strong>'+(t.any_order_effect_detected?'Yes':'No')+'</strong></p>';
@@ -3921,11 +6104,11 @@ window.filterScenarios=function(q){
   p.innerHTML=html;
 })();
 
-// Panel 8: Interaction Effects
+// Panel 9: Interaction Effects
 (function(){
-  const p=document.getElementById('panel_8');
+  const p=document.getElementById('panel_9');
   const ie=D.interaction_effects;
-  if(!ie||Object.keys(ie).length===0){placeholder(8,'Interaction effects not yet computed. Run Stage 6 first.');return;}
+  if(!ie||Object.keys(ie).length===0){placeholder(9,'Interaction effects not yet computed. Run Stage 6 first.');return;}
   let html='';
 
   // 1. Residual vs vote scatter
@@ -3966,18 +6149,22 @@ window.filterScenarios=function(q){
 
   // 4. Statistical tests
   html+='<div class="card"><h3>Model Fit Heterogeneity Tests</h3>';
+  let hasTests=false;
   if(ie.strike_fit_test&&ie.strike_fit_test.p_value!==undefined){
+    hasTests=true;
     const sf=ie.strike_fit_test;
     html+='<p><strong>Strike effect on fit:</strong> Mean KL (strike)='+sf.mean_kl_strike.toFixed(4)+
       ', Mean KL (no strike)='+sf.mean_kl_no_strike.toFixed(4)+
       ', p='+sf.p_value+' — '+sf.conclusion+'</p>';
   }
   if(ie.overwhelming_fit_test&&ie.overwhelming_fit_test.p_value!==undefined){
-    const of=ie.overwhelming_fit_test;
-    html+='<p><strong>Overwhelming effect on fit:</strong> Mean KL (overwhelming)='+of.mean_kl_overwhelming.toFixed(4)+
-      ', Mean KL (not)='+of.mean_kl_not_overwhelming.toFixed(4)+
-      ', p='+of.p_value+' — '+of.conclusion+'</p>';
+    hasTests=true;
+    const oft=ie.overwhelming_fit_test;
+    html+='<p><strong>Overwhelming effect on fit:</strong> Mean KL (overwhelming)='+oft.mean_kl_overwhelming.toFixed(4)+
+      ', Mean KL (not)='+oft.mean_kl_not_overwhelming.toFixed(4)+
+      ', p='+oft.p_value+' — '+oft.conclusion+'</p>';
   }
+  if(!hasTests){html+='<p style="color:#856404">Insufficient data: need &ge;3 scenarios in each subgroup (strike/no-strike, overwhelming/not). Re-run pipeline to generate.</p>';}
   html+='<p style="color:var(--text-muted);font-size:0.9em">Mann-Whitney U tests comparing model fit (KL divergence) across scenario subgroups. Significant results indicate the model fits differently in certain conditions, suggesting missing interaction terms.</p>';
   html+='</div>';
 
@@ -4029,11 +6216,11 @@ window.filterScenarios=function(q){
   }
 })();
 
-// Panel 9: Validation
+// Panel 10: Validation
 (function(){
-  const p=document.getElementById('panel_9');
+  const p=document.getElementById('panel_10');
   const vr=D.validation_results;
-  if(!vr){placeholder(9,'Validation not yet run.');return;}
+  if(!vr){placeholder(10,'Validation not yet run.');return;}
   let html='';
   if(vr.within_sample_kl){
     const kl=vr.within_sample_kl;
@@ -4069,13 +6256,13 @@ window.filterScenarios=function(q){
   p.innerHTML=html;
 })();
 
-// Panel 10: Linearity Diagnostics
+// Panel 11: Linearity Diagnostics
 (function(){
-  const p=document.getElementById('panel_10');
+  const p=document.getElementById('panel_11');
   const ie=D.interaction_effects;
   const pe=D.parameter_estimates||{};
   const cov=D.covariance_matrix;
-  if(!ie||!ie.resid_vs_vote){placeholder(10,'Linearity diagnostics require Stage 6. Run stages 4-6 first.');return;}
+  if(!ie||!ie.resid_vs_vote){placeholder(11,'Linearity diagnostics require Stage 6. Run stages 4-6 first.');return;}
   let html='';
 
   // 1. Residual vs predicted EU — linearity check
@@ -4095,25 +6282,29 @@ window.filterScenarios=function(q){
 
   // 4. Phi collinearity - VIF table
   html+='<div class="card"><h3>Phi Basis Function Summary</h3>';
-  html+='<p style="color:var(--text-muted);font-size:0.9em">The softmax model is linear in phi: EU(a) = phi(s,a) &middot; w + anchored. Each row shows the phi basis function for one parameter. High correlation between phi columns creates collinearity (see Covariance tab). Non-linear transformations of scenario features (e.g., (V-0.25)² for w2) embed non-linearity in phi, which is fine — the "linearity" assumption is linearity in w, not in raw features.</p>';
+  html+='<p style="color:var(--text-muted);font-size:0.9em">The ordinal probit model is linear in phi: latent utility = phi(s,a) &middot; w + anchored. Each row shows the phi basis function for one parameter. High correlation between phi columns creates collinearity (see Covariance tab).</p>';
   const pdescs=__PARAM_DESCS__;
   const pnames=__PARAM_NAMES__;
   const fixed=new Set(__FIXED_PARAMS__);
   const estP=pnames.filter(pn=>!fixed.has(pn));
   const phiDefs={
+    'w_inaction_base':'-I[board inactive at all decision points]',
+    'w_inaction_no_review':'-I[no governance review commissioned]',
+    'w1':'-I[CEO resigned early] × (1 - response_strength)',
     'w_removal':'-I[CEO removed involuntarily]',
-    'w8s':'+I[CEO removed] × I[strike]',
-    'w8o':'+I[CEO removed] × I[overwhelming]',
-    'w8r':'+I[CEO removed] × I[review adverse]',
-    'w_inaction':'-I[strike ∧ CEO present]',
-    'w12':'-I[overwhelming ∧ board inactive]',
-    'w13':'-I[strike ∧ board inactive]',
+    'w_remove_ceo_overwhelming':'+I[CEO removed] × I[overwhelming]',
     'w15':'-I[review adverse ∧ CEO present]',
-    'w1':'-I[CEO resigned early]',
-    'w2':'-(V-0.25)² I[V>0.25]',
-    'w3':'-I[overwhelming]',
-    'w4':'-V × I[strike]',
-    'w9':'-I[overwhelming]'
+    'w_strike':'-w × max(0,(V-0.25)/0.75) [scenario-level]',
+    'w_overwhelming':'-w × max(0,(V-0.50)/0.50) [scenario-level]',
+    'w2':'excluded (replaced by inaction components)',
+    'w3':'excluded (replaced by w_overwhelming)',
+    'w4':'excluded (w2 removed)',
+    'w_inaction':'excluded (dropped — collinear with w_removal)',
+    'w13':'excluded (replaced by w_inaction_base)',
+    'w8r':'excluded (not identified)',
+    'w8s':'excluded (not identified)',
+    'w9':'excluded (collapsed)',
+    'w12':'excluded (not significant)'
   };
   html+='<table style="border-collapse:collapse;font-size:0.95em"><thead><tr>';
   html+='<th style="border:1px solid #ddd;padding:4px">Parameter</th>';
@@ -4122,7 +6313,7 @@ window.filterScenarios=function(q){
   html+='<th style="border:1px solid #ddd;padding:4px">Type</th></tr></thead><tbody>';
   estP.forEach(pn=>{
     const em=(pe.estimation_method||{})[pn]||'';
-    const varies=em==='softmax_mle'?'Actions (within scenario)':'Scenarios only';
+    const varies=(em==='softmax_mle'||em==='stan_ordinal_probit')?'Actions (within scenario)':'Scenarios only';
     html+='<tr><td style="border:1px solid #ddd;padding:4px;font-weight:bold">'+pn+'</td>';
     html+='<td style="border:1px solid #ddd;padding:4px;font-family:monospace;font-size:0.9em">'+(phiDefs[pn]||'--')+'</td>';
     html+='<td style="border:1px solid #ddd;padding:4px">'+varies+'</td>';
@@ -4180,9 +6371,9 @@ window.filterScenarios=function(q){
   }
 })();
 
-// Panel 11: Raw Data
+// Panel 12: Raw Data
 (function(){
-  const p=document.getElementById('panel_11');
+  const p=document.getElementById('panel_12');
   const of=D.output_files||{};
   let html='<div class="card"><h3>Output Files</h3>';
   if(Object.keys(of).length===0){
@@ -4236,11 +6427,12 @@ def render_dashboard(
     results_json = dashboard_data.to_json()
 
     # Inject constants for JS
-    # ALL_WEIGHT_NAMES for display (fixed + estimable), FIXED for marking
+    # ALL_WEIGHT_NAMES for display (estimable + anchored + excluded)
     param_names_json = json.dumps(list(ALL_WEIGHT_NAMES), ensure_ascii=True)
     param_descs_json = json.dumps(PARAM_DESCRIPTIONS, ensure_ascii=True)
     spec_defaults_json = json.dumps(SPEC_DEFAULTS, ensure_ascii=True)
-    fixed_params_json = json.dumps(list(FIXED_PARAM_NAMES), ensure_ascii=True)
+    fixed_params_json = json.dumps(EXCLUDED_PARAMS, ensure_ascii=True)
+    estimable_params_json = json.dumps(list(ESTIMABLE_PARAM_NAMES) + VOTE_PARAM_NAMES, ensure_ascii=True)
 
     html = _DASHBOARD_TEMPLATE
     html = html.replace("__META_REFRESH__", meta_refresh)
@@ -4250,6 +6442,7 @@ def render_dashboard(
     html = html.replace("__PARAM_DESCS__", param_descs_json)
     html = html.replace("__SPEC_DEFAULTS__", spec_defaults_json)
     html = html.replace("__FIXED_PARAMS__", fixed_params_json)
+    html = html.replace("__ESTIMABLE_PARAMS__", estimable_params_json)
 
     # Atomic write
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4304,48 +6497,46 @@ def _save_parameter_estimates(est_result: EstimationResult, output_dir: Path):
     """Save parameter_estimates.csv and covariance_matrix.csv."""
     rows = []
     em = est_result.estimation_method
-    frs = est_result.factor_regression_stats
-    # Scenario-level params (Factor Rating or fixed)
-    for p in FIXED_PARAM_NAMES:
-        method = em.get(p, "fixed")
-        fr_stat = frs.get(p, {})
+    psd = getattr(est_result, "weights_posterior_sd", {})
+    pci = getattr(est_result, "weights_posterior_ci", {})
+
+    # Estimated params (Bayesian ordinal probit via Stan)
+    for p in WEIGHT_PARAM_NAMES + VOTE_PARAM_NAMES:
+        ci = pci.get(p, (None, None))
         rows.append({
             "parameter": p,
-            "status": method,
-            "engine_key": PARAM_TO_ENGINE_KEY.get(p, ""),
-            "description": PARAM_DESCRIPTIONS.get(p, ""),
-            "spec_default": SPEC_DEFAULTS.get(p, ""),
-            "estimate": est_result.weights.get(p, SPEC_DEFAULTS.get(p, "")),
-            "hessian_se": est_result.hessian_se.get(p, 0.0),
-            "bootstrap_se": est_result.bootstrap_se.get(p, 0.0),
-            "r_squared": fr_stat.get("r_squared", ""),
-            "p_value": fr_stat.get("p_value", ""),
-        })
-    # Action-varying params (Softmax MLE)
-    for p in WEIGHT_PARAM_NAMES:
-        rows.append({
-            "parameter": p,
-            "status": em.get(p, "softmax_mle"),
+            "status": em.get(p, "stan_ordinal_probit"),
             "engine_key": PARAM_TO_ENGINE_KEY.get(p, ""),
             "description": PARAM_DESCRIPTIONS.get(p, ""),
             "spec_default": SPEC_DEFAULTS.get(p, ""),
             "estimate": est_result.weights.get(p, ""),
-            "hessian_se": est_result.hessian_se.get(p, ""),
-            "bootstrap_se": est_result.bootstrap_se.get(p, ""),
-            "r_squared": "",
-            "p_value": "",
+            "posterior_sd": psd.get(p, ""),
+            "ci_lower": ci[0] if ci and ci[0] is not None else "",
+            "ci_upper": ci[1] if ci and ci[1] is not None else "",
+        })
+    # Excluded params
+    for p in EXCLUDED_PARAMS:
+        rows.append({
+            "parameter": p,
+            "status": "excluded",
+            "engine_key": PARAM_TO_ENGINE_KEY.get(p, ""),
+            "description": PARAM_DESCRIPTIONS.get(p, ""),
+            "spec_default": "",
+            "estimate": "excluded",
+            "posterior_sd": "",
+            "ci_lower": "",
+            "ci_upper": "",
         })
     rows.append({
         "parameter": "lambda_rationality",
-        "status": "profiled",
+        "status": "fixed",
         "engine_key": "",
-        "description": "Rationality (inverse temperature)",
+        "description": "Rationality (inverse temperature) [fixed at 1.0]",
         "spec_default": 1.0,
         "estimate": est_result.lambda_rationality,
-        "hessian_se": 0.0,
-        "bootstrap_se": 0.0,
-        "r_squared": "",
-        "p_value": "",
+        "posterior_sd": 0.0,
+        "ci_lower": "",
+        "ci_upper": "",
     })
 
     pd.DataFrame(rows).to_csv(
@@ -4354,7 +6545,7 @@ def _save_parameter_estimates(est_result: EstimationResult, output_dir: Path):
 
     # Covariance matrix
     cov = est_result.covariance_matrix
-    labels = list(WEIGHT_PARAM_NAMES) + ["log_lambda"]
+    labels = list(WEIGHT_PARAM_NAMES) + VOTE_PARAM_NAMES + ["log_lambda"]
     n = min(cov.shape[0], len(labels))
     cov_df = pd.DataFrame(
         cov[:n, :n],
@@ -4371,26 +6562,33 @@ def main():
         epilog=(
             "Examples:\n"
             "  python board_utility_quantification.py --stage 1\n"
-            "  python board_utility_quantification.py --stage 1,2,3 --n_reps 5\n"
-            "  python board_utility_quantification.py --all --n_reps 10\n"
+            "  python board_utility_quantification.py --stage 1,2,3 --n_draws 5\n"
+            "  python board_utility_quantification.py --all --n_draws 10\n"
         ),
     )
     parser.add_argument("--stage", type=str, default="all",
                         help="Comma-separated stages to run (1-6) or 'all'")
     parser.add_argument("--model", type=str, default="gpt-4o-mini",
                         help="LLM model for elicitation (default: gpt-4o-mini)")
-    parser.add_argument("--n_reps", type=int, default=40,
-                        help="Repetitions per scenario (default: 40)")
-    parser.add_argument("--n_starts", type=int, default=10,
-                        help="L-BFGS-B starting points (default: 10)")
-    parser.add_argument("--bootstrap_B", type=int, default=500,
-                        help="Bootstrap samples (default: 500)")
+    parser.add_argument("--n_draws", type=int, default=50,
+                        help="Draws per scenario for elicitation (default: 50)")
+    parser.add_argument("--chains", type=int, default=4,
+                        help="MCMC chains for Stan estimation (default: 4)")
+    parser.add_argument("--iter_warmup", type=int, default=1000,
+                        help="Warmup iterations per chain (default: 1000)")
+    parser.add_argument("--iter_sampling", type=int, default=2000,
+                        help="Sampling iterations per chain (default: 2000)")
     parser.add_argument("--api_key", type=str, default=None,
                         help="OpenAI API key (or set OPENAI_API_KEY env var)")
     parser.add_argument("--output_dir", type=str, default=str(OUTPUT_DIR),
                         help=f"Output directory (default: {OUTPUT_DIR})")
+    parser.add_argument("--llm-threads", type=int, default=10, dest="llm_threads",
+                        help="Concurrent threads for LLM elicitation (default: 10)")
     parser.add_argument("--all", action="store_true",
                         help="Run all stages")
+    parser.add_argument("--no-laplacian", action="store_true", dest="no_laplacian",
+                        help="Disable Laplacian smoothing on Board decision "
+                             "probabilities in the tree (default: enabled)")
 
     args = parser.parse_args()
 
@@ -4411,7 +6609,7 @@ def main():
     logger.info("Board Utility Quantification Pipeline")
     logger.info(f"Stages: {sorted(stages)}")
     logger.info(f"Model: {args.model}")
-    logger.info(f"Reps/scenario: {args.n_reps}")
+    logger.info(f"Draws/scenario: {args.n_draws}")
     logger.info(f"Output: {output_dir}")
     logger.info("=" * 60)
 
@@ -4443,6 +6641,7 @@ def main():
     cost_tracker = RunCostSummary()
     scenarios = []
     estimation_df = pd.DataFrame()
+    likert_summary_df = pd.DataFrame()
     est_result = None
 
     try:
@@ -4455,6 +6654,11 @@ def main():
 
         if scenarios:
             dashboard.scenarios = [s.to_dict() for s in scenarios]
+            # Pre-flight checks (post-generation)
+            preflight_gen = run_preflight_checks(scenarios)
+            dashboard.preflight_checks = preflight_gen
+            if not preflight_gen["all_passed"]:
+                logger.warning("Pre-flight checks have failures — review scenario design")
             render_dashboard(dashboard, dashboard_path)
 
         # ── Stage 2: LLM elicitation ──
@@ -4465,7 +6669,22 @@ def main():
             if elicitation_path.exists():
                 existing_df = pd.read_csv(elicitation_path, encoding="utf-8")
                 existing_ids = set(existing_df["scenario_id"].unique())
-                if not (needed_ids - existing_ids):
+                # Detect stale format: old pipeline wrote action_scores as empty {}
+                has_likert_data = False
+                if "action_scores" in existing_df.columns:
+                    sample = existing_df["action_scores"].dropna().head(5)
+                    for val in sample:
+                        try:
+                            d = json.loads(val) if isinstance(val, str) else val
+                            if isinstance(d, dict) and len(d) > 0:
+                                has_likert_data = True
+                                break
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                if not has_likert_data:
+                    logger.warning("Existing elicitation CSV uses old format (no Likert scores). "
+                                   "Re-running elicitation with new Likert schema.")
+                elif not (needed_ids - existing_ids):
                     logger.info(f"Elicitation results already cover all "
                                 f"{len(needed_ids)} scenarios "
                                 f"({len(existing_df)} rows). Skipping Stage 2. "
@@ -4474,8 +6693,9 @@ def main():
             if not skip_elicitation:
                 client = _get_instructor_client(args.api_key)
                 run_elicitation(
-                    scenarios, client, args.model, args.n_reps,
+                    scenarios, client, args.model, args.n_draws,
                     elicitation_path, cost_tracker,
+                    max_workers=args.llm_threads,
                 )
             dashboard.cost_summary = cost_tracker.to_dict()
             dashboard.encoding_stats = dict(_encoding_stats)
@@ -4496,67 +6716,108 @@ def main():
             render_dashboard(dashboard, dashboard_path)
 
         # ── Stage 3: Preprocessing ──
+        likert_long_path = output_dir / "likert_long.csv"
+        likert_summary_path = output_dir / "likert_summary.csv"
         if 3 in stages and elicitation_path.exists():
-            estimation_df = preprocess_data(elicitation_path, estimation_path)
-            if not estimation_df.empty:
+            likert_long_df_stage3, likert_summary_df = preprocess_likert_data(
+                elicitation_path, likert_long_path, likert_summary_path,
+            )
+            # estimation_df: keep for backward-compat dashboard panels that read it
+            # from disk; if estimation_path exists from a prior run, load it too.
+            if estimation_path.exists():
+                estimation_df = pd.read_csv(estimation_path, encoding="utf-8")
+            if not likert_summary_df.empty:
                 dashboard.estimation_dataset_summary = {
-                    "n_scenarios": len(estimation_df),
-                    "mean_seed_variance": round(
-                        float(estimation_df["mean_seed_variance"].mean()), 4
-                    ),
+                    "n_scenarios": likert_summary_df["scenario_id"].nunique(),
+                    "mean_seed_variance": 0.0,  # not applicable to Likert pipeline
                 }
             render_dashboard(dashboard, dashboard_path)
-        elif estimation_path.exists():
-            estimation_df = pd.read_csv(estimation_path, encoding="utf-8")
+        elif likert_summary_path.exists():
+            likert_summary_df = pd.read_csv(likert_summary_path, encoding="utf-8")
+            if estimation_path.exists():
+                estimation_df = pd.read_csv(estimation_path, encoding="utf-8")
 
-        # Build elicited probabilities data for dashboard
-        if not estimation_df.empty and scenarios:
+        # Build elicited Likert score data for dashboard
+        if not likert_summary_df.empty and scenarios:
             scenario_lookup = {s.scenario_id: s for s in scenarios}
             ep_rows = []
-            for _, row in estimation_df.iterrows():
-                sid = row["scenario_id"]
+            for sid, grp in likert_summary_df.groupby("scenario_id"):
                 sc = scenario_lookup.get(sid)
                 if sc is None:
                     continue
                 sv = sc.state_vector if isinstance(sc.state_vector, dict) else {}
+                mean_scores = {
+                    row["action"]: round(float(row["mean_score"]), 2)
+                    for _, row in grp.iterrows()
+                }
                 ep_rows.append({
                     "scenario_id": sid,
                     "tier": sc.tier,
                     "target_parameter": sc.target_parameter,
                     "decision_node": sc.decision_node,
                     "vote_pct": sv.get("vote_outcome_V"),
-                    "mean_probs": json.loads(row["mean_prob_vector"]),
-                    "n_seeds": int(row["n_successful_seeds"]),
+                    "mean_scores": mean_scores,
+                    "n_draws": int(grp["n_draws"].iloc[0]) if "n_draws" in grp.columns else 0,
+                    "d1_action": sv.get("d1_action", ""),
+                    "ceo_status": sv.get("ceo_status_at_start", "present"),
+                    "strike": sv.get("strike", False),
+                    "overwhelming": sv.get("overwhelming", False),
+                    "review_adverse": sv.get("review_adverse"),
+                    "ceo_present_at_end": sv.get("ceo_present_at_end", True),
                 })
             dashboard.elicited_probabilities = ep_rows
             render_dashboard(dashboard, dashboard_path)
 
+        # Pre-flight checks (post-elicitation, with data)
+        if not estimation_df.empty and scenarios:
+            preflight_elic = run_preflight_checks(scenarios, estimation_df)
+            dashboard.preflight_checks = preflight_elic
+            if not preflight_elic["all_passed"]:
+                logger.warning("Post-elicitation pre-flight checks have failures")
+            render_dashboard(dashboard, dashboard_path)
+
         # ── Stage 4: Parameter estimation ──
-        if 4 in stages and not estimation_df.empty and scenarios:
-            phi, anchored, p_llm, scenario_ids, action_lists = compute_phi_matrix(
-                scenarios, estimation_df,
+        if 4 in stages and not likert_summary_df.empty and scenarios:
+            phi, anchored, sa_id_map, scenario_id_map, scenario_ids, action_lists, vote_data = (
+                compute_phi_matrix(scenarios, likert_summary_df)
             )
 
-            est_result = estimate_parameters(
-                phi, anchored, p_llm, action_lists,
-                n_starts=args.n_starts,
-                bootstrap_B=args.bootstrap_B,
-            )
+            # Load likert_long_df from Stage 3 output (or from variable if available)
+            if "likert_long_df_stage3" in dir() and not likert_long_df_stage3.empty:
+                likert_long_df = likert_long_df_stage3
+            elif likert_long_path.exists():
+                likert_long_df = pd.read_csv(likert_long_path, encoding="utf-8")
+            else:
+                raise RuntimeError("Stage 4 requires likert_long.csv from Stage 3")
 
-            # ── Stage 4B: Factor rating regression for scenario-level params ──
-            stage4b = estimate_scenario_level_params(
-                scenarios, estimation_df, est_result,
+            est_result = estimate_parameters_stan(
+                phi, anchored, likert_long_df, sa_id_map, scenario_id_map,
+                vote_data=vote_data,
+                chains=args.chains,
+                iter_warmup=args.iter_warmup,
+                iter_sampling=args.iter_sampling,
             )
-            # Merge 4B estimates into est_result
-            for p in FIXED_PARAM_NAMES:
-                if p in stage4b["weights"] and stage4b["weights"][p] > 0:
-                    est_result.weights[p] = stage4b["weights"][p]
-                    est_result.hessian_se[p] = stage4b["se"].get(p, 0.0)
-                    est_result.bootstrap_se[p] = 0.0  # no bootstrap for 4B
-                    est_result.estimation_method[p] = "factor_rating"
-            est_result.factor_regression_stats = stage4b.get("regression_stats", {})
 
             _save_parameter_estimates(est_result, output_dir)
+
+            # ── Feature selection (posterior relevance) ──
+            feature_sel = run_feature_selection(est_result)
+            dashboard.feature_selection = feature_sel
+            if feature_sel["excluded_params"]:
+                logger.warning(f"Feature selection flagged {len(feature_sel['excluded_params'])} "
+                               f"params for low relevance: {feature_sel['excluded_params']}")
+
+            # ── Posterior action probabilities (Step 7) ──
+            posterior_action_probs = compute_action_probabilities_from_posterior(
+                est_result, scenarios, phi, anchored,
+                sa_id_map, action_lists, scenario_ids,
+            )
+            dashboard.posterior_action_probs = posterior_action_probs
+
+            # ── Recursive EU tree for dashboard (Step 7b) ──
+            tree_data = compute_recursive_tree(
+                est_result, laplacian=not args.no_laplacian)
+            dashboard.tree_data = tree_data
 
             dashboard.parameter_estimates = est_result.to_dict()
             cov = est_result.covariance_matrix
@@ -4565,32 +6826,27 @@ def main():
             render_dashboard(dashboard, dashboard_path)
 
         # ── Stage 5: Behavioural diagnostics ──
-        if 5 in stages and not estimation_df.empty and est_result is not None:
+        if 5 in stages and not likert_summary_df.empty and est_result is not None:
             diagnostics = run_diagnostics(
-                scenarios, estimation_df, est_result,
+                scenarios, likert_summary_df, est_result,
                 elicitation_path, diagnostics_path,
             )
             dashboard.behavioural_diagnostics = diagnostics
             render_dashboard(dashboard, dashboard_path)
 
         # ── Stage 6: Validation ──
-        if 6 in stages and est_result is not None and not estimation_df.empty:
+        if 6 in stages and est_result is not None and not likert_summary_df.empty:
             # Recompute phi if needed
             if "phi" not in dir():
-                phi, anchored, p_llm, scenario_ids, action_lists = compute_phi_matrix(
-                    scenarios, estimation_df,
+                phi, anchored, sa_id_map, scenario_id_map, scenario_ids, action_lists, vote_data = (
+                    compute_phi_matrix(scenarios, likert_summary_df)
                 )
-
-            n_sc, max_a = p_llm.shape
-            action_masks = np.zeros((n_sc, max_a), dtype=bool)
-            for i, actions in enumerate(action_lists):
-                for j in range(len(actions)):
-                    action_masks[i, j] = True
 
             validation = run_validation(
                 scenarios, estimation_df, est_result,
-                phi, anchored, p_llm, action_masks,
+                phi, anchored, sa_id_map,
                 scenario_ids, action_lists, output_dir,
+                likert_summary_df=likert_summary_df if not likert_summary_df.empty else None,
             )
             dashboard.validation_results = validation
 

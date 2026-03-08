@@ -66,6 +66,7 @@ def _init_worker_engine(
     n_review_samples: int,
     K_d0_ceo: int,
     R_d0_ceo: int,
+    no_prior_actors: set[str] | None = None,
 ) -> None:
     """One-time per-worker initialization — builds both solve and predict engines."""
     global _worker_engine
@@ -82,6 +83,8 @@ def _init_worker_engine(
     effective_bias = OverconfidenceBias(**overconfidence_bias_dict) if overconfidence_bias_dict else None
     chance_models = ChanceModels(vote_thresholds)
 
+    effective_no_prior = no_prior_actors or set()
+
     # Full engine for solve() — K opponent samples, R rollouts per action
     predictive_solve = PredictiveDistribution(
         beliefs=beliefs,
@@ -91,6 +94,7 @@ def _init_worker_engine(
         K=K,
         R_rollouts=R_rollouts,
         overconfidence_bias=effective_bias,
+        no_prior_actors=effective_no_prior,
     )
     tree = TreeEvaluator(
         beliefs=beliefs,
@@ -111,6 +115,7 @@ def _init_worker_engine(
         K=K_d0_ceo,
         R_rollouts=R_d0_ceo,
         overconfidence_bias=effective_bias,
+        no_prior_actors=effective_no_prior,
     )
 
     _worker_engine = {
@@ -431,6 +436,7 @@ class Solver:
         n_workers: int | None = None,
         K_d0_ceo: int = 50,
         R_d0_ceo: int = 10,
+        no_prior_actors: set[str] | None = None,
     ):
         self.governance_spec_path = Path(governance_spec_path)
         self.opponent_priors_path = Path(opponent_priors_path)
@@ -443,6 +449,9 @@ class Solver:
         self.n_workers = n_workers if n_workers is not None else max((os.cpu_count() or 2) - 1, 1)
         self.K_d0_ceo = K_d0_ceo
         self.R_d0_ceo = R_d0_ceo
+        # Actors whose predictive distributions should NOT receive Laplace
+        # smoothing (Dirichlet(1,...,1) prior).  Default: all actors get prior.
+        self.no_prior_actors: set[str] = no_prior_actors or set()
 
         # Bayesian prior for D0_ceo prediction: Beta(alpha, beta).
         # Jeffreys prior Beta(0.5, 0.5) updated with 12 Australian observations
@@ -509,6 +518,7 @@ class Solver:
             self.n_review_samples,
             self.K_d0_ceo,
             self.R_d0_ceo,
+            self.no_prior_actors,
         )
 
         self._pool = ProcessPoolExecutor(
@@ -598,6 +608,7 @@ class Solver:
             K=self.K,
             R_rollouts=self.R_rollouts,
             overconfidence_bias=effective_bias,
+            no_prior_actors=self.no_prior_actors,
         )
         tree = TreeEvaluator(
             beliefs=beliefs,
@@ -1220,6 +1231,7 @@ class Solver:
             K=self.K_d0_ceo,
             R_rollouts=self.R_d0_ceo,
             overconfidence_bias=effective_bias,
+            no_prior_actors=self.no_prior_actors,
         )
 
         # Base state (before D0_ceo)

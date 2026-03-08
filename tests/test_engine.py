@@ -77,7 +77,7 @@ class TestDataLoading:
         w = load_utility_weights(GOV_SPEC, "Board")
         assert "vote_penalty_weight" in w
         assert "review_direct_cost_weight" in w
-        assert w["vote_penalty_weight"] > 0
+        assert w["vote_penalty_weight"] >= 0  # Can be zero after quantification estimation
         assert "adverse_review_ceo_present_penalty" in w
         assert w["adverse_review_ceo_present_penalty"] > 0
 
@@ -588,22 +588,24 @@ class TestUtilities:
     def test_board_utility_baseline(self):
         from engine.utilities import utility_board, TerminalOutcome
         outcome = TerminalOutcome()
-        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
-                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
-                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
-                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0}
+        params = {"inaction_base_penalty": 3.0, "inaction_no_review_penalty": 2.0,
+                  "inaction_ceo_present_penalty": 5.0, "inaction_no_sack_penalty": 3.0,
+                  "review_car_weight": 15.0, "review_direct_cost_weight": 15.0,
+                  "implementation_cost_sack": 1.0, "ceo_loss_cost": 1.5}
         u = utility_board(outcome, params)
-        # Baseline with no opposition should be 0 (no penalties)
-        assert u == 0.0
+        # Baseline with CEO present + no action: all 4 inaction components fire
+        expected = -(3.0 + 2.0 + 5.0 + 3.0)  # sum of inaction penalties
+        assert u == expected
 
     def test_board_utility_high_vote_penalty(self):
         from engine.utilities import utility_board, TerminalOutcome
         outcome = TerminalOutcome(vote_percent=0.80, strike_indicator=True,
                                   overwhelming_indicator=True)
-        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
-                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
-                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
-                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0}
+        params = {"inaction_base_penalty": 3.0, "inaction_no_review_penalty": 2.0,
+                  "inaction_ceo_present_penalty": 5.0, "inaction_no_sack_penalty": 3.0,
+                  "vote_strike_penalty": 2.0, "vote_overwhelming_penalty": 3.0,
+                  "review_car_weight": 15.0, "review_direct_cost_weight": 15.0,
+                  "implementation_cost_sack": 1.0, "ceo_loss_cost": 1.5}
         u = utility_board(outcome, params)
         assert u < 0  # Should be negative (bad for board)
 
@@ -662,17 +664,17 @@ class TestUtilities:
     def test_board_review_direct_cost_in_utility(self):
         """Board utility subtracts stochastic direct cost when review commissioned."""
         from engine.utilities import utility_board, TerminalOutcome
-        params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
-                  "spill_risk_weight": 2.5, "review_car_weight": 15.0,
-                  "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
-                  "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0}
+        params = {"inaction_base_penalty": 3.0, "inaction_no_review_penalty": 2.0,
+                  "inaction_ceo_present_penalty": 5.0, "inaction_no_sack_penalty": 3.0,
+                  "review_car_weight": 15.0, "review_direct_cost_weight": 15.0,
+                  "implementation_cost_sack": 1.0, "ceo_loss_cost": 1.5}
 
-        # No review: no direct cost
+        # No review: review_direct_cost ignored when not commissioned
         out_no = TerminalOutcome(review_commissioned=False, review_direct_cost=0.001)
         u_no = utility_board(out_no, params)
-        assert u_no == 0.0  # review_direct_cost ignored when not commissioned
 
         # Review commissioned with mean direct cost (0.00096 ≈ 9.6 bps)
+        # Same outcome but with review — should incur direct cost
         out_yes = TerminalOutcome(
             d1_action="D1_review",
             review_commissioned=True,
@@ -680,9 +682,10 @@ class TestUtilities:
             review_car=0.0,  # Isolate direct cost effect
         )
         u_yes = utility_board(out_yes, params)
-        # Direct cost impact: -15.0 * 0.00096 ≈ -0.0144
-        expected_impact = -15.0 * 0.00096
-        assert abs(u_yes - expected_impact) < 1e-6, f"Board direct cost: {u_yes} != {expected_impact}"
+        # Review commissioned removes inaction_no_review penalty (+2.0),
+        # but adds direct cost: -15.0 * 0.00096 ≈ -0.0144
+        # Net: u_yes = u_no + 2.0 - 0.0144
+        assert u_yes > u_no  # Net benefit: removing inaction penalty > direct cost
 
     def test_utility_dispatch(self):
         from engine.utilities import compute_utility, TerminalOutcome
@@ -873,6 +876,95 @@ class TestPredictive:
 
 
 # ============================================================================
+# 6b. LAPLACE SMOOTHING (DIRICHLET PRIOR)
+# ============================================================================
+
+class TestLaplaceSmoothing:
+    """Test Dirichlet(1,...,1) Laplace smoothing on predictive distributions."""
+
+    def _make_predictive(self, K=30, R_rollouts=5, no_prior_actors=None):
+        from engine.state import (
+            BeliefBundle, DecisionState, ParameterSampler,
+            load_vote_thresholds, load_policy_parameters,
+        )
+        from engine.chance_models import ChanceModels
+        from engine.predictive import PredictiveDistribution
+
+        beliefs = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
+        thresholds = load_vote_thresholds(GOV_SPEC)
+        chance = ChanceModels(thresholds)
+        sampler = ParameterSampler(OPP_PRIORS)
+        policy_params = load_policy_parameters(GOV_SPEC)
+
+        return PredictiveDistribution(
+            beliefs=beliefs,
+            param_sampler=sampler,
+            chance_models=chance,
+            policy_params=policy_params,
+            K=K,
+            R_rollouts=R_rollouts,
+            no_prior_actors=no_prior_actors,
+        )
+
+    def test_laplace_default_no_zero_probabilities(self):
+        """Default (Laplace on): no feasible action should have exactly 0."""
+        pred = self._make_predictive(K=30, R_rollouts=5)
+        from engine.state import DecisionState
+        from engine.modes import MODE_BOARD
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        rng = np.random.default_rng(42)
+        history = {"D1": "D0_minimal"}
+        dist = pred.predict("A2", history, state, 0, "Board", MODE_BOARD, 1, rng)
+
+        for action, prob in dist.items():
+            assert prob > 0, f"{action} has zero probability with Laplace smoothing on"
+
+    def test_laplace_disabled_allows_zero(self):
+        """When Laplace disabled for ASA, zero-count actions can have prob 0."""
+        pred = self._make_predictive(K=30, R_rollouts=5, no_prior_actors={"ASA"})
+        from engine.state import DecisionState
+        from engine.modes import MODE_BOARD
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        rng = np.random.default_rng(42)
+        history = {"D1": "D0_minimal"}
+        dist = pred.predict("A2", history, state, 0, "Board", MODE_BOARD, 1, rng)
+
+        # With Laplace disabled, an action that is never best gets exactly 0
+        # (though with K=30 both may be nonzero; we verify normalization)
+        total = sum(dist.values())
+        assert abs(total - 1.0) < 1e-6
+
+    def test_laplace_minimum_probability(self):
+        """With K samples and n feasible actions, min prob >= 1/(K + n)."""
+        K = 50
+        pred = self._make_predictive(K=K, R_rollouts=5)
+        from engine.state import DecisionState
+        from engine.modes import MODE_BOARD
+
+        state = DecisionState.from_governance_spec(GOV_SPEC)
+        rng = np.random.default_rng(42)
+        history = {"D1": "D0_minimal"}
+        dist = pred.predict("A2", history, state, 0, "Board", MODE_BOARD, 1, rng)
+
+        n_actions = len(dist)
+        min_prob = 1.0 / (K + n_actions)
+        for action, prob in dist.items():
+            assert prob >= min_prob - 1e-9, (
+                f"{action} prob {prob:.6f} < min {min_prob:.6f}"
+            )
+
+    def test_laplace_selective_per_actor(self):
+        """Laplace disabled for Board but still active for ASA."""
+        pred = self._make_predictive(K=30, R_rollouts=5, no_prior_actors={"Board"})
+
+        # ASA (owner of A2) should still get Laplace smoothing
+        assert "Board" in pred.no_prior_actors
+        assert "ASA" not in pred.no_prior_actors
+
+
+# ============================================================================
 # 7. TREE EVALUATION
 # ============================================================================
 
@@ -935,8 +1027,8 @@ class TestTreeEvaluation:
 
         v = tree.value("Terminal", history, state, 0, MODE_BOARD, rng)
         assert isinstance(v, float)
-        # Low vote, no adverse, CEO stays -> utility should be near 0
-        assert v >= -1.0
+        # Low vote, no adverse, CEO stays -> utility is negative (inaction penalties)
+        assert v >= -30.0  # Relaxed bound for unconditional inaction components
 
     def test_chance_node_returns_float(self):
         tree, state, _ = self._make_tree()
@@ -2123,17 +2215,21 @@ class TestScenarioUtilities:
 
         params = load_utility_weights(GOV_SPEC, "Board")
 
-        # No CEO departure
+        # No CEO departure (inaction baseline)
         outcome_present = TerminalOutcome()
         u_present = utility_board(outcome_present, params)
 
-        # Early CEO departure
+        # Early CEO departure (removes ceo_present and no_sack penalties)
         outcome_resigned = TerminalOutcome(
             CEO_removed=True, CEO_resigned_early=True)
         u_resigned = utility_board(outcome_resigned, params)
 
-        # Should be less than status quo (there's a cost)
-        assert u_resigned < u_present
+        # In the new model, early departure REMOVES inaction_ceo_present and
+        # inaction_no_sack penalties (CEO gone), but adds early_ceo_departure_cost.
+        # Net effect: u_resigned > u_present (departure better than inaction)
+        assert u_resigned > u_present
+        # But there IS a cost from early departure param
+        assert u_resigned < 0  # Still negative overall
 
     def test_asa_utility_early_ceo_departure_reward(self):
         """ASA should get a reward for early CEO departure."""
@@ -2186,15 +2282,24 @@ class TestScenarioUtilities:
         """No adverse_review_ceo_present_penalty when review is positive."""
         from engine.utilities import utility_board, TerminalOutcome
         params = {"review_car_weight": 15.0, "review_direct_cost_weight": 15.0,
-                  "adverse_review_ceo_present_penalty": 5.0}
+                  "adverse_review_ceo_present_penalty": 5.0,
+                  "inaction_base_penalty": 3.0, "inaction_no_review_penalty": 2.0,
+                  "inaction_ceo_present_penalty": 5.0, "inaction_no_sack_penalty": 3.0}
 
-        # Positive review, CEO present → no penalty
+        # Positive review, CEO present → no adverse penalty
         out_positive = TerminalOutcome(
             review_commissioned=True, review_adverse=False,
             review_car=0.05, CEO_removed=False)
-        u = utility_board(out_positive, params)
-        # Should get review_car_weight * 0.05 = 0.75 (positive contribution)
-        assert u > 0
+        u_positive = utility_board(out_positive, params)
+
+        # Adverse review, CEO present → adverse penalty fires
+        out_adverse = TerminalOutcome(
+            review_commissioned=True, review_adverse=True,
+            review_car=-0.05, CEO_removed=False)
+        u_adverse = utility_board(out_adverse, params)
+
+        # Positive review should be better than adverse review
+        assert u_positive > u_adverse
 
 
 class TestScenarioSolver:

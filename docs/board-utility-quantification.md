@@ -95,7 +95,7 @@ These are NOT unimportant parameters. w_inaction (=w10+w11+w14=15.0 at spec defa
 
 ### 4.2 Stage 4A: Softmax MLE (8 action-varying parameters)
 
-**Estimated parameters:** w_removal, w8s, w8o, w8r, w_inaction, w12, w13, w15, plus lambda (profiled).
+**Estimated parameters:** w_removal, w8s, w_remove_ceo_overwhelming, w8r, w_inaction, w12, w13, w15, plus lambda (profiled).
 
 **Method:**
 1. Build phi matrix: `phi[scenario, action, param]` from `decompose_utility_board()`
@@ -222,7 +222,7 @@ The quantification pipeline uses collapsed parameter names that map to the engin
 | w4 | `spill_risk_weight` | Direct: w4 = engine value |
 | w_removal | `implementation_cost_sack` + `ceo_loss_cost` | Sum: w_removal = w7 + w8 |
 | w8s | `ceo_loss_shock_strike` | Direct |
-| w8o | `ceo_loss_shock_overwhelming` | Direct |
+| w_remove_ceo_overwhelming | `ceo_loss_shock_overwhelming` | Direct |
 | w8r | `ceo_loss_shock_adverse` | Direct |
 | w9 | `reputational_spill_weight` | Direct |
 | w_inaction | `second_strike_spill_penalty` + `board_regulatory_liability` + `qantas_legal_d_rev_penalty` | Sum: w_inaction = w10 + w11 + w14 |

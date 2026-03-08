@@ -199,8 +199,24 @@ def main():
     parser.add_argument("--n_workers", type=int, default=None,
                         help="Number of parallel worker processes (default: cpu_count - 1)")
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument("--no-board-prior", action="store_true",
+                        help="Disable Laplace smoothing on Board's predictive distribution")
+    parser.add_argument("--no-ceo-prior", action="store_true",
+                        help="Disable Laplace smoothing on CEO's predictive distribution")
+    parser.add_argument("--no-asa-prior", action="store_true",
+                        help="Disable Laplace smoothing on ASA's predictive distribution")
 
     args = parser.parse_args()
+
+    no_prior_actors = set()
+    if args.no_board_prior:
+        no_prior_actors.add("Board")
+    if args.no_ceo_prior:
+        no_prior_actors.add("CEO")
+    if args.no_asa_prior:
+        no_prior_actors.add("ASA")
+    if no_prior_actors:
+        logger.info(f"Laplace smoothing DISABLED for: {', '.join(sorted(no_prior_actors))}")
 
     data_dir = PROJECT_ROOT / "data"
     solver = Solver(
@@ -211,6 +227,7 @@ def main():
         R_rollouts=args.R_rollouts,
         seed=args.seed,
         n_workers=args.n_workers,
+        no_prior_actors=no_prior_actors,
     )
 
     df = run_sensitivity(

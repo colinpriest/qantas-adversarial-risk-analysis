@@ -47,8 +47,24 @@ def main():
     parser.add_argument("--R_d0", type=int, default=10,
                         help="Rollouts per action for D0_ceo prediction (default: 10)")
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument("--no-board-prior", action="store_true",
+                        help="Disable Laplace smoothing on Board's predictive distribution")
+    parser.add_argument("--no-ceo-prior", action="store_true",
+                        help="Disable Laplace smoothing on CEO's predictive distribution")
+    parser.add_argument("--no-asa-prior", action="store_true",
+                        help="Disable Laplace smoothing on ASA's predictive distribution")
 
     args = parser.parse_args()
+
+    no_prior_actors = set()
+    if args.no_board_prior:
+        no_prior_actors.add("Board")
+    if args.no_ceo_prior:
+        no_prior_actors.add("CEO")
+    if args.no_asa_prior:
+        no_prior_actors.add("ASA")
+    if no_prior_actors:
+        logger.info(f"Laplace smoothing DISABLED for: {', '.join(sorted(no_prior_actors))}")
 
     data_dir = PROJECT_ROOT / "data"
     solver = Solver(
@@ -61,6 +77,7 @@ def main():
         n_workers=args.n_workers,
         K_d0_ceo=args.K_d0,
         R_d0_ceo=args.R_d0,
+        no_prior_actors=no_prior_actors,
     )
 
     if args.board_policy:

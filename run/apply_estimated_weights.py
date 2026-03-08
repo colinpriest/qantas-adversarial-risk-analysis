@@ -31,32 +31,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Mapping from quantification parameter names to engine parameter names.
-# Direct 1:1 mappings.
+#
+# New model structure (V2.2 — Bayesian ordinal probit):
+#   3 inaction components (unconditional):
+#     w_inaction_base, w_inaction_no_review, w_inaction_ceo_present
+#   2 vote penalties (scenario-level, anchored):
+#     w_strike, w_overwhelming
+#   4 retained:
+#     w1, w_removal, w_remove_ceo_overwhelming, w15
+#
 DIRECT_MAP = {
+    "w_inaction_base": "inaction_base_penalty",
+    "w_inaction_no_review": "inaction_no_review_penalty",
+    "w_inaction_ceo_present": "inaction_ceo_present_penalty",
     "w1": "early_ceo_departure_cost",
-    "w2": "vote_penalty_weight",
-    "w3": "overwhelming_penalty_weight",
-    "w4": "spill_risk_weight",
-    "w8s": "ceo_loss_shock_strike",
-    "w8o": "ceo_loss_shock_overwhelming",
-    "w8r": "ceo_loss_shock_adverse",
-    "w9": "reputational_spill_weight",
-    "w12": "board_d1_liability",
-    "w13": "qantas_legal_d1_penalty",
+    "w_remove_ceo_overwhelming": "ceo_loss_shock_overwhelming",
     "w15": "adverse_review_ceo_present_penalty",
+    "w_strike": "vote_strike_penalty",
+    "w_overwhelming": "vote_overwhelming_penalty",
+}
+
+# Parameters excluded from the model (structurally removed, no phi contribution).
+EXCLUDED_MAP = {
+    "w8r": "ceo_loss_shock_adverse",
+    "w8s": "ceo_loss_shock_strike",
+    "w12": "board_d1_liability",
 }
 
 # Collapsed parameter decompositions.
-# Each entry: quantification_name → {engine_name: spec_default_proportion}
+# w_removal is the only collapsed param — decomposed into implementation_cost_sack
+# and ceo_loss_cost proportionally to their spec default ratios.
 COLLAPSED_MAP = {
     "w_removal": {
         "implementation_cost_sack": 0.3,
         "ceo_loss_cost": 1.5,
-    },
-    "w_inaction": {
-        "second_strike_spill_penalty": 8.0,
-        "board_regulatory_liability": 5.0,
-        "qantas_legal_d_rev_penalty": 2.0,
     },
 }
 
@@ -74,7 +82,8 @@ def decompose_to_engine_params(estimates: dict[str, float]) -> dict[str, float]:
     """Convert quantification parameter estimates to engine parameter names.
 
     Direct parameters are mapped 1:1.  Collapsed parameters are decomposed
-    proportionally to their spec default ratios.
+    proportionally to their spec default ratios.  Excluded parameters
+    (structurally removed from quantification model) are set to 0.0.
     """
     engine_params = {}
 
@@ -82,6 +91,10 @@ def decompose_to_engine_params(estimates: dict[str, float]) -> dict[str, float]:
     for q_name, engine_name in DIRECT_MAP.items():
         if q_name in estimates:
             engine_params[engine_name] = float(estimates[q_name])
+
+    # Excluded parameters (set to 0 — no empirical basis)
+    for q_name, engine_name in EXCLUDED_MAP.items():
+        engine_params[engine_name] = 0.0
 
     # Collapsed decompositions
     for q_name, constituents in COLLAPSED_MAP.items():
@@ -159,8 +172,8 @@ def main():
         epilog=(
             "This script reads parameter estimates from the quantification pipeline\n"
             "and updates the utilities_board sheet in governance_spec.xlsx.\n\n"
-            "Collapsed parameters (w_removal, w_inaction) are decomposed proportionally\n"
-            "to their spec default ratios.\n\n"
+            "Collapsed parameter (w_removal) is decomposed proportionally\n"
+            "to spec default ratios. Excluded parameters are set to 0.\n\n"
             "A timestamped backup of governance_spec.xlsx is created before any changes.\n\n"
             "Examples:\n"
             "  python -m run.apply_estimated_weights outputs/parameter_estimates.csv\n"
@@ -225,7 +238,8 @@ def main():
         old_str = f"{old:.4f}" if isinstance(old, (int, float)) else str(old)
         change = new - old if isinstance(old, (int, float)) else "N/A"
         change_str = f"{change:+.4f}" if isinstance(change, (int, float)) else change
-        logger.info(f"  {c['parameter']:<38} {old_str:>10} {new:.4f!s:>10} {change_str:>10}")
+        new_str = f"{new:.4f}"
+        logger.info(f"  {c['parameter']:<38} {old_str:>10} {new_str:>10} {change_str:>10}")
 
     if args.dry_run:
         logger.info(f"\nDry run complete. {len(changes)} parameters would be updated.")

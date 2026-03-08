@@ -42,6 +42,7 @@ class PredictiveDistribution:
         overconfidence_bias: Optional[OverconfidenceBias] = None,
         K_nested: Optional[int] = None,
         R_nested: Optional[int] = None,
+        no_prior_actors: Optional[set[str]] = None,
     ):
         self.beliefs = beliefs
         self.param_sampler = param_sampler
@@ -50,6 +51,10 @@ class PredictiveDistribution:
         self.K = K
         self.R_rollouts = R_rollouts
         self.overconfidence_bias = overconfidence_bias
+        # Actors whose predictive distributions should NOT receive Laplace
+        # smoothing.  Default (empty set): all actors get a Dirichlet(1,...,1)
+        # prior so no feasible action has exactly zero probability.
+        self.no_prior_actors: set[str] = no_prior_actors or set()
         # Lighter-weight settings for recursive Level-2 predictions to avoid
         # quadratic explosion (K * R inside every nested rollout).
         # Default: downscale to something modest if not explicitly provided.
@@ -129,14 +134,21 @@ class PredictiveDistribution:
             if best_action is not None:
                 counts[best_action] += 1
 
+        # Laplace smoothing: Dirichlet(1,...,1) prior over opponent's mixed
+        # strategy ensures no feasible action has exactly zero probability.
+        # This is the default; --no-{actor}-prior disables it per actor.
+        use_prior = owner not in self.no_prior_actors
+        pseudocount = 1 if use_prior else 0
+
         # Normalise to distribution
-        total = sum(counts.values())
+        total = sum(counts.values()) + pseudocount * len(feasible)
         if total == 0:
-            # Uniform fallback
+            # Uniform fallback (only reachable when prior disabled and all
+            # rollouts returned None best actions)
             p = 1.0 / len(feasible)
             return {a: p for a in feasible}
 
-        return {a: c / total for a, c in counts.items()}
+        return {a: (c + pseudocount) / total for a, c in counts.items()}
 
     def _compute_psi_rollout(
         self,

@@ -43,108 +43,92 @@ def utility_board(outcome: TerminalOutcome, params: dict[str, float]) -> float:
     """
     Board utility function.
 
-    The Board wants to minimise:
-    - High opposition votes (reputational damage, spill risk)
-    - Adverse review findings
-    - CEO disruption costs
-    While managing implementation costs of governance reforms.
+    Structure (matches quantification pipeline decomposition):
+
+    1. INACTION COMPONENTS (4 additive, unconditional — fire regardless of vote):
+       - inaction_base_penalty:       Board took minimal action at all points
+       - inaction_no_review_penalty:  No governance review commissioned
+       - inaction_ceo_present_penalty: CEO still present at terminal
+       - inaction_no_sack_penalty:    Board didn't explicitly remove CEO
+
+    2. VOTE PENALTIES (scenario-level, linear in vote excess):
+       - vote_strike_penalty:       w × max(0, (V-0.25)/0.75)
+       - vote_overwhelming_penalty: w × max(0, (V-0.50)/0.50)
+
+    3. RETAINED:
+       - early_ceo_departure_cost (w1)
+       - implementation_cost_sack + ceo_loss_cost (w_removal)
+       - ceo_loss_shock_overwhelming (w_remove_ceo_overwhelming)
+       - adverse_review_ceo_present_penalty (w15)
+       - review_car_weight, review_direct_cost_weight (anchored)
     """
     u = 0.0
 
-    # Early CEO resignation: reduced disruption cost (voluntary, pre-game)
+    # ── Derived indicators ──
+    ceo_present_at_end = not outcome.CEO_removed and not outcome.CEO_resigned_early
+    removed_involuntary = outcome.CEO_removed and not outcome.CEO_resigned_early
+
+    board_inactive = (outcome.d1_action == "D0_minimal")
+    if outcome.d_rev_action in ("Drev_sack_ceo", "Drev_commission_review"):
+        board_inactive = False
+    if outcome.d_rev_post_review_action == "Drev_sack_ceo":
+        board_inactive = False
+
+    # ── 1. INACTION COMPONENTS (unconditional — fire regardless of vote level) ──
+    if board_inactive:
+        u -= params.get("inaction_base_penalty", 3.0)
+    if not outcome.review_commissioned:
+        u -= params.get("inaction_no_review_penalty", 2.0)
+    if ceo_present_at_end:
+        u -= params.get("inaction_ceo_present_penalty", 5.0)
+    if not removed_involuntary:
+        u -= params.get("inaction_no_sack_penalty", 3.0)
+
+    # ── 2. VOTE PENALTIES (scenario-level, linear in vote excess) ──
+    vote_pct = outcome.vote_percent
+    if outcome.strike_indicator:
+        w_strike = params.get("vote_strike_penalty", 2.0)
+        u -= w_strike * max(0.0, (vote_pct - 0.25) / 0.75)
+    if outcome.overwhelming_indicator:
+        w_overwhelming = params.get("vote_overwhelming_penalty", 3.0)
+        u -= w_overwhelming * max(0.0, (vote_pct - 0.50) / 0.50)
+
+    # ── 3. RETAINED COMPONENTS ──
+
+    # Early CEO resignation: reduced disruption cost (w1, graduated by response)
     if outcome.CEO_resigned_early:
         u -= params.get("early_ceo_departure_cost", 0.5)
 
-    # Vote penalty: quadratic in vote percent above first strike
-    vote_pct = outcome.vote_percent
-    if vote_pct > 0.25:
-        u -= params.get("vote_penalty_weight", 2.0) * (vote_pct - 0.25) ** 2
-    if outcome.overwhelming_indicator:
-        u -= params.get("overwhelming_penalty_weight", 3.0)
-    if outcome.strike_indicator:
-        u -= params.get("spill_risk_weight", 2.5) * vote_pct
-
-    # Review findings CAR impact: continuous abnormal return from
-    # the findings release (Student-t model). Negative CAR hurts Board
-    # (shareholder value destroyed), positive CAR helps (governance validated).
+    # Review findings CAR impact with loss aversion (anchored):
     if outcome.review_commissioned:
-        u += params.get("review_car_weight", 15.0) * outcome.review_car
+        w_car_anchor = params.get("review_car_weight", 15.0)
+        lambda_la = params.get("review_car_loss_aversion", 2.25)
+        w_car_pos = w_car_anchor / ((1.0 + lambda_la) / 2.0)
+        w_car_neg = lambda_la * w_car_pos
+        u += w_car_pos * max(outcome.review_car, 0.0)
+        u -= w_car_neg * max(-outcome.review_car, 0.0)
 
-    # Review direct cost: stochastic Gamma(4.55, 4741) in decimal CAR,
-    # covering reviewer fees, management distraction, internal resources.
-    # Calibrated from board-background/direct-costs-governance-review.md.
-    # Mean ≈ 9.6 bps, expressed as positive decimal CAR (subtracted here).
+    # Review direct cost (anchored):
     if outcome.review_commissioned:
         u -= params.get("review_direct_cost_weight", 15.0) * outcome.review_direct_cost
 
-    # Implementation costs (CEO transition only — review cost now stochastic above)
+    # CEO removal cost (w_removal = implementation_cost_sack + ceo_loss_cost)
     if outcome.d1_action == "D3_ceo_transition":
         u -= params.get("implementation_cost_sack", 1.0)
-
     if outcome.d_rev_action == "Drev_sack_ceo":
         u -= params.get("implementation_cost_sack", 1.0)
     if outcome.d_rev_post_review_action == "Drev_sack_ceo":
         u -= params.get("implementation_cost_sack", 1.0)
 
-    # CEO loss cost with shock attenuation.
-    # In normal times, removing the CEO costs the Board (disruption, institutional
-    # knowledge loss, investor-relationship continuity).  Severe negative shocks
-    # — a first strike, an overwhelming vote, adverse review findings — break the
-    # Board's historical loyalty pattern and reduce this perceived cost.
-    # Empirical grounding: AMP (2018), Crown Resorts (2021), Rio Tinto (2020)
-    # all show boards pivoting rapidly from CEO-protective to CEO-removal once
-    # the shock sequence made retention riskier than transition.
-    if outcome.CEO_removed and not outcome.CEO_resigned_early:
+    # CEO loss cost with shock attenuation (w_remove_ceo_overwhelming for overwhelming relief)
+    if removed_involuntary:
         base_ceo_loss = params.get("ceo_loss_cost", 1.5)
         shock_relief = 0.0
-        if outcome.strike_indicator:
-            shock_relief += params.get("ceo_loss_shock_strike", 0.4)
         if outcome.overwhelming_indicator:
             shock_relief += params.get("ceo_loss_shock_overwhelming", 0.5)
-        if outcome.review_commissioned and outcome.review_adverse:
-            shock_relief += params.get("ceo_loss_shock_adverse", 0.5)
         u -= max(0.0, base_ceo_loss - shock_relief)
 
-    # Reputational spill cost
-    if outcome.overwhelming_indicator:
-        u -= params.get("reputational_spill_weight", 1.0)
-
-    # Whether CEO is still in seat at the terminal node
-    ceo_present_at_end = not outcome.CEO_removed and not outcome.CEO_resigned_early
-
-    # 1. SECOND-STRIKE BOARD SPILL (Corporations Act 2001 s.250V):
-    #    A first strike with the CEO still in place makes a second strike
-    #    near-certain at the next AGM → shareholders vote to spill the
-    #    entire Board. All directors lose their seats.
-    if outcome.strike_indicator and ceo_present_at_end:
-        u -= params.get("second_strike_spill_penalty", 8.0)
-
-    # 2. BOARD PERSONAL REGULATORY LIABILITY (ASIC director banning, personal fines):
-    #    (a) D_rev: Board failed to remove CEO after a first strike.
-    #    (b) D1: Board took minimal action despite an overwhelming (>50%) vote —
-    #        failure to act early when the crisis was already apparent.
-    if outcome.strike_indicator and ceo_present_at_end:
-        u -= params.get("board_regulatory_liability", 5.0)
-    if outcome.overwhelming_indicator and outcome.d1_action == "D0_minimal":
-        u -= params.get("board_d1_liability", 4.0)
-
-    # 3. QANTAS LEGAL EXPOSURE (class actions, ACCC/ASIC company penalties):
-    #    More severe when Board inaction is demonstrated.
-    #    (a) D1 inaction with strike outcome: Board failed to act early.
-    #    (b) D_rev inaction: CEO still present after first strike.
-    if outcome.strike_indicator and outcome.d1_action == "D0_minimal":
-        u -= params.get("qantas_legal_d1_penalty", 3.0)
-    if outcome.strike_indicator and ceo_present_at_end:
-        u -= params.get("qantas_legal_d_rev_penalty", 2.0)
-
-    # 4. ADVERSE REVIEW + CEO PRESENT: Board liability from keeping CEO
-    #    after governance review found adverse/neutral outcomes.
-    #    Grounded in external-governance-review-Bayesian-distribution.md:
-    #    non-regulatory reviews have Pr(adverse) ~ Beta(10, 5), mean 2/3.
-    #    If review findings are adverse and Board retains CEO, the Board
-    #    faces regulatory scrutiny, shareholder revolt at next AGM, and
-    #    class-action exposure for demonstrated inaction on known failures.
-    #    Only scenario where keeping CEO is safe: no strike AND positive review.
+    # Adverse review + CEO present penalty (w15)
     if (outcome.review_commissioned and outcome.review_adverse
             and ceo_present_at_end):
         u -= params.get("adverse_review_ceo_present_penalty", 5.0)
