@@ -76,7 +76,9 @@ parameters {
   real<lower=0> w_strike;                  // vote strike penalty
   real<lower=0> w_overwh;                  // vote overwhelming penalty
 
-  ordered[4] cutpoints;                    // ordinal probit cutpoints (normalised scale)
+  // Cutpoints reparameterised to avoid degeneracy / overflow
+  real cutpoint_base_raw;                  // unconstrained base location
+  vector[3] cutpoint_gap_raw;              // unconstrained gaps (positive after transform)
   vector[N_scenarios] z_scenario;          // non-centered scenario RE
   real<lower=0> sigma_scenario;            // scenario RE SD (normalised scale)
 }
@@ -84,6 +86,7 @@ parameters {
 transformed parameters {
   vector[K] w;                             // positive linear weights (original scale)
   vector[S] mu;                            // latent utility per (scenario, action)
+  ordered[4] cutpoints;                    // ordinal probit cutpoints (normalised scale)
 
   // Direct assignment — w values ARE the parameters, no transform needed
   w[1] = w_raw_1;                          // w_inaction_base
@@ -103,6 +106,17 @@ transformed parameters {
     if (has_overwh[s])
       mu[s] -= w_overwh * vote_x_overwh[s];
   }
+
+  // Robust cutpoint construction with bounded location and minimum gap.
+  // This prevents exp overflow/underflow that previously produced invalid ordered vectors.
+  {
+    real base = 3 * tanh(cutpoint_base_raw);          // keeps location in [-3, 3]
+    cutpoints[1] = base;
+    for (g in 1:3) {
+      real gap = 0.25 + 2.0 * inv_logit(cutpoint_gap_raw[g]); // gap in (0.25, 2.25)
+      cutpoints[g + 1] = cutpoints[g] + gap;
+    }
+  }
 }
 
 model {
@@ -121,8 +135,9 @@ model {
   w_strike ~ lognormal(0.69, 1.0);        // log(2.0) ≈ 0.69   w_strike, median 2.0
   w_overwh ~ lognormal(1.10, 1.0);        // log(3.0) ≈ 1.10   w_overwhelming, median 3.0
 
-  // Cutpoint priors (normalised scale — mu_scale maps mu to ~[-3, 3])
-  cutpoints ~ normal(0, 2);
+  // Cutpoint priors (robust, on unconstrained base/gaps)
+  cutpoint_base_raw ~ normal(0, 1.5);      // keeps base near 0 after tanh scaling
+  cutpoint_gap_raw ~ normal(0, 1);         // softplus via inv_logit; gap prior ~0.25–2.25
 
   // Scenario random effects (non-centered parameterization, normalised scale)
   sigma_scenario ~ student_t(4, 0, 1);
