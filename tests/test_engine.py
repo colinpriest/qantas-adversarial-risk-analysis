@@ -84,8 +84,9 @@ class TestDataLoading:
     def test_utility_weights_asa(self):
         from engine.state import load_utility_weights
         w = load_utility_weights(GOV_SPEC, "ASA")
-        assert "vote_reward_weight" in w
+        assert "strike_ba_shift" in w
         assert "mobilisation_cost" in w
+        assert "market_alignment_ol_shift" in w
 
     def test_utility_weights_ceo(self):
         from engine.state import load_utility_weights
@@ -132,7 +133,7 @@ class TestDataLoading:
         # Board's belief about ASA parameters
         params = ps.sample_parameters("Board", "ASA", rng)
         assert "mobilisation_cost" in params
-        assert "vote_reward_weight" in params
+        assert "strike_ba_shift" in params
 
     def test_parameter_sampler_all_perspectives(self):
         from engine.state import ParameterSampler
@@ -616,27 +617,31 @@ class TestUtilities:
         assert u < 0  # Should be negative (bad for board)
 
     def test_asa_utility_high_vote_reward(self):
+        """ASA utility: strong vote + CEO removal + strike = high utility."""
         from engine.utilities import utility_asa, TerminalOutcome
         outcome = TerminalOutcome(vote_percent=0.80, strike_indicator=True,
-                                  overwhelming_indicator=True, CEO_removed=True)
-        params = {"vote_reward_weight": 2.0, "overwhelming_reward_weight": 2.0,
-                  "ceo_removal_reward": 3.0, "review_car_weight": 15.0,
-                  "mobilisation_cost": 1.0, "reputational_gain_weight": 1.0}
+                                  overwhelming_indicator=True, CEO_removed=True,
+                                  a2_action="A2_rec_strike")
+        params = {"strike_ba_shift": 1.5, "strike_ol_shift": 1.0,
+                  "overwhelming_ba_shift": 1.0, "overwhelming_ol_shift": 0.5,
+                  "ceo_removal_ba_shift": 1.0, "ceo_removal_fw_shift": 0.5,
+                  "market_alignment_ol_shift": 1.0, "market_alignment_pf_shift": 0.5,
+                  "mobilisation_cost": 0.3}
         u = utility_asa(outcome, params)
-        assert u > 0  # Should be positive (good for ASA)
+        # Base (stays, do nothing) ≈ 1.43 + large shifts → high utility
+        assert u > 2.0
 
     def test_asa_mobilisation_cost(self):
+        """ASA utility: recommending strike incurs mobilisation cost."""
         from engine.utilities import utility_asa, TerminalOutcome
-        params = {"vote_reward_weight": 2.0, "overwhelming_reward_weight": 2.0,
-                  "ceo_removal_reward": 3.0, "review_car_weight": 15.0,
-                  "mobilisation_cost": 1.0, "reputational_gain_weight": 1.0}
+        params = {"mobilisation_cost": 0.3}
 
         out_no = TerminalOutcome(a2_action="A2_no_strike", vote_percent=0.10)
         out_yes = TerminalOutcome(a2_action="A2_rec_strike", vote_percent=0.10)
 
         u_no = utility_asa(out_no, params)
         u_yes = utility_asa(out_yes, params)
-        # Strike rec costs more
+        # Strike rec costs more due to mobilisation
         assert u_no > u_yes
 
     def test_ceo_utility_crra_ordering(self):
@@ -804,17 +809,14 @@ class TestPredictive:
         assert len(dist) == 0
 
     def test_asa_beta_posterior_strike_probabilities(self):
-        """ASA fixed policy uses informative Beta posteriors from CSV data.
+        """ASA fixed policy uses 5-path Beta priors from asa_bayesian_params.md.
 
-        Informative Beta posteriors (headline_incident=1, Qantas excluded):
-          D0: Beta(46, 4) — posterior mean 0.920
-          D1: Beta(44, 4) — posterior mean 0.917
-          D3: Beta(43, 4) — posterior mean 0.914
-
-        All three are very similar (~91-92%) because ASA recommendation is
-        near-automatic in headline incidents, regardless of board action.
-        Wider tolerance needed because each call samples p ~ Beta(a, b)
-        then flips a Bernoulli(p), adding parameter uncertainty.
+        Path-conditional Beta priors:
+          A2-1: CEO resigns → Do nothing         Beta(18, 2) mean=0.900
+          A2-2: CEO resigns → Commission review  Beta(14, 3) mean=0.824
+          A2-3: CEO stays   → Do nothing         Beta(24, 1) mean=0.960
+          A2-4: CEO stays   → Commission review  Beta(15, 2) mean=0.882
+          A2-5: CEO stays   → Board forces exit  Beta(9,  6) mean=0.600
         """
         pred = self._make_predictive()
         from engine.state import DecisionState
@@ -823,32 +825,53 @@ class TestPredictive:
         feasible = ["A2_rec_strike", "A2_no_strike"]
         n_samples = 2000
 
+        # Test CEO stayed paths
         strike_counts = {}
         for d1 in ["D0_minimal", "D1_review", "D3_ceo_transition"]:
             count = 0
             for i in range(n_samples):
                 rng = np.random.default_rng(5000 + i)
                 action = pred._fixed_policy(
-                    "ASA", "A2", {"D1": d1}, state, feasible, rng=rng
+                    "ASA", "A2", {"D1": d1, "D0_ceo": "CEO_stay"}, state, feasible, rng=rng
                 )
                 if action == "A2_rec_strike":
                     count += 1
             strike_counts[d1] = count / n_samples
 
-        # D3: Beta(43,4) posterior mean = 0.914
-        assert 0.85 < strike_counts["D3_ceo_transition"] < 0.96, (
-            f"D3 Beta(43,4) mean ~0.914, got {strike_counts['D3_ceo_transition']:.1%}"
+        # A2-3: CEO stays → Do nothing: Beta(24,1) mean=0.960
+        assert 0.90 < strike_counts["D0_minimal"] < 1.00, (
+            f"A2-3 Beta(24,1) mean ~0.960, got {strike_counts['D0_minimal']:.1%}"
         )
-        # D0: Beta(46,4) posterior mean = 0.920
-        assert 0.85 < strike_counts["D0_minimal"] < 0.96, (
-            f"D0 Beta(46,4) mean ~0.920, got {strike_counts['D0_minimal']:.1%}"
+        # A2-4: CEO stays → Review: Beta(15,2) mean=0.882
+        assert 0.80 < strike_counts["D1_review"] < 0.96, (
+            f"A2-4 Beta(15,2) mean ~0.882, got {strike_counts['D1_review']:.1%}"
         )
-        # D1: Beta(44,4) posterior mean = 0.917
-        assert 0.85 < strike_counts["D1_review"] < 0.96, (
-            f"D1 Beta(44,4) mean ~0.917, got {strike_counts['D1_review']:.1%}"
+        # A2-5: CEO stays → Board forces exit: Beta(9,6) mean=0.600
+        assert 0.45 < strike_counts["D3_ceo_transition"] < 0.75, (
+            f"A2-5 Beta(9,6) mean ~0.600, got {strike_counts['D3_ceo_transition']:.1%}"
         )
-        # Ordering: D3 <= D1 <= D0 (monotonic decreasing by board accountability)
-        assert strike_counts["D3_ceo_transition"] <= strike_counts["D0_minimal"] + 0.05
+
+        # Test CEO resigned paths
+        for d1, expected_mean, lo, hi, label in [
+            ("D0_minimal", 0.900, 0.82, 0.97, "A2-1 Beta(18,2)"),
+            ("D1_review", 0.824, 0.72, 0.92, "A2-2 Beta(14,3)"),
+        ]:
+            count = 0
+            for i in range(n_samples):
+                rng = np.random.default_rng(8000 + i)
+                action = pred._fixed_policy(
+                    "ASA", "A2", {"D1": d1, "D0_ceo": "CEO_resign"}, state, feasible, rng=rng
+                )
+                if action == "A2_rec_strike":
+                    count += 1
+            rate = count / n_samples
+            assert lo < rate < hi, (
+                f"{label} mean ~{expected_mean:.3f}, got {rate:.1%}"
+            )
+
+        # Ordering: A2-5 (0.600) < A2-2 (0.824) < A2-4 (0.882) < A2-1 (0.900) < A2-3 (0.960)
+        assert strike_counts["D3_ceo_transition"] < strike_counts["D1_review"]
+        assert strike_counts["D1_review"] < strike_counts["D0_minimal"]
 
     def test_build_outcome(self):
         from engine.predictive import PredictiveDistribution
@@ -2244,24 +2267,25 @@ class TestScenarioUtilities:
         # But there IS a cost from early departure param
         assert u_resigned < 0  # Still negative overall
 
-    def test_asa_utility_early_ceo_departure_reward(self):
-        """ASA should get a reward for early CEO departure."""
+    def test_asa_utility_early_ceo_departure_higher(self):
+        """ASA utility higher when CEO resigned early (better base scores)."""
         from engine.utilities import utility_asa, TerminalOutcome
         from engine.state import load_utility_weights
 
         params = load_utility_weights(GOV_SPEC, "ASA")
 
-        # No CEO departure
-        outcome_present = TerminalOutcome()
-        u_present = utility_asa(outcome_present, params)
+        # CEO stayed, do nothing (A2-3: worst base = 1.43)
+        outcome_stayed = TerminalOutcome(d1_action="D0_minimal")
+        u_stayed = utility_asa(outcome_stayed, params)
 
-        # Early CEO departure
+        # CEO resigned early, do nothing (A2-1: base = 1.84)
         outcome_resigned = TerminalOutcome(
+            d1_action="D0_minimal",
             CEO_removed=True, CEO_resigned_early=True)
         u_resigned = utility_asa(outcome_resigned, params)
 
-        # ASA gets vindication reward
-        assert u_resigned > u_present
+        # CEO resignation gives higher base utility (partial vindication)
+        assert u_resigned > u_stayed
 
     def test_board_negative_review_finding_penalty(self):
         """Board utility penalised when review returns negative findings."""

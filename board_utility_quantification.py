@@ -4113,10 +4113,16 @@ def compute_action_probabilities_from_posterior(
 # R: Dirichlet(38, 160, 1) → E = (0.191, 0.804, 0.005) for (neg, bal, pos)
 TREE_DEFAULT_PROBS = {
     "D0_ceo": {"CEO_resign": 0.962, "CEO_stay": 0.038},
+    # A2: 5-path Beta means from background/asa/asa_bayesian_params.md
+    # Keyed by (CEO_resigned_early, d1_action) — flattened to composite keys
     "A2": {
-        "D0_minimal":        {"A2_no_strike": 0.10, "A2_rec_strike": 0.90},
-        "D1_review":         {"A2_no_strike": 0.20, "A2_rec_strike": 0.80},
-        "D3_ceo_transition": {"A2_no_strike": 0.40, "A2_rec_strike": 0.60},
+        # CEO resigned paths
+        "resigned_D0_minimal":        {"A2_no_strike": 0.100, "A2_rec_strike": 0.900},  # Beta(18,2)
+        "resigned_D1_review":         {"A2_no_strike": 0.176, "A2_rec_strike": 0.824},  # Beta(14,3)
+        # CEO stayed paths
+        "stayed_D0_minimal":          {"A2_no_strike": 0.040, "A2_rec_strike": 0.960},  # Beta(24,1)
+        "stayed_D1_review":           {"A2_no_strike": 0.118, "A2_rec_strike": 0.882},  # Beta(15,2)
+        "stayed_D3_ceo_transition":   {"A2_no_strike": 0.400, "A2_rec_strike": 0.600},  # Beta(9,6)
     },
     "V": {
         "A2_no_strike":  {"no_strike": 0.55, "first_strike": 0.30, "overwhelming": 0.15},
@@ -4319,7 +4325,10 @@ def _tree_get_probs(node: str, ts: dict, probs: dict) -> dict[str, float]:
         return probs["D0_ceo"]
     elif node == "A2":
         d1a = ts.get("d1_action", "D0_minimal")
-        return probs["A2"].get(d1a, probs["A2"]["D0_minimal"])
+        ceo_resigned = ts.get("CEO_resigned_early", False)
+        prefix = "resigned" if ceo_resigned else "stayed"
+        composite_key = f"{prefix}_{d1a}"
+        return probs["A2"].get(composite_key, probs["A2"]["stayed_D0_minimal"])
     elif node == "V":
         a2a = ts.get("a2_action", "A2_rec_strike")
         return probs["V"].get(a2a, probs["V"]["A2_rec_strike"])

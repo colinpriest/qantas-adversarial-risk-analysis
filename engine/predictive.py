@@ -349,48 +349,43 @@ class PredictiveDistribution:
             return "D4_stay" if "D4_stay" in feasible else feasible[0]
 
         elif actor == "ASA" and node_name == "A2":
-            # ASA recommendation — informative Beta prior from
-            # background/asa/asa-informative-prior.md.
+            # ASA recommendation — 5-path Beta priors from
+            # background/asa/asa_bayesian_params.md.
             #
-            # Source: ranked_voting_recommendations.csv, headline_incident=1 only.
-            # Qantas (QAN, 2023) excluded. Pooled observed rate: 14/15 = 0.933.
+            # Each A2 node's P(Recommend strike) is modelled as a Beta
+            # distribution conditioned on the path (CEO resign/stay × D1 action).
+            # Parameters are derived from the utility dynamics analysis and
+            # the information state at each node.
             #
-            # Key finding: ASA recommendation is near-automatic given a headline
-            # incident. Board action (review, CEO replacement) plausibly affects the
-            # shareholder vote, but NOT the ASA recommendation — the data provide no
-            # statistical evidence for a board-action effect at the recommendation
-            # stage. The three Beta distributions are nearly identical; separation is
-            # a modelling convention, not a data-driven estimate.
-            #
-            # Monotonic decreasing by board accountability level (convention):
-            #   Board Action 0 — Do nothing          : Beta(46, 4)  mean=0.920
-            #   Board Action 1 — Review or CEO resigns: Beta(44, 4)  mean=0.917
-            #   Board Action 2 — Sack CEO             : Beta(43, 4)  mean=0.914
-            #
-            # All 90% CIs are entirely above 0.84.
-            #
-            # At A2 the knowable board actions are:
-            #   D3_ceo_transition → "Sack CEO"
-            #   D1_review         → "Review"    (Board Action 1)
-            #   CEO_resigned_early→ "CEO resigns" (Board Action 1)
-            #   D0_minimal        → "Do nothing" (Board Action 0)
+            # A2-1: CEO resigns → Do nothing         Beta(18, 2)  mean=0.900
+            # A2-2: CEO resigns → Commission review  Beta(14, 3)  mean=0.824
+            # A2-3: CEO stays   → Do nothing         Beta(24, 1)  mean=0.960
+            # A2-4: CEO stays   → Commission review  Beta(15, 2)  mean=0.882
+            # A2-5: CEO stays   → Board forces exit  Beta(9,  6)  mean=0.600
             d1_action = history.get("D1", "D0_minimal")
             ceo_resigned_early = history.get("D0_ceo") == "CEO_resign"
 
             if rng is None:
-                # No rng: MAP — all means > 0.90, always recommend strike
+                # No rng: MAP — all means ≥ 0.60, recommend strike
                 return "A2_rec_strike" if "A2_rec_strike" in feasible else feasible[0]
 
-            # Two-stage Beta-Binomial: sample p_strike from informative prior
-            if d1_action == "D3_ceo_transition":
-                # Board Action 2 — Sack CEO: Beta(43, 4) mean=0.914
-                p_strike = rng.beta(43, 4)
-            elif d1_action == "D1_review" or ceo_resigned_early:
-                # Board Action 1 — Review or CEO resigns: Beta(44, 4) mean=0.917
-                p_strike = rng.beta(44, 4)
+            # Sample p_strike from path-conditional Beta prior
+            if ceo_resigned_early:
+                if d1_action == "D1_review":
+                    # A2-2: CEO resigns → Review: Beta(14, 3) mean=0.824
+                    p_strike = rng.beta(14, 3)
+                else:
+                    # A2-1: CEO resigns → Do nothing: Beta(18, 2) mean=0.900
+                    p_strike = rng.beta(18, 2)
+            elif d1_action == "D3_ceo_transition":
+                # A2-5: CEO stays → Board forces exit: Beta(9, 6) mean=0.600
+                p_strike = rng.beta(9, 6)
+            elif d1_action == "D1_review":
+                # A2-4: CEO stays → Commission review: Beta(15, 2) mean=0.882
+                p_strike = rng.beta(15, 2)
             else:
-                # Board Action 0 — Do nothing: Beta(46, 4) mean=0.920
-                p_strike = rng.beta(46, 4)
+                # A2-3: CEO stays → Do nothing: Beta(24, 1) mean=0.960
+                p_strike = rng.beta(24, 1)
 
             if rng.random() >= p_strike:
                 return "A2_no_strike" if "A2_no_strike" in feasible else feasible[0]

@@ -152,56 +152,116 @@ def utility_board(outcome: TerminalOutcome, params: dict[str, float]) -> float:
 
 def utility_asa(outcome: TerminalOutcome, params: dict[str, float]) -> float:
     """
-    ASA utility function.
+    ASA utility function — 7-dimensional weighted assessment.
 
-    The ASA wants to maximise:
-    - High opposition vote (signal of shareholder dissatisfaction)
-    - CEO removal (governance change)
-    - Adverse review findings (vindication)
-    While managing mobilisation costs.
+    Source: background/asa/asa_bayesian_params.md
+
+    Dimensions (Likert 1–5, weights sum to 1.0):
+      FW  (0.10) Financial Welfare — share price, legal exposure
+      PPL (0.30) Pay/Performance Linkage — remuneration outcomes, clawback
+      TD  (0.10) Transparency/Disclosure — governance disclosure quality
+      EGR (0.15) ESG/Governance Risk — regulatory, labour, ESG signals
+      BA  (0.20) Board Accountability — consequences imposed on management
+      OL  (0.10) Organizational Legitimacy — ASA member trust, credibility
+      PF  (0.05) Procedural Fairness — AGM process, share trading norms
+
+    Structure:
+    1. Base dimension scores determined by path to A2 (CEO resign/stay × D1 action).
+    2. Post-A2 outcome adjustments shift relevant dimension scores.
+    3. Weighted sum across all dimensions.
+    4. Mobilisation cost deducted if strike recommended.
     """
-    u = 0.0
+    # ── 1. Path-dependent base dimension scores ──
+    scores = _asa_base_scores(outcome, params)
 
-    # Early CEO resignation: partial vindication reward
-    if outcome.CEO_resigned_early:
-        u += params.get("early_ceo_departure_reward", 2.0)
+    # ── 2. Post-A2 outcome adjustments ──
 
-    # Vote reward: linear in vote percent
-    u += params.get("vote_reward_weight", 2.0) * outcome.vote_percent
-
-    # Overwhelming vote bonus
+    # Vote: higher vote strengthens accountability signal and ASA standing
+    if outcome.strike_indicator:
+        scores["BA"] += params.get("strike_ba_shift", 1.5)
+        scores["OL"] += params.get("strike_ol_shift", 1.0)
     if outcome.overwhelming_indicator:
-        u += params.get("overwhelming_reward_weight", 2.0)
+        scores["BA"] += params.get("overwhelming_ba_shift", 1.0)
+        scores["OL"] += params.get("overwhelming_ol_shift", 0.5)
 
-    # CEO removal reward (not applied for early resignation — handled above)
+    # CEO removal post-A2: accountability achieved through board/CEO action
     if outcome.CEO_removed and not outcome.CEO_resigned_early:
-        u += params.get("ceo_removal_reward", 3.0)
+        scores["BA"] += params.get("ceo_removal_ba_shift", 1.0)
+        scores["FW"] += params.get("ceo_removal_fw_shift", 0.5)
 
-    # Review findings CAR impact: ASA benefits from negative CAR
-    # (adverse findings vindicate governance concerns).
+    # Review findings: negative = vindication of governance concerns
     if outcome.review_commissioned:
-        u -= params.get("review_car_weight", 15.0) * outcome.review_car
+        if outcome.review_outcome == "negative":
+            scores["TD"] += params.get("negative_review_td_shift", 1.0)
+            scores["EGR"] += params.get("negative_review_egr_shift", 0.5)
+        elif outcome.review_outcome == "balanced":
+            scores["TD"] += params.get("balanced_review_td_shift", 0.3)
 
-    # Mobilisation cost (only if strike recommended)
-    if outcome.a2_action == "A2_rec_strike":
-        u -= params.get("mobilisation_cost", 1.0)
-
-    # Reputational gain from high-profile campaign
-    if outcome.vote_percent > 0.25:
-        u += params.get("reputational_gain_weight", 1.0) * (outcome.vote_percent - 0.25)
-
-    # Market alignment bonus: ASA's credibility and influence as a governance
-    # advocate is enhanced when its recommendation aligns with mainstream
-    # institutional investor behaviour. Empirically, in 100% of headline-
-    # incident cases (ranked_voting_recommendations.csv, headline_incident=1,
-    # Qantas excluded), the market votes a first strike. ASA gains standing
-    # when it leads the consensus — recommending strike and being validated
-    # by the actual vote outcome. Deviation (staying silent while the market
-    # acts, or recommending when the market does not follow) erodes credibility.
+    # Market alignment: ASA credibility enhanced when recommendation validated
     if outcome.a2_action == "A2_rec_strike" and outcome.strike_indicator:
-        u += params.get("market_alignment_bonus", 1.5)
+        scores["OL"] += params.get("market_alignment_ol_shift", 1.0)
+        scores["PF"] += params.get("market_alignment_pf_shift", 0.5)
+
+    # Clip all scores to [1, 5] Likert bounds
+    for dim in scores:
+        scores[dim] = max(1.0, min(5.0, scores[dim]))
+
+    # ── 3. Weighted sum ──
+    u = sum(ASA_DIMENSION_WEIGHTS[dim] * scores[dim] for dim in ASA_DIMENSION_WEIGHTS)
+
+    # ── 4. Mobilisation cost ──
+    if outcome.a2_action == "A2_rec_strike":
+        u -= params.get("mobilisation_cost", 0.3)
 
     return u
+
+
+# ── ASA 7-dimensional utility constants ──────────────────────────────────
+
+ASA_DIMENSION_WEIGHTS = {
+    "FW": 0.10, "PPL": 0.30, "TD": 0.10,
+    "EGR": 0.15, "BA": 0.20, "OL": 0.10, "PF": 0.05,
+}
+
+# Base dimension scores per A2 node path (from asa_bayesian_params.md Section 2).
+# Key: (CEO_resigned_early, d1_action) → {dimension: μ}
+ASA_BASE_SCORE_TABLE = {
+    # A2-1: CEO resigns → Do nothing (weighted mean 1.84)
+    (True, "D0_minimal"): {
+        "FW": 2.1, "PPL": 1.3, "TD": 1.8, "EGR": 1.5,
+        "BA": 2.3, "OL": 2.0, "PF": 3.0,
+    },
+    # A2-2: CEO resigns → Commission review (weighted mean 2.09)
+    (True, "D1_review"): {
+        "FW": 2.2, "PPL": 1.3, "TD": 2.2, "EGR": 1.9,
+        "BA": 2.9, "OL": 2.4, "PF": 3.0,
+    },
+    # A2-3: CEO stays → Do nothing (weighted mean 1.43)
+    (False, "D0_minimal"): {
+        "FW": 1.7, "PPL": 1.2, "TD": 1.5, "EGR": 1.3,
+        "BA": 1.2, "OL": 1.4, "PF": 2.9,
+    },
+    # A2-4: CEO stays → Commission review (weighted mean 1.67)
+    (False, "D1_review"): {
+        "FW": 1.9, "PPL": 1.2, "TD": 2.0, "EGR": 1.6,
+        "BA": 1.9, "OL": 1.7, "PF": 2.9,
+    },
+    # A2-5: CEO stays → Board forces exit (weighted mean 2.27)
+    (False, "D3_ceo_transition"): {
+        "FW": 2.5, "PPL": 1.6, "TD": 2.3, "EGR": 2.2,
+        "BA": 3.3, "OL": 2.7, "PF": 3.0,
+    },
+}
+
+# Default fallback (A2-3: worst case — CEO stays, Board does nothing)
+_ASA_DEFAULT_SCORES = ASA_BASE_SCORE_TABLE[(False, "D0_minimal")]
+
+
+def _asa_base_scores(outcome: TerminalOutcome, params: dict[str, float]) -> dict[str, float]:
+    """Look up base dimension scores for the path to A2."""
+    key = (outcome.CEO_resigned_early, outcome.d1_action)
+    base = ASA_BASE_SCORE_TABLE.get(key, _ASA_DEFAULT_SCORES)
+    return dict(base)  # mutable copy
 
 
 def utility_ceo(outcome: TerminalOutcome, params: dict[str, float]) -> float:
@@ -414,33 +474,46 @@ def _decompose_board(outcome: TerminalOutcome, params: dict[str, float]) -> dict
 
 
 def _decompose_asa(outcome: TerminalOutcome, params: dict[str, float]) -> dict[str, float]:
-    """Return ASA utility broken into named components."""
+    """Return ASA utility broken into named components (7-dimensional)."""
     components: dict[str, float] = {}
 
-    if outcome.CEO_resigned_early:
-        components["early_ceo_departure"] = params.get("early_ceo_departure_reward", 2.0)
+    # Base dimension scores
+    scores = _asa_base_scores(outcome, params)
+    base_u = sum(ASA_DIMENSION_WEIGHTS[d] * scores[d] for d in ASA_DIMENSION_WEIGHTS)
+    components["base_weighted"] = round(base_u, 4)
 
-    components["vote_reward"] = params.get("vote_reward_weight", 2.0) * outcome.vote_percent
+    # Post-A2 adjustments (tracked as shift contributions)
+    adj_scores = dict.fromkeys(ASA_DIMENSION_WEIGHTS, 0.0)
 
+    if outcome.strike_indicator:
+        adj_scores["BA"] += params.get("strike_ba_shift", 1.5)
+        adj_scores["OL"] += params.get("strike_ol_shift", 1.0)
     if outcome.overwhelming_indicator:
-        components["overwhelming_bonus"] = params.get("overwhelming_reward_weight", 2.0)
-
+        adj_scores["BA"] += params.get("overwhelming_ba_shift", 1.0)
+        adj_scores["OL"] += params.get("overwhelming_ol_shift", 0.5)
     if outcome.CEO_removed and not outcome.CEO_resigned_early:
-        components["ceo_removal"] = params.get("ceo_removal_reward", 3.0)
-
+        adj_scores["BA"] += params.get("ceo_removal_ba_shift", 1.0)
+        adj_scores["FW"] += params.get("ceo_removal_fw_shift", 0.5)
     if outcome.review_commissioned:
-        car_impact = -params.get("review_car_weight", 15.0) * outcome.review_car
-        if abs(car_impact) > 1e-9:
-            components["review_car"] = car_impact
+        if outcome.review_outcome == "negative":
+            adj_scores["TD"] += params.get("negative_review_td_shift", 1.0)
+            adj_scores["EGR"] += params.get("negative_review_egr_shift", 0.5)
+        elif outcome.review_outcome == "balanced":
+            adj_scores["TD"] += params.get("balanced_review_td_shift", 0.3)
+    if outcome.a2_action == "A2_rec_strike" and outcome.strike_indicator:
+        adj_scores["OL"] += params.get("market_alignment_ol_shift", 1.0)
+        adj_scores["PF"] += params.get("market_alignment_pf_shift", 0.5)
+
+    # Compute clipped adjustment contribution
+    for dim in ASA_DIMENSION_WEIGHTS:
+        raw = scores[dim] + adj_scores[dim]
+        clipped = max(1.0, min(5.0, raw))
+        adj_contribution = ASA_DIMENSION_WEIGHTS[dim] * (clipped - scores[dim])
+        if abs(adj_contribution) > 1e-9:
+            components[f"adj_{dim}"] = round(adj_contribution, 4)
 
     if outcome.a2_action == "A2_rec_strike":
-        components["mobilisation_cost"] = -params.get("mobilisation_cost", 1.0)
-
-    if outcome.vote_percent > 0.25:
-        components["reputational_gain"] = params.get("reputational_gain_weight", 1.0) * (outcome.vote_percent - 0.25)
-
-    if outcome.a2_action == "A2_rec_strike" and outcome.strike_indicator:
-        components["market_alignment"] = params.get("market_alignment_bonus", 1.5)
+        components["mobilisation_cost"] = -params.get("mobilisation_cost", 0.3)
 
     return components
 
