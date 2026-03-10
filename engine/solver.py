@@ -190,7 +190,7 @@ def _evaluate_single_draw(
         "strike": int(outcome.strike_indicator),
         "overwhelming": int(outcome.overwhelming_indicator),
         "CEO_removed": int(outcome.CEO_removed),
-        "review_adverse": int(outcome.review_adverse),
+        "review_outcome": outcome.review_outcome,
         "review_car": outcome.review_car,
         "review_direct_cost": outcome.review_direct_cost,
     }
@@ -385,7 +385,9 @@ class SolveResult:
                 print(f"    Strike (>25%): {s['Pr_strike']:.0%}   "
                       f"Overwhelming (>50%): {s['Pr_overwhelming']:.0%}")
                 print(f"    CEO removed:   {s['Pr_CEO_removed']:.0%}   "
-                      f"Review adverse: {s['Pr_review_adverse']:.0%}")
+                      f"Review: neg={s['Pr_review_negative']:.0%} "
+                      f"bal={s['Pr_review_balanced']:.0%} "
+                      f"pos={s['Pr_review_positive']:.0%}")
                 print(f"    Review CAR: mean={s['mean_review_car']:+.2%}  "
                       f"sd={s['sd_review_car']:.2%}")
                 print(f"    Review direct cost: mean={s['mean_review_direct_cost']:.4%}  "
@@ -879,7 +881,7 @@ class Solver:
             pr_removed = stats_a["Pr_CEO_removed"]
             pr_strike = stats_a["Pr_strike"]
             pr_ovw = stats_a["Pr_overwhelming"]
-            pr_adverse = stats_a.get("Pr_review_adverse", 0.0)
+            pr_negative = stats_a.get("Pr_review_negative", 0.0)
 
             # D_stay baseline (crisis cost for choosing to stay)
             D_stay = w_ceo.get("D_stay", 25.0)
@@ -917,10 +919,10 @@ class Solver:
                     weighted_D = D_sacked  # fallback: sacked
                 ceo_d["D_departure_penalty"] = -ceo_la_D * weighted_D * pr_removed
 
-            # D_adverse_review
-            if pr_adverse > 0:
+            # D_adverse_review (triggered by negative review outcome)
+            if pr_negative > 0:
                 ceo_d["D_adverse_review"] = (
-                    -ceo_la_D * w_ceo.get("D_adverse_review", 10.0) * pr_adverse
+                    -ceo_la_D * w_ceo.get("D_adverse_review", 10.0) * pr_negative
                 )
 
             # Monetary component: E[U_money] ≈ Pr(kept)*CRRA(W_kept) + Pr(removed)*CRRA(W_removed)
@@ -1003,7 +1005,9 @@ class Solver:
                 "strike_prob": 0,
                 "overwhelming_prob": 0,
                 "CEO_removed_prob": 0,
-                "review_adverse_prob": 0,
+                "review_negative_prob": 0,
+                "review_balanced_prob": 0,
+                "review_positive_prob": 0,
                 "review_car": [],
                 "review_direct_cost": [],
             }
@@ -1034,7 +1038,9 @@ class Solver:
                 outcome_accum["strike_prob"] += int(outcome.strike_indicator)
                 outcome_accum["overwhelming_prob"] += int(outcome.overwhelming_indicator)
                 outcome_accum["CEO_removed_prob"] += int(outcome.CEO_removed)
-                outcome_accum["review_adverse_prob"] += int(outcome.review_adverse)
+                outcome_accum["review_negative_prob"] += int(outcome.review_outcome == "negative")
+                outcome_accum["review_balanced_prob"] += int(outcome.review_outcome == "balanced")
+                outcome_accum["review_positive_prob"] += int(outcome.review_outcome == "positive")
                 outcome_accum["review_car"].append(outcome.review_car)
                 outcome_accum["review_direct_cost"].append(outcome.review_direct_cost)
 
@@ -1048,7 +1054,9 @@ class Solver:
                 "Pr_strike": outcome_accum["strike_prob"] / N,
                 "Pr_overwhelming": outcome_accum["overwhelming_prob"] / N,
                 "Pr_CEO_removed": outcome_accum["CEO_removed_prob"] / N,
-                "Pr_review_adverse": outcome_accum["review_adverse_prob"] / N,
+                "Pr_review_negative": outcome_accum["review_negative_prob"] / N,
+                "Pr_review_balanced": outcome_accum["review_balanced_prob"] / N,
+                "Pr_review_positive": outcome_accum["review_positive_prob"] / N,
                 "mean_vote_percent": float(np.mean(outcome_accum["vote_percent"])),
                 "sd_vote_percent": float(np.std(outcome_accum["vote_percent"])),
                 "mean_review_car": float(np.mean(outcome_accum["review_car"])),
@@ -1094,7 +1102,9 @@ class Solver:
                 "strike_prob": 0,
                 "overwhelming_prob": 0,
                 "CEO_removed_prob": 0,
-                "review_adverse_prob": 0,
+                "review_negative_prob": 0,
+                "review_balanced_prob": 0,
+                "review_positive_prob": 0,
                 "review_car": [],
                 "review_direct_cost": [],
             }
@@ -1129,7 +1139,10 @@ class Solver:
             acc["strike_prob"] += r["strike"]
             acc["overwhelming_prob"] += r["overwhelming"]
             acc["CEO_removed_prob"] += r["CEO_removed"]
-            acc["review_adverse_prob"] += r["review_adverse"]
+            r_outcome = r["review_outcome"]
+            acc["review_negative_prob"] += int(r_outcome == "negative")
+            acc["review_balanced_prob"] += int(r_outcome == "balanced")
+            acc["review_positive_prob"] += int(r_outcome == "positive")
             acc["review_car"].append(r["review_car"])
             acc["review_direct_cost"].append(r["review_direct_cost"])
             pbar.update(1)
@@ -1148,7 +1161,9 @@ class Solver:
                 "Pr_strike": acc["strike_prob"] / N,
                 "Pr_overwhelming": acc["overwhelming_prob"] / N,
                 "Pr_CEO_removed": acc["CEO_removed_prob"] / N,
-                "Pr_review_adverse": acc["review_adverse_prob"] / N,
+                "Pr_review_negative": acc["review_negative_prob"] / N,
+                "Pr_review_balanced": acc["review_balanced_prob"] / N,
+                "Pr_review_positive": acc["review_positive_prob"] / N,
                 "mean_vote_percent": float(np.mean(acc["vote_percent"])),
                 "sd_vote_percent": float(np.std(acc["vote_percent"])),
                 "mean_review_car": float(np.mean(acc["review_car"])),

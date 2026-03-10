@@ -44,9 +44,11 @@ DIRECT_MAP = {
     "w_inaction_base": "inaction_base_penalty",
     "w_inaction_no_review": "inaction_no_review_penalty",
     "w_inaction_ceo_present": "inaction_ceo_present_penalty",
-    "w1": "early_ceo_departure_cost",
+    "w_passivity": "board_passivity_after_departure",
     "w_remove_ceo_overwhelming": "ceo_loss_shock_overwhelming",
-    "w15": "adverse_review_ceo_present_penalty",
+    "w_review_negative": "negative_review_finding_penalty",
+    "w_review_balanced": "balanced_review_finding_penalty",
+    "w_review_post_removal": "review_after_removal_penalty",
     "w_strike": "vote_strike_penalty",
     "w_overwhelming": "vote_overwhelming_penalty",
 }

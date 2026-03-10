@@ -58,7 +58,7 @@ from engine.modes import (
 )
 from engine.chance_models import ChanceModels, OverconfidenceBias
 from engine.predictive import PredictiveDistribution
-from engine.utilities import TerminalOutcome, compute_utility
+from engine.utilities import TerminalOutcome, compute_utility, decompose_utility
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -112,6 +112,7 @@ class VizNode:
     owner: str
     eu: float = 0.0
     children: list = field(default_factory=list)   # (label, prob, VizNode)
+    terminal_decomposition: dict = field(default_factory=dict)  # utility components at terminal
 
 
 # ── Cheap MC helpers for chance-node probabilities ──────────────────
@@ -140,32 +141,38 @@ def _sample_vote_probs(
 
 
 def _sample_review_stats(beliefs, history, state, chance, bias, n, seed):
-    """Return P(adverse), mean CAR for adverse branch, mean CAR for clean branch."""
-    adv_count = 0
-    car_adv_sum = 0.0
-    car_clean_sum = 0.0
-    clean_count = 0
+    """Return P(negative/balanced/positive), mean CAR per outcome branch."""
+    counts = {"negative": 0, "balanced": 0, "positive": 0}
+    car_sums = {"negative": 0.0, "balanced": 0.0, "positive": 0.0}
     for i in range(n):
         out = chance.sample_review(
             i % beliefs.N, beliefs, history, state,
             np.random.default_rng(seed + i + 8000), bias=bias,
         )
-        if out.review_adverse:
-            adv_count += 1
-            car_adv_sum += out.review_car
-        else:
-            clean_count += 1
-            car_clean_sum += out.review_car
-    p_adv = adv_count / max(n, 1)
-    mean_car_adv = car_adv_sum / max(adv_count, 1)
-    mean_car_clean = car_clean_sum / max(clean_count, 1)
-    return dict(p_adv=p_adv, mean_car_adv=mean_car_adv,
-                mean_car_clean=mean_car_clean)
+        outcome = out.review_outcome
+        if outcome in counts:
+            counts[outcome] += 1
+            car_sums[outcome] += out.review_car
+    total = max(n, 1)
+    return dict(
+        p_negative=counts["negative"] / total,
+        p_balanced=counts["balanced"] / total,
+        p_positive=counts["positive"] / total,
+        mean_car_negative=car_sums["negative"] / max(counts["negative"], 1),
+        mean_car_balanced=car_sums["balanced"] / max(counts["balanced"], 1),
+        mean_car_positive=car_sums["positive"] / max(counts["positive"], 1),
+    )
 
 
 def _terminal_eu(history, state, focal, weights):
     outcome = PredictiveDistribution._build_outcome(history, state)
     return compute_utility(focal, outcome, weights)
+
+
+def _terminal_decomposition(history, state, focal, weights):
+    """Compute utility component breakdown at a terminal node."""
+    outcome = PredictiveDistribution._build_outcome(history, state)
+    return decompose_utility(focal, outcome, weights)
 
 
 # ── Subtree builder (uses fixed policies — no ARA recursion) ────────
@@ -252,7 +259,9 @@ def _build_scenario_subtree(
 
         if node_name is None or ntype == "terminal" or depth > 12:
             eu = _terminal_eu(history, state, focal, weights)
-            return VizNode(_nid(), "Terminal", "terminal", "Nature", eu=eu)
+            decomp = _terminal_decomposition(history, state, focal, weights)
+            return VizNode(_nid(), "Terminal", "terminal", "Nature", eu=eu,
+                           terminal_decomposition=decomp)
 
         nd = VizNode(_nid(), node_name, ntype, owner)
 
@@ -339,25 +348,26 @@ def _build_scenario_subtree(
             elif node_name == "R":
                 if not state.review_commissioned:
                     h = dict(history)
-                    h["R"] = "review"; h["R_adverse"] = False
+                    h["R"] = "review"; h["R_outcome"] = "none"
                     h["R_car"] = 0.0
-                    sc = state.apply("R", "no_adverse")
+                    sc = state.apply("R", "positive")  # No review → positive (no penalty)
                     child = _walk(state.next_node("R"), h, sc, depth + 1)
                     nd.children.append(("No review", 1.0, child))
                 else:
                     rs = _sample_review_stats(
                         beliefs, history, state, chance, bias, n_mc, seed)
-                    for lbl, pr, adv, car in [
-                        ("No adverse", 1 - rs["p_adv"], False,
-                         rs["mean_car_clean"]),
-                        ("Adverse finding", rs["p_adv"], True,
-                         rs["mean_car_adv"]),
+                    for lbl, pr, outcome_str, car in [
+                        ("Negative", rs["p_negative"], "negative",
+                         rs["mean_car_negative"]),
+                        ("Balanced", rs["p_balanced"], "balanced",
+                         rs["mean_car_balanced"]),
+                        ("Positive", rs["p_positive"], "positive",
+                         rs["mean_car_positive"]),
                     ]:
                         h = dict(history)
-                        h["R"] = "review"; h["R_adverse"] = adv
+                        h["R"] = "review"; h["R_outcome"] = outcome_str
                         h["R_car"] = car
-                        s = state.apply(
-                            "R", "adverse" if adv else "no_adverse")
+                        s = state.apply("R", outcome_str)
                         child = _walk(
                             state.next_node("R"), h, s, depth + 1)
                         nd.children.append((lbl, pr, child))

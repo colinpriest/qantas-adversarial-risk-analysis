@@ -78,8 +78,8 @@ class TestDataLoading:
         assert "vote_penalty_weight" in w
         assert "review_direct_cost_weight" in w
         assert w["vote_penalty_weight"] >= 0  # Can be zero after quantification estimation
-        assert "adverse_review_ceo_present_penalty" in w
-        assert w["adverse_review_ceo_present_penalty"] > 0
+        assert "negative_review_finding_penalty" in w
+        assert w["negative_review_finding_penalty"] > 0
 
     def test_utility_weights_asa(self):
         from engine.state import load_utility_weights
@@ -145,14 +145,14 @@ class TestDataLoading:
             assert len(params) > 0, f"No params for {persp}->{tgt}"
 
     def test_parameter_sampler_board_adverse_review_penalty(self):
-        """Both ASA→Board and CEO→Board should have adverse_review_ceo_present_penalty."""
+        """Both ASA→Board and CEO→Board should have negative_review_finding_penalty."""
         from engine.state import ParameterSampler
         ps = ParameterSampler(OPP_PRIORS)
         rng = np.random.default_rng(42)
         for persp in ["ASA", "CEO"]:
             params = ps.sample_parameters(persp, "Board", rng)
-            assert "adverse_review_ceo_present_penalty" in params, (
-                f"{persp}→Board missing adverse_review_ceo_present_penalty")
+            assert "negative_review_finding_penalty" in params, (
+                f"{persp}→Board missing negative_review_finding_penalty")
 
 
 # ============================================================================
@@ -259,33 +259,33 @@ class TestPostReviewRound:
     """Tests for Phase 6 conditional post-review round logic."""
 
     def test_review_adverse_sets_state_flags(self):
-        """apply("R", "adverse") with CEO present sets all Phase 6 flags."""
+        """apply("R", "negative") with CEO present sets all Phase 6 flags."""
         from engine.state import DecisionState
         state = DecisionState.from_governance_spec(GOV_SPEC)
         assert state.CEO_present is True
-        s = state.apply("R", "adverse")
-        assert s.review_adverse is True
+        s = state.apply("R", "negative")
+        assert s.review_outcome == "negative"
         assert s.review_completed is True
         assert s.post_review_round is True
 
     def test_review_no_adverse_clears_flags(self):
-        """apply("R", "no_adverse") sets review_completed but not Phase 6."""
+        """apply("R", "positive") sets review_completed but not Phase 6."""
         from engine.state import DecisionState
         state = DecisionState.from_governance_spec(GOV_SPEC)
-        s = state.apply("R", "no_adverse")
-        assert s.review_adverse is False
+        s = state.apply("R", "positive")
+        assert s.review_outcome != "negative"
         assert s.review_completed is True
         assert s.post_review_round is False
 
     def test_post_review_round_not_set_when_ceo_absent(self):
-        """apply("R", "adverse") with CEO absent does NOT trigger Phase 6."""
+        """apply("R", "negative") with CEO absent does NOT trigger Phase 6."""
         from engine.state import DecisionState
         state = DecisionState.from_governance_spec(GOV_SPEC)
         # Remove CEO first
         state = state.apply("D0_ceo", "CEO_resign")
         assert state.CEO_present is False
-        s = state.apply("R", "adverse")
-        assert s.review_adverse is True
+        s = state.apply("R", "negative")
+        assert s.review_outcome == "negative"
         assert s.review_completed is True
         assert s.post_review_round is False  # CEO not present → no Phase 6
 
@@ -293,8 +293,8 @@ class TestPostReviewRound:
         """When post_review_round=True, D4_post_review has 3 feasible actions."""
         from engine.state import DecisionState
         state = DecisionState.from_governance_spec(GOV_SPEC)
-        # Trigger Phase 6: review adverse with CEO present
-        s = state.apply("R", "adverse")
+        # Trigger Phase 6: review negative with CEO present
+        s = state.apply("R", "negative")
         assert s.post_review_round is True
         feasible = s.feasible_actions("D4_post_review")
         assert len(feasible) == 3
@@ -306,8 +306,8 @@ class TestPostReviewRound:
         """When post_review_round=False, D4_post_review has 0 feasible actions."""
         from engine.state import DecisionState
         state = DecisionState.from_governance_spec(GOV_SPEC)
-        # No adverse review → post_review_round=False
-        s = state.apply("R", "no_adverse")
+        # No negative review → post_review_round=False
+        s = state.apply("R", "positive")
         assert s.post_review_round is False
         feasible = s.feasible_actions("D4_post_review")
         assert len(feasible) == 0
@@ -316,7 +316,7 @@ class TestPostReviewRound:
         """D_rev_post_review with CEO present has 3 actions including sack."""
         from engine.state import DecisionState
         state = DecisionState.from_governance_spec(GOV_SPEC)
-        s = state.apply("R", "adverse")
+        s = state.apply("R", "negative")
         assert s.post_review_round is True
         assert s.CEO_present is True
         feasible = s.feasible_actions("D_rev_post_review")
@@ -329,8 +329,8 @@ class TestPostReviewRound:
         """D_rev_post_review after CEO resignation has 2 actions (no sack)."""
         from engine.state import DecisionState
         state = DecisionState.from_governance_spec(GOV_SPEC)
-        # Review adverse + CEO present → Phase 6 triggered
-        s = state.apply("R", "adverse")
+        # Review negative + CEO present → Phase 6 triggered
+        s = state.apply("R", "negative")
         # CEO resigns at D4_post_review
         s = s.apply("D4_post_review", "D4_resign")
         assert s.post_review_round is True
@@ -346,8 +346,8 @@ class TestPostReviewRound:
         # CEO resigned early
         state = state.apply("D0_ceo", "CEO_resign")
         state = state.apply("D1", "D1_review")
-        # Review adverse but CEO absent
-        s = state.apply("R", "adverse")
+        # Review negative but CEO absent
+        s = state.apply("R", "negative")
         assert s.post_review_round is False
         # Both Phase 6 nodes should have 0 feasible actions (skipped)
         assert len(s.feasible_actions("D4_post_review")) == 0
@@ -453,7 +453,7 @@ class TestChanceModels:
 
         assert not state.review_commissioned
         out = review.sample(0, bb, {}, state, rng)
-        assert out.review_adverse is False
+        assert out.review_outcome != "negative"
         assert out.review_car == 0.0
 
     def test_review_model_commissioned(self):
@@ -471,7 +471,7 @@ class TestChanceModels:
         for i in range(n):
             rng = np.random.default_rng(3000 + i)
             out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng)
-            if out.review_adverse:
+            if out.review_outcome == "negative":
                 adverse_count += 1
             cars.append(out.review_car)
 
@@ -482,23 +482,29 @@ class TestChanceModels:
         # Mean CAR should be centered around -5% (MU_LOC = -0.05)
         assert -0.15 < np.mean(cars) < 0.05, f"Mean CAR out of range: {np.mean(cars):.4f}"
 
-    def test_review_adverse_probability_beta(self):
-        """Review adverse probability drawn from Beta(10, 5) — Dirichlet(5,5,5)."""
+    def test_review_outcome_probabilities_dirichlet(self):
+        """Review outcome probabilities drawn from Dirichlet(38,160,1)."""
         from engine.chance_models import ReviewModel
         review = ReviewModel()
 
         n = 2000
-        probs = [review.draw_adverse_probability(np.random.default_rng(i))
-                 for i in range(n)]
-        mean_p = np.mean(probs)
-        # Beta(10, 5) mean = 10/15 = 0.6667
-        assert abs(mean_p - 2/3) < 0.03, (
-            f"Mean adverse prob {mean_p:.3f} should be near 0.667")
-        # All in [0, 1]
-        assert all(0 < p < 1 for p in probs)
+        prob_arrays = [review.draw_outcome_probabilities(np.random.default_rng(i))
+                       for i in range(n)]
+        # Each call should return a numpy array of shape (3,)
+        for arr in prob_arrays[:10]:
+            assert hasattr(arr, "shape"), "draw_outcome_probabilities must return an array"
+            assert arr.shape == (3,), f"Expected shape (3,), got {arr.shape}"
+            assert abs(arr.sum() - 1.0) < 1e-9, f"Probabilities must sum to 1, got {arr.sum()}"
+            assert (arr >= 0).all(), "All probabilities must be non-negative"
+        # Dirichlet(38,160,1): E = (38/199, 160/199, 1/199) ≈ (0.191, 0.804, 0.005)
+        expected_means = [38/199, 160/199, 1/199]
+        means = np.mean(prob_arrays, axis=0)
+        for k, (m, em) in enumerate(zip(means, expected_means)):
+            assert abs(m - em) < 0.03, (
+                f"Component {k} mean {m:.3f} should be near {em:.3f}")
 
-    def test_review_with_explicit_p_adverse(self):
-        """Review model respects explicit p_adverse parameter."""
+    def test_review_with_explicit_outcome_probs(self):
+        """Review model respects explicit outcome_probs parameter."""
         from engine.state import BeliefBundle, DecisionState
         from engine.chance_models import ReviewModel
         bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
@@ -506,23 +512,23 @@ class TestChanceModels:
         state.review_commissioned = True
         review = ReviewModel()
 
-        # p_adverse = 1.0 → always adverse
+        # outcome_probs=[1,0,0] → always negative
         n = 50
         for i in range(n):
             rng = np.random.default_rng(5000 + i)
             out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng,
-                                p_adverse=1.0)
-            assert out.review_adverse is True
+                                outcome_probs=np.array([1.0, 0.0, 0.0]))
+            assert out.review_outcome == "negative"
 
-        # p_adverse = 0.0 → never adverse
+        # outcome_probs=[0,0,1] → always positive
         for i in range(n):
             rng = np.random.default_rng(6000 + i)
             out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng,
-                                p_adverse=0.0)
-            assert out.review_adverse is False
+                                outcome_probs=np.array([0.0, 0.0, 1.0]))
+            assert out.review_outcome == "positive"
 
     def test_review_adverse_rate_matches_dirichlet(self):
-        """Commissioned review adverse rate ≈ 2/3 (Beta(10,5) mean)."""
+        """Commissioned review negative outcome rate ≈ 0.191 (Dirichlet(38,160,1) mean)."""
         from engine.state import BeliefBundle, DecisionState
         from engine.chance_models import ReviewModel
         bb = BeliefBundle(CHECKPOINT_DIR / "belief_C0_2023-10-01.npz")
@@ -531,19 +537,19 @@ class TestChanceModels:
         review = ReviewModel()
 
         n = 500
-        adverse_count = 0
+        negative_count = 0
         for i in range(n):
             rng = np.random.default_rng(7000 + i)
-            p_adverse = review.draw_adverse_probability(rng)
+            outcome_probs = review.draw_outcome_probabilities(rng)
             out = review.sample(i % bb.N, bb, {"D1": "D0_minimal"}, state, rng,
-                                p_adverse=p_adverse)
-            if out.review_adverse:
-                adverse_count += 1
+                                outcome_probs=outcome_probs)
+            if out.review_outcome == "negative":
+                negative_count += 1
 
-        adverse_rate = adverse_count / n
-        # Should be near 2/3 ≈ 0.667 (tolerant for MC noise)
-        assert 0.55 < adverse_rate < 0.80, (
-            f"Adverse rate {adverse_rate:.3f} should be near 0.667")
+        negative_rate = negative_count / n
+        # Should be near 38/199 ≈ 0.191 (Dirichlet(38,160,1) component mean)
+        assert 0.10 < negative_rate < 0.30, (
+            f"Negative outcome rate {negative_rate:.3f} should be near 0.191")
 
     def test_review_direct_cost_model(self):
         """ReviewDirectCostModel samples from Gamma(4.55, 4741) in decimal CAR."""
@@ -857,7 +863,7 @@ class TestPredictive:
             "V_percent": 0.40,
             "V_strike": True,
             "V_overwhelming": False,
-            "R_adverse": True,
+            "R_outcome": "negative",
             "R_car": -0.08,
             "R_direct_cost": 0.00096,
             "D_rev": "Drev_commission_review",
@@ -869,7 +875,7 @@ class TestPredictive:
         assert outcome.a2_action == "A2_rec_strike"
         assert outcome.vote_percent == 0.40
         assert outcome.strike_indicator is True
-        assert outcome.review_adverse is True
+        assert outcome.review_outcome == "negative"
         assert outcome.review_car == -0.08
         assert outcome.review_direct_cost == 0.00096
         assert outcome.CEO_removed is True
@@ -1020,7 +1026,7 @@ class TestTreeEvaluation:
             "V_percent": 0.10,
             "V_strike": False,
             "V_overwhelming": False,
-            "R_adverse": False,
+            "R_outcome": "none",
             "D_rev": "Drev_no_action",
             "D4": "D4_stay",
         }
@@ -1077,7 +1083,7 @@ class TestTreeEvaluation:
             "V_percent": 0.50,
             "V_strike": True,
             "V_overwhelming": True,
-            "R_adverse": True,
+            "R_outcome": "negative",
             "D_rev": "Drev_sack_ceo",
             "D4": "D4_resign",
         }
@@ -1664,7 +1670,7 @@ class TestOverconfidenceBias:
             )
 
     def test_review_bias_reduces_adverse_probability(self):
-        """Biased review CAR shift should lower the adverse probability."""
+        """Biased review Dirichlet shift should lower the negative outcome probability."""
         from engine.chance_models import ReviewModel, OverconfidenceBias, BIAS_HUBRIS
         from engine.state import BeliefBundle, DecisionState
 
@@ -1673,28 +1679,35 @@ class TestOverconfidenceBias:
         state.review_commissioned = True
 
         n_samples = 500
-        adverse_unbiased = 0
-        adverse_biased = 0
+        negative_unbiased = 0
+        negative_biased = 0
         rm = ReviewModel()
 
         for j in range(n_samples):
             rng_u = np.random.default_rng(7000 + j)
             rng_b = np.random.default_rng(7000 + j)
 
-            out_u = rm.sample(0, beliefs, {"V_percent": 0.30}, state, rng_u,
-                              bias=None)
-            out_b = rm.sample(0, beliefs, {"V_percent": 0.30}, state, rng_b,
-                              bias=BIAS_HUBRIS)
+            # Draw outcome probabilities WITH bias effect
+            probs_u = rm.draw_outcome_probabilities(rng_u, bias=None)
+            probs_b = rm.draw_outcome_probabilities(rng_b, bias=BIAS_HUBRIS)
 
-            adverse_unbiased += int(out_u.review_adverse)
-            adverse_biased += int(out_b.review_adverse)
+            out_u = rm.sample(0, beliefs, {"V_percent": 0.30}, state,
+                              np.random.default_rng(8000 + j),
+                              bias=None, outcome_probs=probs_u)
+            out_b = rm.sample(0, beliefs, {"V_percent": 0.30}, state,
+                              np.random.default_rng(8000 + j),
+                              bias=BIAS_HUBRIS, outcome_probs=probs_b)
 
-        rate_u = adverse_unbiased / n_samples
-        rate_b = adverse_biased / n_samples
+            negative_unbiased += int(out_u.review_outcome == "negative")
+            negative_biased += int(out_b.review_outcome == "negative")
 
-        # Biased adverse rate should be lower (Board thinks governance is sound)
+        rate_u = negative_unbiased / n_samples
+        rate_b = negative_biased / n_samples
+
+        # Biased negative rate should be lower (Board thinks governance is sound,
+        # inflated positive α in Dirichlet → lower P(negative))
         assert rate_b < rate_u, (
-            f"Biased review adverse rate should be lower: "
+            f"Biased review negative rate should be lower: "
             f"biased={rate_b:.3f} vs unbiased={rate_u:.3f}"
         )
 
@@ -1735,9 +1748,9 @@ class TestOverconfidenceBias:
             out_zero = rm.sample(0, beliefs, {"V_percent": 0.30}, state,
                                  rng_zero, bias=BIAS_NONE)
 
-            assert out_none.review_adverse == out_zero.review_adverse, (
+            assert out_none.review_outcome == out_zero.review_outcome, (
                 f"review_car_bias=0 should be identity, draw {j}: "
-                f"{out_none.review_adverse} vs {out_zero.review_adverse}"
+                f"{out_none.review_outcome} vs {out_zero.review_outcome}"
             )
             assert abs(out_none.review_car - out_zero.review_car) < 1e-12, (
                 f"review_car_bias=0 should produce identical CAR, draw {j}: "
@@ -1756,7 +1769,7 @@ class TestOverconfidenceBias:
 
         rng = np.random.default_rng(42)
         out = rm.sample(0, beliefs, {}, state, rng, bias=BIAS_HUBRIS)
-        assert not out.review_adverse
+        assert out.review_outcome != "negative"
         assert out.review_car == 0.0
 
         car = rm.expected_car(state, bias=BIAS_HUBRIS)
@@ -1891,8 +1904,8 @@ class TestOverconfidenceBias:
                 state=s, draw_i=0, owner="Board", focal_actor="Board",
                 mode=MODE_BOARD, level=1, rng=rng_b,
             )
-            adverse_unbiased += int(out_u.review_adverse)
-            adverse_biased += int(out_b.review_adverse)
+            adverse_unbiased += int(out_u.review_outcome == "negative")
+            adverse_biased += int(out_b.review_outcome == "negative")
 
         rate_u = adverse_unbiased / n_samples
         rate_b = adverse_biased / n_samples
@@ -2208,8 +2221,8 @@ class TestScenarioUtilities:
         # negotiate and resign_late
         assert (u_negotiate - u_sacked) > (u_negotiate - u_resign_late)
 
-    def test_board_utility_early_ceo_departure(self):
-        """Board should pay early_ceo_departure_cost for early resignation."""
+    def test_board_utility_passivity_after_departure(self):
+        """Board should pay board_passivity_after_departure for early resignation."""
         from engine.utilities import utility_board, TerminalOutcome
         from engine.state import load_utility_weights
 
@@ -2225,7 +2238,7 @@ class TestScenarioUtilities:
         u_resigned = utility_board(outcome_resigned, params)
 
         # In the new model, early departure REMOVES inaction_ceo_present and
-        # inaction_no_sack penalties (CEO gone), but adds early_ceo_departure_cost.
+        # inaction_no_sack penalties (CEO gone), but adds board_passivity_after_departure.
         # Net effect: u_resigned > u_present (departure better than inaction)
         assert u_resigned > u_present
         # But there IS a cost from early departure param
@@ -2250,55 +2263,69 @@ class TestScenarioUtilities:
         # ASA gets vindication reward
         assert u_resigned > u_present
 
-    def test_board_adverse_review_ceo_present_penalty(self):
-        """Board utility penalised when review adverse AND CEO still present."""
+    def test_board_negative_review_finding_penalty(self):
+        """Board utility penalised when review returns negative findings."""
         from engine.utilities import utility_board, TerminalOutcome
         params = {"vote_penalty_weight": 2.0, "overwhelming_penalty_weight": 3.0,
                   "spill_risk_weight": 2.5, "review_car_weight": 15.0,
                   "review_direct_cost_weight": 15.0, "implementation_cost_sack": 1.0,
                   "ceo_loss_cost": 1.5, "reputational_spill_weight": 1.0,
-                  "adverse_review_ceo_present_penalty": 5.0}
+                  "negative_review_finding_penalty": 5.0}
 
-        # Adverse review, CEO still present → penalty applies
-        out_adverse_present = TerminalOutcome(
-            review_commissioned=True, review_adverse=True,
+        # Negative review → penalty fires regardless of CEO status
+        out_negative = TerminalOutcome(
+            review_commissioned=True, review_outcome="negative",
             review_car=-0.05, CEO_removed=False)
-        u_adverse = utility_board(out_adverse_present, params)
+        u_negative = utility_board(out_negative, params)
 
-        # Adverse review, CEO removed → penalty does NOT apply
-        out_adverse_removed = TerminalOutcome(
-            review_commissioned=True, review_adverse=True,
-            review_car=-0.05, CEO_removed=True,
-            d_rev_action="Drev_sack_ceo")
-        u_removed = utility_board(out_adverse_removed, params)
-
-        # Penalty difference should be adverse_review_ceo_present_penalty (5.0)
-        # plus ceo_loss_cost (1.5) for removal, so net = 5.0 - 1.5 = 3.5
-        assert u_removed > u_adverse, (
-            f"Sacking after adverse review ({u_removed:.2f}) should beat "
-            f"keeping CEO ({u_adverse:.2f})")
-
-    def test_board_no_penalty_positive_review(self):
-        """No adverse_review_ceo_present_penalty when review is positive."""
-        from engine.utilities import utility_board, TerminalOutcome
-        params = {"review_car_weight": 15.0, "review_direct_cost_weight": 15.0,
-                  "adverse_review_ceo_present_penalty": 5.0,
-                  "inaction_base_penalty": 3.0, "inaction_no_review_penalty": 2.0,
-                  "inaction_ceo_present_penalty": 5.0, "inaction_no_sack_penalty": 3.0}
-
-        # Positive review, CEO present → no adverse penalty
+        # Positive review → no penalty
         out_positive = TerminalOutcome(
-            review_commissioned=True, review_adverse=False,
+            review_commissioned=True, review_outcome="positive",
             review_car=0.05, CEO_removed=False)
         u_positive = utility_board(out_positive, params)
 
-        # Adverse review, CEO present → adverse penalty fires
+        # Negative review should cost at least the penalty (5.0)
+        assert u_positive > u_negative, (
+            f"Positive review ({u_positive:.2f}) should beat "
+            f"negative review ({u_negative:.2f})")
+
+        # Penalty also fires when CEO is removed
+        out_negative_removed = TerminalOutcome(
+            review_commissioned=True, review_outcome="negative",
+            review_car=-0.05, CEO_removed=True,
+            d_rev_action="Drev_sack_ceo")
+        u_neg_removed = utility_board(out_negative_removed, params)
+
+        out_positive_removed = TerminalOutcome(
+            review_commissioned=True, review_outcome="positive",
+            review_car=0.05, CEO_removed=True,
+            d_rev_action="Drev_sack_ceo")
+        u_pos_removed = utility_board(out_positive_removed, params)
+
+        # Even with CEO removed, negative review is worse than positive
+        assert u_pos_removed > u_neg_removed
+
+    def test_board_no_penalty_positive_review(self):
+        """No negative_review_finding_penalty when review is positive."""
+        from engine.utilities import utility_board, TerminalOutcome
+        params = {"review_car_weight": 15.0, "review_direct_cost_weight": 15.0,
+                  "negative_review_finding_penalty": 5.0,
+                  "inaction_base_penalty": 3.0, "inaction_no_review_penalty": 2.0,
+                  "inaction_ceo_present_penalty": 5.0, "inaction_no_sack_penalty": 3.0}
+
+        # Positive review, CEO present → no negative penalty
+        out_positive = TerminalOutcome(
+            review_commissioned=True, review_outcome="positive",
+            review_car=0.05, CEO_removed=False)
+        u_positive = utility_board(out_positive, params)
+
+        # Negative review, CEO present → negative penalty fires
         out_adverse = TerminalOutcome(
-            review_commissioned=True, review_adverse=True,
+            review_commissioned=True, review_outcome="negative",
             review_car=-0.05, CEO_removed=False)
         u_adverse = utility_board(out_adverse, params)
 
-        # Positive review should be better than adverse review
+        # Positive review should be better than negative review
         assert u_positive > u_adverse
 
 
@@ -2459,9 +2486,10 @@ class TestInteractiveTree:
     def test_is_actual_edge_review_node(self):
         """Fuzzy match on review node (R) chance outcomes."""
         from run.interactive_tree import _is_actual_edge
-        actual = {"R": "adverse"}
-        assert _is_actual_edge("R", "Adverse finding", actual) is True
-        assert _is_actual_edge("R", "No adverse", actual) is False
+        actual = {"R": "negative"}
+        assert _is_actual_edge("R", "Negative", actual) is True
+        assert _is_actual_edge("R", "Balanced", actual) is False
+        assert _is_actual_edge("R", "Positive", actual) is False
 
     def test_is_actual_edge_passthrough(self):
         """Pass-through nodes always match."""

@@ -35,15 +35,18 @@
 //   1: w_inaction_base
 //   2: w_inaction_no_review
 //   3: w_inaction_delay  (reactive governance penalty)
-//   4: w1  (early CEO departure cost)
+//   4: w_passivity  (board passivity after CEO departure)
 //   5: w_removal  (CEO involuntary removal cost)  [derived: w[6] + delta]
 //   6: w_remove_ceo_overwhelming  (CEO removal shock relief, overwhelming vote)
-//   7: w15  (adverse review + CEO present penalty)
+//   7: w_review_negative  (negative review finding penalty)
+//   8: w_review_balanced  (balanced review finding penalty)
+//   9: w_review_post_removal  (no review after involuntary CEO removal)
+//  10: w_ceo_accountability  (accountability benefit: removal backed by review)
 
 data {
   int<lower=1> N;                          // total observations
   int<lower=1> S;                          // unique (scenario, action) pairs
-  int<lower=1> K;                          // number of linear weight parameters (7)
+  int<lower=1> K;                          // number of linear weight parameters (10)
   array[N] int<lower=1, upper=5> y;        // observed Likert scores
   array[N] int<lower=1, upper=S> sa_id;    // (scenario,action) pair index per obs
   matrix[S, K] phi;                        // basis function values
@@ -65,16 +68,20 @@ data {
 parameters {
   // Direct positive weights — no hidden transforms.
   // Stan internally log-transforms <lower=0> parameters for HMC.
-  real<lower=0> w_raw_1;                   // w_inaction_base
-  real<lower=0> w_raw_2;                   // w_inaction_no_review
-  real<lower=0> w_raw_3;                   // w_inaction_delay
-  real<lower=0> w_raw_4;                   // w1
-  real<lower=0> w_raw_6;                   // w_remove_ceo_overwhelming
-  real<lower=0> delta_removal;             // w_removal - w_remove_ceo_overwhelming > 0
-  real<lower=0> w_raw_7;                   // w15
+  // Upper bound prevents exp() overflow during warmup (far beyond posterior mass).
+  real<lower=0, upper=500> w_raw_1;        // w_inaction_base
+  real<lower=0, upper=500> w_raw_2;        // w_inaction_no_review
+  real<lower=0, upper=500> w_raw_3;        // w_inaction_delay
+  real<lower=0, upper=500> w_raw_4;        // w_passivity
+  real<lower=0, upper=500> w_raw_6;        // w_remove_ceo_overwhelming
+  real<lower=0, upper=500> delta_removal;  // w_removal - w_remove_ceo_overwhelming > 0
+  real<lower=0, upper=500> w_raw_7;        // w_review_negative
+  real<lower=0, upper=500> w_raw_7b;       // w_review_balanced
+  real<lower=0, upper=500> w_raw_8;        // w_review_post_removal
+  real<lower=0, upper=500> w_raw_9;        // w_ceo_accountability
 
-  real<lower=0> w_strike;                  // vote strike penalty
-  real<lower=0> w_overwh;                  // vote overwhelming penalty
+  real<lower=0, upper=500> w_strike;       // vote strike penalty
+  real<lower=0, upper=500> w_overwh;       // vote overwhelming penalty
 
   // Cutpoints reparameterised to avoid degeneracy / overflow
   real cutpoint_base_raw;                  // unconstrained base location
@@ -92,11 +99,14 @@ transformed parameters {
   w[1] = w_raw_1;                          // w_inaction_base
   w[2] = w_raw_2;                          // w_inaction_no_review
   w[3] = w_raw_3;                          // w_inaction_delay
-  w[4] = w_raw_4;                          // w1
+  w[4] = w_raw_4;                          // w_passivity
   // w_removal = w_remove_ceo_overwhelming + delta, guarantees w_removal > w_remove_ceo_overwhelming > 0
   w[6] = w_raw_6;                          // w_remove_ceo_overwhelming
   w[5] = w_raw_6 + delta_removal;          // w_removal
-  w[7] = w_raw_7;                          // w15
+  w[7] = w_raw_7;                          // w_review_negative
+  w[8] = w_raw_7b;                         // w_review_balanced
+  w[9] = w_raw_8;                          // w_review_post_removal
+  w[10] = w_raw_9;                         // w_ceo_accountability
 
   // Latent utility: linear basis + anchored - linear vote penalties
   mu = phi * w + anchored;
@@ -126,10 +136,13 @@ model {
   w_raw_1 ~ lognormal(1.10, 1.0);         // log(3.0) ≈ 1.10   w_inaction_base, median 3.0
   w_raw_2 ~ lognormal(0.69, 1.0);         // log(2.0) ≈ 0.69   w_inaction_no_review, median 2.0
   w_raw_3 ~ lognormal(0.41, 1.0);         // log(1.5) ≈ 0.41   w_inaction_delay, median 1.5
-  w_raw_4 ~ lognormal(-0.69, 1.0);        // log(0.5) ≈ -0.69  w1, median 0.5
+  w_raw_4 ~ lognormal(-0.69, 1.0);        // log(0.5) ≈ -0.69  w_passivity, median 0.5
   w_raw_6 ~ lognormal(-0.69, 1.0);        // log(0.5) ≈ -0.69  w_remove_ceo_overwhelming, median 0.5
   delta_removal ~ lognormal(0.26, 1.0);   // log(1.3) ≈ 0.26   delta (w_removal - w_rceo), median 1.3
-  w_raw_7 ~ lognormal(1.61, 1.0);         // log(5.0) ≈ 1.61   w15, median 5.0
+  w_raw_7 ~ lognormal(1.61, 1.0);         // log(5.0) ≈ 1.61   w_review_negative, median 5.0
+  w_raw_7b ~ lognormal(0.92, 1.0);        // log(2.5) ≈ 0.92   w_review_balanced, median 2.5
+  w_raw_8 ~ lognormal(1.10, 1.0);         // log(3.0) ≈ 1.10   w_review_post_removal, median 3.0
+  w_raw_9 ~ lognormal(1.10, 1.0);         // log(3.0) ≈ 1.10   w_ceo_accountability, median 3.0
 
   // Vote penalty priors (lognormal, same as before but now explicit)
   w_strike ~ lognormal(0.69, 1.0);        // log(2.0) ≈ 0.69   w_strike, median 2.0
@@ -148,6 +161,8 @@ model {
     int sa = sa_id[n];
     int sc = scenario_id[sa];
     real eta = (mu[sa] + sigma_scenario * z_scenario[sc]) / mu_scale;
+    // Clamp to prevent NaN from extreme proposals during warmup
+    eta = fmin(fmax(eta, -20), 20);
     y[n] ~ ordered_probit(eta, cutpoints);
   }
 }
@@ -159,6 +174,7 @@ generated quantities {
     int sa = sa_id[n];
     int sc = scenario_id[sa];
     real eta = (mu[sa] + sigma_scenario * z_scenario[sc]) / mu_scale;
+    eta = fmin(fmax(eta, -20), 20);
     y_rep[n] = ordered_probit_rng(eta, cutpoints);
   }
 }

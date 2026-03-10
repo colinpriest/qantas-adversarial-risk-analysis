@@ -29,7 +29,7 @@ class TerminalOutcome:
     vote_percent: float = 0.0
     strike_indicator: bool = False
     overwhelming_indicator: bool = False
-    review_adverse: bool = False       # Derived: review_car < 0
+    review_outcome: str = "none"       # "none", "negative", "balanced", "positive"
     review_car: float = 0.0           # Abnormal return from findings release
     review_direct_cost: float = 0.0   # Direct cost of review (decimal CAR, positive)
 
@@ -56,10 +56,12 @@ def utility_board(outcome: TerminalOutcome, params: dict[str, float]) -> float:
        - vote_overwhelming_penalty: w × max(0, (V-0.50)/0.50)
 
     3. RETAINED:
-       - early_ceo_departure_cost (w1)
+       - board_passivity_after_departure (w1)
        - implementation_cost_sack + ceo_loss_cost (w_removal)
        - ceo_loss_shock_overwhelming (w_remove_ceo_overwhelming)
-       - adverse_review_ceo_present_penalty (w15)
+       - negative_review_finding_penalty (w_review_negative)
+       - balanced_review_finding_penalty (w_review_balanced)
+       - review_after_removal_penalty (w_review_post_removal)
        - review_car_weight, review_direct_cost_weight (anchored)
     """
     u = 0.0
@@ -95,9 +97,11 @@ def utility_board(outcome: TerminalOutcome, params: dict[str, float]) -> float:
 
     # ── 3. RETAINED COMPONENTS ──
 
-    # Early CEO resignation: reduced disruption cost (w1, graduated by response)
+    # Board passivity after CEO departure (w1, graduated by response strength).
+    # Penalty for failing to respond when the CEO resigned early.
+    # Zero when Board responds decisively (response_strength = 1.0).
     if outcome.CEO_resigned_early:
-        u -= params.get("early_ceo_departure_cost", 0.5)
+        u -= params.get("board_passivity_after_departure", 0.5)
 
     # Review findings CAR impact with loss aversion (anchored):
     if outcome.review_commissioned:
@@ -128,10 +132,20 @@ def utility_board(outcome: TerminalOutcome, params: dict[str, float]) -> float:
             shock_relief += params.get("ceo_loss_shock_overwhelming", 0.5)
         u -= max(0.0, base_ceo_loss - shock_relief)
 
-    # Adverse review + CEO present penalty (w15)
-    if (outcome.review_commissioned and outcome.review_adverse
-            and ceo_present_at_end):
-        u -= params.get("adverse_review_ceo_present_penalty", 5.0)
+    # Review finding penalties (w_review_negative, w_review_balanced)
+    # Independent indicator-based: negative and balanced each have own penalty.
+    # Fires regardless of CEO status — review findings reflect on Board governance.
+    if outcome.review_commissioned:
+        if outcome.review_outcome == "negative":
+            u -= params.get("negative_review_finding_penalty", 5.0)
+        elif outcome.review_outcome == "balanced":
+            u -= params.get("balanced_review_finding_penalty", 2.5)
+
+    # Due diligence: no review after involuntary CEO removal (w_review_post_removal)
+    # Board removed the CEO but did not commission a governance review to address
+    # systemic issues or justify the removal decision.
+    if removed_involuntary and not outcome.review_commissioned:
+        u -= params.get("review_after_removal_penalty", 3.0)
 
     return u
 
@@ -273,7 +287,7 @@ def utility_ceo(outcome: TerminalOutcome, params: dict[str, float]) -> float:
             D_raw += params.get("D_agm", 30.0)
         if outcome.overwhelming_indicator:
             D_raw += params.get("D_disgrace", 30.0)
-        if outcome.review_commissioned and outcome.review_adverse:
+        if outcome.review_commissioned and outcome.review_outcome == "negative":
             D_raw += params.get("D_adverse_review", 10.0)
 
     # Reference-dependent CRRA with loss aversion on W
@@ -316,4 +330,175 @@ def compute_utility(
     fn = UTILITY_FUNCTIONS.get(actor)
     if fn is None:
         raise ValueError(f"Unknown actor: {actor}")
+    return fn(outcome, params)
+
+
+# ── Decomposed utility (for terminal node tooltips) ──────────────────
+
+def _decompose_board(outcome: TerminalOutcome, params: dict[str, float]) -> dict[str, float]:
+    """Return Board utility broken into named components."""
+    components: dict[str, float] = {}
+
+    ceo_present_at_end = not outcome.CEO_removed and not outcome.CEO_resigned_early
+    removed_involuntary = outcome.CEO_removed and not outcome.CEO_resigned_early
+    board_inactive = (outcome.d1_action == "D0_minimal")
+    if outcome.d_rev_action in ("Drev_sack_ceo", "Drev_commission_review"):
+        board_inactive = False
+    if outcome.d_rev_post_review_action == "Drev_sack_ceo":
+        board_inactive = False
+
+    # Inaction components
+    if board_inactive:
+        components["inaction_base"] = -params.get("inaction_base_penalty", 3.0)
+    if not outcome.review_commissioned:
+        components["no_review"] = -params.get("inaction_no_review_penalty", 2.0)
+    if ceo_present_at_end:
+        components["ceo_present"] = -params.get("inaction_ceo_present_penalty", 5.0)
+    if not removed_involuntary:
+        components["no_sack"] = -params.get("inaction_no_sack_penalty", 3.0)
+
+    # Vote penalties
+    vote_pct = outcome.vote_percent
+    if outcome.strike_indicator:
+        w_strike = params.get("vote_strike_penalty", 2.0)
+        components["vote_strike"] = -w_strike * max(0.0, (vote_pct - 0.25) / 0.75)
+    if outcome.overwhelming_indicator:
+        w_ow = params.get("vote_overwhelming_penalty", 3.0)
+        components["vote_overwhelming"] = -w_ow * max(0.0, (vote_pct - 0.50) / 0.50)
+
+    # Retained
+    if outcome.CEO_resigned_early:
+        components["board_passivity_after_departure"] = -params.get("board_passivity_after_departure", 0.5)
+
+    if outcome.review_commissioned:
+        w_car_anchor = params.get("review_car_weight", 15.0)
+        lambda_la = params.get("review_car_loss_aversion", 2.25)
+        w_car_pos = w_car_anchor / ((1.0 + lambda_la) / 2.0)
+        w_car_neg = lambda_la * w_car_pos
+        car_val = w_car_pos * max(outcome.review_car, 0.0) - w_car_neg * max(-outcome.review_car, 0.0)
+        if abs(car_val) > 1e-9:
+            components["review_car"] = car_val
+        direct_cost = -params.get("review_direct_cost_weight", 15.0) * outcome.review_direct_cost
+        if abs(direct_cost) > 1e-9:
+            components["review_direct_cost"] = direct_cost
+
+    impl_cost = 0.0
+    if outcome.d1_action == "D3_ceo_transition":
+        impl_cost -= params.get("implementation_cost_sack", 1.0)
+    if outcome.d_rev_action == "Drev_sack_ceo":
+        impl_cost -= params.get("implementation_cost_sack", 1.0)
+    if outcome.d_rev_post_review_action == "Drev_sack_ceo":
+        impl_cost -= params.get("implementation_cost_sack", 1.0)
+    if abs(impl_cost) > 1e-9:
+        components["implementation_cost"] = impl_cost
+
+    if removed_involuntary:
+        base_ceo_loss = params.get("ceo_loss_cost", 1.5)
+        shock_relief = 0.0
+        if outcome.overwhelming_indicator:
+            shock_relief += params.get("ceo_loss_shock_overwhelming", 0.5)
+        net = -max(0.0, base_ceo_loss - shock_relief)
+        if abs(net) > 1e-9:
+            components["ceo_loss_cost"] = net
+
+    if outcome.review_commissioned:
+        if outcome.review_outcome == "negative":
+            components["negative_review_finding"] = -params.get("negative_review_finding_penalty", 5.0)
+        elif outcome.review_outcome == "balanced":
+            components["balanced_review_finding"] = -params.get("balanced_review_finding_penalty", 2.5)
+
+    if removed_involuntary and not outcome.review_commissioned:
+        components["review_after_removal"] = -params.get("review_after_removal_penalty", 3.0)
+
+    return components
+
+
+def _decompose_asa(outcome: TerminalOutcome, params: dict[str, float]) -> dict[str, float]:
+    """Return ASA utility broken into named components."""
+    components: dict[str, float] = {}
+
+    if outcome.CEO_resigned_early:
+        components["early_ceo_departure"] = params.get("early_ceo_departure_reward", 2.0)
+
+    components["vote_reward"] = params.get("vote_reward_weight", 2.0) * outcome.vote_percent
+
+    if outcome.overwhelming_indicator:
+        components["overwhelming_bonus"] = params.get("overwhelming_reward_weight", 2.0)
+
+    if outcome.CEO_removed and not outcome.CEO_resigned_early:
+        components["ceo_removal"] = params.get("ceo_removal_reward", 3.0)
+
+    if outcome.review_commissioned:
+        car_impact = -params.get("review_car_weight", 15.0) * outcome.review_car
+        if abs(car_impact) > 1e-9:
+            components["review_car"] = car_impact
+
+    if outcome.a2_action == "A2_rec_strike":
+        components["mobilisation_cost"] = -params.get("mobilisation_cost", 1.0)
+
+    if outcome.vote_percent > 0.25:
+        components["reputational_gain"] = params.get("reputational_gain_weight", 1.0) * (outcome.vote_percent - 0.25)
+
+    if outcome.a2_action == "A2_rec_strike" and outcome.strike_indicator:
+        components["market_alignment"] = params.get("market_alignment_bonus", 1.5)
+
+    return components
+
+
+def _decompose_ceo(outcome: TerminalOutcome, params: dict[str, float]) -> dict[str, float]:
+    """Return CEO utility broken into named components (summary level)."""
+    components: dict[str, float] = {}
+
+    if outcome.CEO_resigned_early:
+        components["W_resign"] = params.get("W_resign", 8.0)
+        components["D_resign"] = -params.get("D_resign", 40.0)
+    else:
+        effective_d4 = outcome.d4_action
+        if outcome.d4_post_review_action in ("D4_resign", "D4_negotiate_exit"):
+            effective_d4 = outcome.d4_post_review_action
+
+        if not outcome.CEO_removed:
+            components["W_stay_kept"] = params.get("W_stay_kept", 7.0)
+        elif effective_d4 == "D4_negotiate_exit":
+            components["W_negotiate"] = (params.get("W_stay_sacked", 1.5) + params.get("W_stay_kept", 7.0)) / 2.0
+        elif effective_d4 == "D4_resign":
+            components["W_resign_late"] = params.get("W_stay_sacked", 1.5) * 1.3
+        else:
+            components["W_sacked"] = params.get("W_stay_sacked", 1.5)
+
+        D_raw = params.get("D_stay", 25.0)
+        components["D_stay_base"] = -D_raw
+        if outcome.CEO_removed:
+            if effective_d4 == "D4_negotiate_exit":
+                components["D_negotiate"] = -params.get("D_negotiate", 45.0)
+            elif effective_d4 == "D4_resign":
+                components["D_resign_late"] = -params.get("D_resign_late", 60.0)
+            else:
+                components["D_sacked"] = -params.get("D_sacked", 100.0)
+        if outcome.vote_percent > 0.25:
+            components["D_agm"] = -params.get("D_agm", 30.0)
+        if outcome.overwhelming_indicator:
+            components["D_disgrace"] = -params.get("D_disgrace", 30.0)
+        if outcome.review_commissioned and outcome.review_outcome == "negative":
+            components["D_adverse_review"] = -params.get("D_adverse_review", 10.0)
+
+    return components
+
+
+_DECOMPOSE_FUNCTIONS = {
+    "Board": _decompose_board,
+    "ASA": _decompose_asa,
+    "CEO": _decompose_ceo,
+}
+
+
+def decompose_utility(
+    actor: str,
+    outcome: TerminalOutcome,
+    params: dict[str, float],
+) -> dict[str, float]:
+    """Return named utility components for any actor at a terminal outcome."""
+    fn = _DECOMPOSE_FUNCTIONS.get(actor)
+    if fn is None:
+        return {}
     return fn(outcome, params)

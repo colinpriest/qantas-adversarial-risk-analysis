@@ -39,7 +39,7 @@ def _load_estimated_weights(csv_path: str) -> dict[str, float]:
 
     # Direct mappings (1:1 between quantification and engine)
     direct = {
-        "w1": "early_ceo_departure_cost",
+        "w_passivity": "board_passivity_after_departure",
         "w2": "vote_penalty_weight",
         "w3": "overwhelming_penalty_weight",
         "w4": "spill_risk_weight",
@@ -49,7 +49,8 @@ def _load_estimated_weights(csv_path: str) -> dict[str, float]:
         "w9": "reputational_spill_weight",
         "w12": "board_d1_liability",
         "w13": "qantas_legal_d1_penalty",
-        "w15": "adverse_review_ceo_present_penalty",
+        "w_review_negative": "negative_review_finding_penalty",
+        "w_review_balanced": "balanced_review_finding_penalty",
     }
 
     out = {}

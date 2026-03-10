@@ -249,23 +249,23 @@ class PredictiveDistribution:
                     h["V_strike"] = vote_out.strike_indicator
                     h["V_overwhelming"] = vote_out.overwhelming_indicator
                 elif current_node == "R":
-                    # Draw p_adverse once per rollout (epistemic)
-                    p_adverse = self.chance_models.review.draw_adverse_probability(
+                    # Draw outcome probabilities once per rollout (epistemic)
+                    outcome_probs = self.chance_models.review.draw_outcome_probabilities(
                         rng, bias=self.overconfidence_bias
                     )
                     review_out = self.chance_models.sample_review(
                         draw_i, self.beliefs, h, s, rng,
                         bias=self.overconfidence_bias,
-                        p_adverse=p_adverse,
+                        outcome_probs=outcome_probs,
                     )
                     h["R"] = "review"
-                    h["R_adverse"] = review_out.review_adverse
+                    h["R_outcome"] = review_out.review_outcome
                     h["R_car"] = review_out.review_car
                     h["R_direct_cost"] = (
                         self.chance_models.sample_review_direct_cost(rng)
                         if s.review_commissioned else 0.0
                     )
-                    s = s.apply("R", "adverse" if review_out.review_adverse else "no_adverse")
+                    s = s.apply("R", review_out.review_outcome)
                 elif current_node in ("M_agm", "M_rev"):
                     # Market reaction nodes - pass through
                     h[current_node] = "market_reaction"
@@ -438,7 +438,7 @@ class PredictiveDistribution:
             vote_percent=history.get("V_percent", 0.0),
             strike_indicator=history.get("V_strike", False),
             overwhelming_indicator=history.get("V_overwhelming", False),
-            review_adverse=history.get("R_adverse", False),
+            review_outcome=history.get("R_outcome", "none"),
             review_car=history.get("R_car", 0.0),
             review_direct_cost=history.get("R_direct_cost", 0.0),
             CEO_removed=state.CEO_removed,

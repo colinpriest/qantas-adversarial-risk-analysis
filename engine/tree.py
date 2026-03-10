@@ -319,10 +319,10 @@ class TreeEvaluator:
             # No review: deterministic pass-through
             h = dict(history)
             h["R"] = "review"
-            h["R_adverse"] = False
+            h["R_outcome"] = "none"
             h["R_car"] = 0.0
             h["R_direct_cost"] = 0.0
-            s_copy = state.apply("R", "no_adverse")
+            s_copy = state.apply("R", "positive")  # No review → treat as positive (no penalty)
             next_node = state.next_node("R")
             return self.value(next_node, h, s_copy, draw_i, mode, rng, utility_target)
 
@@ -330,10 +330,9 @@ class TreeEvaluator:
         # Gamma(4.55, 4741) in decimal CAR — fees, distraction, internal resources.
         review_direct_cost = self.chance_models.sample_review_direct_cost(rng)
 
-        # Draw adverse probability ONCE per belief draw (epistemic).
-        # p_adverse ~ Beta(10, 5) from Dirichlet(5,5,5) grouping neg+neutral.
-        # See external-governance-review-Bayesian-distribution.md §4.2.
-        p_adverse = self.chance_models.review.draw_adverse_probability(
+        # Draw outcome probabilities ONCE per belief draw (epistemic).
+        # (p_neg, p_bal, p_pos) ~ Dirichlet(5,5,5), E = (1/3, 1/3, 1/3).
+        outcome_probs = self.chance_models.review.draw_outcome_probabilities(
             rng, bias=self.overconfidence_bias
         )
 
@@ -343,16 +342,16 @@ class TreeEvaluator:
             review_out = self.chance_models.sample_review(
                 draw_i, self.beliefs, history, state, s_rng,
                 bias=self.overconfidence_bias,
-                p_adverse=p_adverse,
+                outcome_probs=outcome_probs,
             )
 
             h = dict(history)
             h["R"] = "review"
-            h["R_adverse"] = review_out.review_adverse
+            h["R_outcome"] = review_out.review_outcome
             h["R_car"] = review_out.review_car
             h["R_direct_cost"] = review_direct_cost
 
-            s = state.apply("R", "adverse" if review_out.review_adverse else "no_adverse")
+            s = state.apply("R", review_out.review_outcome)
 
             next_node = state.next_node("R")
             total += self.value(next_node, h, s, draw_i, mode, s_rng, utility_target)

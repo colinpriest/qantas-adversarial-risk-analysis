@@ -33,7 +33,7 @@ FEASIBILITY_RULES = {
     "review_commissioned": lambda s: s.review_commissioned,
     "review_completed": lambda s: s.review_completed,
     "not_reviewed_yet": lambda s: not s.review_commissioned and not s.review_completed,
-    # Phase 6: conditional post-review round (review_adverse AND CEO was present at review)
+    # Phase 6: conditional post-review round (review negative AND CEO was present at review)
     "post_review_round": lambda s: s.post_review_round,
     "post_review_round_and_CEO_present": lambda s: s.post_review_round and s.CEO_present,
     "post_review_round_and_review_not_commissioned": lambda s: s.post_review_round and not s.review_commissioned,
@@ -53,8 +53,8 @@ class DecisionState:
     review_completed: bool = False
     CEO_removed: bool = False
     CEO_resigned_early: bool = False  # CEO resigned before game tree (pre-game scenario)
-    review_adverse: bool = False      # Review findings were adverse (CAR < 0)
-    post_review_round: bool = False   # Phase 6 active: review adverse AND CEO present at review
+    review_outcome: str = "none"      # Review outcome: "none", "negative", "balanced", "positive"
+    post_review_round: bool = False   # Phase 6 active: review negative AND CEO present at review
     headline_incident: bool = True    # Headline governance incident (activates gamma_AH + crisis floor)
     checkpoint_id: str = "C0"
 
@@ -118,14 +118,11 @@ class DecisionState:
             pass  # CEO stays — default state
 
         # Review outcome transitions (set by R chance node)
-        elif action == "adverse":
-            new.review_adverse = True
+        elif action in ("negative", "balanced", "positive"):
+            new.review_outcome = action
             new.review_completed = True
-            if new.CEO_present:
+            if action == "negative" and new.CEO_present:
                 new.post_review_round = True
-        elif action == "no_adverse":
-            new.review_adverse = False
-            new.review_completed = True
 
         return new
 

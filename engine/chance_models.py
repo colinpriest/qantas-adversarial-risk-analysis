@@ -27,18 +27,18 @@ class VoteOutcome:
 class ReviewOutcome:
     """Result of the review chance node.
 
-    The review produces a continuous abnormal return (CAR) from the findings
-    release window, calibrated from ASX governance review case studies
-    (board-background/governance-review-case-studies.md).
+    The review produces:
+    1. A qualitative outcome rating: "negative", "balanced", or "positive"
+       (equal 1/3 probabilities from Dirichlet(5,5,5)).
+    2. A continuous abnormal return (CAR) from the findings release window,
+       calibrated from ASX governance review case studies.
 
-    review_car: Cumulative abnormal return from the findings release.
-        Negative values indicate adverse market reaction (e.g., Star -13.95%).
-        Positive values indicate market relief (e.g., Qantas +0.85%).
-    review_adverse: Derived from review_car < 0. Used for state transitions
-        (e.g., Board can sack CEO after adverse findings).
+    review_outcome: Qualitative rating ("negative", "balanced", "positive",
+        or "none" if review not commissioned).
+    review_car: Cumulative abnormal return from findings release.
     """
-    review_adverse: bool   # Derived: review_car < 0
-    review_car: float = 0.0  # Abnormal return from findings release
+    review_outcome: str = "none"  # "none", "negative", "balanced", "positive"
+    review_car: float = 0.0      # Abnormal return from findings release
 
 
 @dataclass
@@ -285,20 +285,28 @@ class VoteModel:
 
 class ReviewModel:
     """
-    Review findings model: outcome rating + CAR.
+    Review findings model: trinary outcome rating + CAR.
 
     Two components:
 
-    1. **Outcome rating** (adverse vs positive):
-       Grounded in external-governance-review-Bayesian-distribution.md.
-       The Qantas review is non-regulatory (board-initiated), so the
-       outcome follows Dirichlet(5, 5, 5) over {Negative, Neutral, Positive}.
-       Grouping negative + neutral as "adverse":
+    1. **Outcome rating** (negative / balanced / positive):
+       Grounded in external-review-distributions.md posterior analysis.
+       The Qantas review is board-initiated during a crisis with
+       pre-existing reputational damage (ACCC ghost flights, Senate inquiry),
+       so the outcome follows Dirichlet(38, 160, 1) over
+       {Negative, Balanced, Positive}.
 
-           p_adverse ~ Beta(10, 5),  mean = 2/3
+           (p_neg, p_bal, p_pos) ~ Dirichlet(38, 160, 1)
+           E = (0.191, 0.804, 0.005)
+
+       Balanced/neutral dominates (~80%) because board-commissioned reviews
+       in crisis contexts admit "mistakes were made" without conceding
+       legal liability.  Negative is material (~19%) due to ACCC severity.
+       Positive is negligible (<1%) — a clean bill of health during active
+       litigation would be non-credible.
 
        Drawn ONCE per belief draw (epistemic uncertainty about the review
-       process), then each MC sample draws adverse ~ Bernoulli(p_adverse).
+       process), then each MC sample draws outcome ~ Categorical(p).
 
     2. **CAR** (market reaction to findings release):
        Student-t hierarchy calibrated from ASX governance review case
@@ -311,7 +319,7 @@ class ReviewModel:
        The CAR captures the market's quantitative reaction. It is
        separate from the qualitative outcome rating: a "positive" review
        could still produce a mildly negative CAR (market expected more),
-       and an "adverse" review could produce a mildly positive CAR
+       and a "negative" review could produce a mildly positive CAR
        (market had already priced in the bad news).
     """
 
@@ -322,34 +330,30 @@ class ReviewModel:
     MU_SCALE = 0.03     # Scale for μ_f: uncertainty about market read
     SIGMA_SCALE = 0.10  # Half-Normal scale for σ_f: high volatility
 
-    # Outcome rating: Dirichlet(5, 5, 5) → Beta(10, 5) for adverse
-    # See external-governance-review-Bayesian-distribution.md §4.2
-    ADVERSE_ALPHA = 10  # negative (5) + neutral (5)
-    POSITIVE_ALPHA = 5  # positive (5)
+    # Outcome rating: Dirichlet(38, 160, 1) → E = (0.191, 0.804, 0.005)
+    # See external-review-distributions.md posterior analysis
+    REVIEW_OUTCOMES = ("negative", "balanced", "positive")
+    DIRICHLET_ALPHA = np.array([38.0, 160.0, 1.0])  # (neg, bal, pos)
 
-    def draw_adverse_probability(
+    def draw_outcome_probabilities(
         self,
         rng: np.random.Generator,
         bias: Optional[OverconfidenceBias] = None,
-    ) -> float:
-        """Draw p_adverse ~ Beta(α, β) — once per belief draw (epistemic).
+    ) -> np.ndarray:
+        """Draw (p_negative, p_balanced, p_positive) ~ Dirichlet(38, 160, 1).
 
-        Returns the probability that the review outcome is adverse
-        (negative or neutral). Based on Dirichlet(5, 5, 5) for
-        non-regulatory reviews, grouping negative + neutral.
-        Unbiased: Beta(10, 5), mean = 2/3.
+        Drawn ONCE per belief draw (epistemic uncertainty about review process).
+        Returns array of 3 probabilities summing to 1.
 
-        When bias is set, the Board overestimates governance quality
-        and believes positive outcomes are more likely. The positive
-        pseudo-count is inflated proportional to review_car_bias:
-            β_biased = POSITIVE_ALPHA × (1 + 10 × review_car_bias)
-        With default bias (0.03): Beta(10, 6.5) → mean ≈ 0.606 (vs 0.667).
+        When bias is set, the Board overestimates governance quality,
+        inflating the positive pseudo-count:
+            α_positive_biased = 1 × (1 + 10 × review_car_bias)
+        With default bias (0.03): Dirichlet(38, 160, 1.3) → slight tilt toward positive.
         """
-        alpha = self.ADVERSE_ALPHA
-        beta = self.POSITIVE_ALPHA
+        alpha = self.DIRICHLET_ALPHA.copy()
         if bias is not None and bias.review_car_bias > 0:
-            beta = beta * (1.0 + 10.0 * bias.review_car_bias)
-        return float(rng.beta(alpha, beta))
+            alpha[2] = alpha[2] * (1.0 + 10.0 * bias.review_car_bias)
+        return rng.dirichlet(alpha)
 
     def sample(
         self,
@@ -359,19 +363,19 @@ class ReviewModel:
         state: DecisionState,
         rng: np.random.Generator,
         bias: Optional[OverconfidenceBias] = None,
-        p_adverse: Optional[float] = None,
+        outcome_probs: Optional[np.ndarray] = None,
     ) -> ReviewOutcome:
-        """Sample a review outcome (adverse rating + CAR).
+        """Sample a review outcome (trinary rating + CAR).
 
         Args:
             bias: If set, shifts the location parameter μ_f upward
                 (Board thinks findings will be more favourable).
-            p_adverse: Pre-drawn adverse probability from Beta(10, 5).
-                Drawn ONCE per belief draw via draw_adverse_probability().
-                If None, falls back to CAR < 0 for adverse determination.
+            outcome_probs: Pre-drawn (p_neg, p_bal, p_pos) from Dirichlet(38, 160, 1).
+                Drawn ONCE per belief draw via draw_outcome_probabilities().
+                If None, uses equal 1/3 probabilities.
         """
         if not state.review_commissioned:
-            return ReviewOutcome(review_adverse=False, review_car=0.0)
+            return ReviewOutcome(review_outcome="none", review_car=0.0)
 
         # Sample hierarchical CAR parameters
         mu_f = self.MU_LOC + self.MU_SCALE * rng.standard_t(self.MU_NU)
@@ -384,14 +388,15 @@ class ReviewModel:
         # Sample CAR from Student-t
         car = mu_f + max(sigma_f, 1e-6) * rng.standard_t(self.NU)
 
-        # Outcome rating: Dirichlet-based or CAR-sign fallback
-        if p_adverse is not None:
-            adverse = bool(rng.random() < p_adverse)
+        # Outcome rating: Dirichlet-based or equal probability fallback
+        if outcome_probs is not None:
+            idx = rng.choice(3, p=outcome_probs)
         else:
-            adverse = car < 0
+            idx = rng.choice(3)  # Equal 1/3 probabilities
+        outcome = self.REVIEW_OUTCOMES[idx]
 
         return ReviewOutcome(
-            review_adverse=adverse,
+            review_outcome=outcome,
             review_car=float(car),
         )
 
@@ -488,11 +493,11 @@ class ChanceModels:
         history: dict, state: DecisionState,
         rng: np.random.Generator,
         bias: Optional[OverconfidenceBias] = None,
-        p_adverse: Optional[float] = None,
+        outcome_probs: Optional[np.ndarray] = None,
     ) -> ReviewOutcome:
         return self.review.sample(
             draw_i, beliefs, history, state, rng,
-            bias=bias, p_adverse=p_adverse,
+            bias=bias, outcome_probs=outcome_probs,
         )
 
     def sample_review_direct_cost(self, rng: np.random.Generator) -> float:

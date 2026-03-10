@@ -74,9 +74,11 @@ def _is_actual_edge(node_name: str, edge_label: str, actual: dict) -> bool:
 
     # Review node: fuzzy matching
     if node_name == "R":
-        if actual_action == "adverse" and "Adverse" in edge_label:
+        if actual_action == "negative" and "Negative" in edge_label:
             return True
-        if actual_action == "no_adverse" and "No adverse" in edge_label:
+        if actual_action == "balanced" and "Balanced" in edge_label:
+            return True
+        if actual_action == "positive" and "Positive" in edge_label:
             return True
         return False
 
@@ -126,9 +128,16 @@ def viznode_to_dict(
         "focal_utility_decomposition": {},
         "predictive_dist": {},
         "outcome_stats": {},
+        "terminal_decomposition": {},
         "node_commentary": commentary.get(f"{node.id}__node", ""),
         "children": [],
     }
+
+    # Attach terminal-specific utility decomposition
+    if node.node_type == "terminal" and hasattr(node, "terminal_decomposition") and node.terminal_decomposition:
+        d["terminal_decomposition"] = {
+            k: round(v, 4) for k, v in node.terminal_decomposition.items()
+        }
 
     # Enrich node with data from SolveResult
     _enrich_node_data(d, results, scenario_context, d1_action_context)
@@ -447,7 +456,8 @@ def _collect_commentary_items(
     stats_str = ""
     if stats:
         stat_parts = []
-        for k in ("Pr_strike", "Pr_CEO_removed", "Pr_overwhelming", "Pr_review_adverse",
+        for k in ("Pr_strike", "Pr_CEO_removed", "Pr_overwhelming",
+                  "Pr_review_negative", "Pr_review_balanced", "Pr_review_positive",
                   "mean_vote_percent"):
             if k in stats:
                 v = stats[k]
@@ -896,34 +906,41 @@ function update(source) {
     nodeEnter.each(function(d) {
         const el = d3.select(this);
         const col = COLOURS[d.data.owner] || "#888";
-        let shape;
         if (d.data.type === "terminal") {
+            // Invisible rect hit-area behind diamond (ensures reliable hover)
+            el.append("rect")
+                .attr("class", "node-hit-area")
+                .attr("x", -nodeW/2).attr("y", -nodeH/2)
+                .attr("width", nodeW).attr("height", nodeH)
+                .attr("fill", "transparent").attr("stroke", "none");
             // Diamond
-            shape = el.append("polygon")
+            el.append("polygon")
                 .attr("class", "node-shape")
                 .attr("points", `0,${-nodeH/2} ${nodeW/2},0 0,${nodeH/2} ${-nodeW/2},0`)
-                .attr("fill", col).attr("stroke", d3.color(col).darker(0.4));
+                .attr("fill", col).attr("stroke", d3.color(col).darker(0.4))
+                .style("pointer-events", "none");
         } else if (d.data.type === "chance") {
             // Ellipse
-            shape = el.append("ellipse")
+            el.append("ellipse")
                 .attr("class", "node-shape")
                 .attr("rx", nodeW/2).attr("ry", nodeH/2)
                 .attr("fill", col).attr("stroke", d3.color(col).darker(0.4));
         } else {
             // Rectangle (decision)
-            shape = el.append("rect")
+            el.append("rect")
                 .attr("class", "node-shape")
                 .attr("x", -nodeW/2).attr("y", -nodeH/2)
                 .attr("width", nodeW).attr("height", nodeH)
                 .attr("rx", 4).attr("ry", 4)
                 .attr("fill", col).attr("stroke", d3.color(col).darker(0.4));
         }
-        // Click on node shape: expand/collapse children
-        shape.on("click", (ev, d2) => { ev.stopPropagation(); toggle(d); });
-        // Mouseover on node shape: show info popup; mouseout: schedule hide
-        shape.on("mouseover", (ev) => { showNodePopup(d); })
-             .on("mouseout", () => { scheduleHidePopup(); });
     });
+
+    // Attach event handlers on the group element (reliable for all shapes)
+    nodeEnter
+        .on("click", (ev, d) => { ev.stopPropagation(); toggle(d); })
+        .on("mouseover", (ev, d) => { showNodePopup(d); })
+        .on("mouseout", (ev, d) => { scheduleHidePopup(); });
 
     // Node label (name) — pointer-events none so clicks/hovers pass to shape
     nodeEnter.append("text")
@@ -1140,6 +1157,22 @@ function showNodePopup(d) {
     html += `<span class="badge" style="background:${col}">${nd.owner}</span>`;
     html += `<span class="badge" style="background:#888">${nd.type}</span>`;
     html += `<span style="font-size:12px; color:#666; margin-left:8px">EU = ${nd.eu >= 0 ? "+" : ""}${nd.eu.toFixed(4)}</span>`;
+
+    // Terminal node utility decomposition (component breakdown)
+    const termDecomp = nd.terminal_decomposition;
+    if (termDecomp && Object.keys(termDecomp).length > 0) {
+        html += `<div class="section-title">Utility Components</div>`;
+        html += `<table><tr><th>Component</th><th>Value</th></tr>`;
+        let total = 0;
+        for (const [k, v] of Object.entries(termDecomp)) {
+            const name = k.replace(/_/g, " ");
+            const cls = v < -0.01 ? ' style="color:#C0392B"' : v > 0.01 ? ' style="color:#27AE60"' : '';
+            html += `<tr><td>${name}</td><td${cls}>${v >= 0 ? "+" : ""}${v.toFixed(4)}</td></tr>`;
+            total += v;
+        }
+        html += `<tr style="border-top:2px solid #999;font-weight:600"><td>Total</td><td>${total >= 0 ? "+" : ""}${total.toFixed(4)}</td></tr>`;
+        html += `</table>`;
+    }
 
     // Edge probabilities (children)
     if (nd.children && nd.children.length > 0) {
