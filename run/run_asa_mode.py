@@ -1,9 +1,13 @@
 """
-Run the ARA engine in ASA-focal mode.
+Run the game tree in ASA-focal mode.
+
+ASA decisions are strategic (argmax over ASA utility).
+Board decisions are probabilistic (argmax-count from posterior weight draws).
+All other actors use fixed probabilities from board_utility_quantification.py.
 
 Usage:
-    python -m run.run_asa_mode --checkpoint C0 --n_draws 100
-    python -m run.run_asa_mode --all_checkpoints --n_draws 50
+    python -m run.run_asa_mode --n_draws 500
+    python -m run.run_asa_mode --n_draws 500 --no-laplacian
 """
 
 import argparse
@@ -11,12 +15,17 @@ import logging
 import sys
 from pathlib import Path
 
+# Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from engine.solver import Solver
-from engine.modes import MODE_ASA, MODE_ASA_L2, MODE_ASA_POLICY_BOARD
-from run.visualise_tree import build_unified_tree, render_tree
+from run.game_tree import (
+    TreeConfig, TREE_DEFAULT_PROBS, ESTIMABLE_PARAM_NAMES,
+    build_game_tree, make_initial_state,
+    load_posterior_draws, load_vote_weights, load_actor_params_from_spec,
+)
+from run.visualise_tree import render_tree
+from run.interactive_tree import render_interactive_tree
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,167 +36,109 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run ARA in ASA-focal mode")
-    parser.add_argument("--checkpoint", type=str, default="C0")
-    parser.add_argument("--all_checkpoints", action="store_true")
-    parser.add_argument("--n_draws", type=int, default=100)
-    parser.add_argument("--K", type=int, default=200)
-    parser.add_argument("--R_rollouts", type=int, default=50)
-    parser.add_argument("--level", type=int, default=1, choices=[1, 2])
-    parser.add_argument("--board_policy", action="store_true",
-                        help="Use fixed policy for Board instead of ARA")
-    parser.add_argument("--scenario", type=str, default="both",
-                        choices=["ceo_stayed", "ceo_resigned", "both"],
-                        help="Pre-game CEO resignation scenario (default: both)")
+    parser = argparse.ArgumentParser(description="Run game tree in ASA-focal mode")
+    parser.add_argument("--n_draws", type=int, default=500,
+                        help="Number of posterior draws to use (default: 500)")
+    parser.add_argument("--posterior-draws", type=str, default=None,
+                        help="Path to stan_posterior_draws.npz (default: outputs/)")
+    parser.add_argument("--param-estimates", type=str, default=None,
+                        help="Path to parameter_estimates.csv (for vote weights)")
+    parser.add_argument("--no-laplacian", action="store_true",
+                        help="Disable Laplacian smoothing on decision probs")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--n_workers", type=int, default=None,
-                        help="Number of parallel worker processes (default: cpu_count - 1)")
-    parser.add_argument("--K_d0", type=int, default=50,
-                        help="Opponent samples for D0_ceo Level-2 prediction (default: 50)")
-    parser.add_argument("--R_d0", type=int, default=10,
-                        help="Rollouts per action for D0_ceo prediction (default: 10)")
-    parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--no-board-prior", action="store_true",
-                        help="Disable Laplace smoothing on Board's predictive distribution")
-    parser.add_argument("--no-ceo-prior", action="store_true",
-                        help="Disable Laplace smoothing on CEO's predictive distribution")
-    parser.add_argument("--no-asa-prior", action="store_true",
-                        help="Disable Laplace smoothing on ASA's predictive distribution")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Output CSV path")
 
     args = parser.parse_args()
 
-    no_prior_actors = set()
-    if args.no_board_prior:
-        no_prior_actors.add("Board")
-    if args.no_ceo_prior:
-        no_prior_actors.add("CEO")
-    if args.no_asa_prior:
-        no_prior_actors.add("ASA")
-    if no_prior_actors:
-        logger.info(f"Laplace smoothing DISABLED for: {', '.join(sorted(no_prior_actors))}")
+    # ── Load posterior draws ──
+    draws_path = args.posterior_draws or str(PROJECT_ROOT / "outputs" / "stan_posterior_draws.npz")
+    w_draws = load_posterior_draws(draws_path)
 
+    # Subsample if needed
+    import numpy as np
+    if w_draws.shape[0] > args.n_draws:
+        rng = np.random.default_rng(args.seed)
+        idx = rng.choice(w_draws.shape[0], size=args.n_draws, replace=False)
+        w_draws = w_draws[idx]
+        logger.info(f"Subsampled to {args.n_draws} posterior draws")
+
+    # ── Load vote penalty weights ──
+    est_path = args.param_estimates or str(PROJECT_ROOT / "outputs" / "parameter_estimates.csv")
+    vote_weights = load_vote_weights(est_path)
+    logger.info(f"Vote weights: w_strike={vote_weights['w_strike']:.4f}, "
+                f"w_overwhelming={vote_weights['w_overwhelming']:.4f}")
+
+    # ── Load CEO and ASA parameters ──
     data_dir = PROJECT_ROOT / "data"
-    solver = Solver(
-        governance_spec_path=data_dir / "governance_spec.xlsx",
-        opponent_priors_path=data_dir / "opponent_priors.xlsx",
-        checkpoint_dir=data_dir / "checkpoints",
-        K=args.K,
-        R_rollouts=args.R_rollouts,
-        seed=args.seed,
-        n_workers=args.n_workers,
-        K_d0_ceo=args.K_d0,
-        R_d0_ceo=args.R_d0,
-        no_prior_actors=no_prior_actors,
+    ceo_params, asa_params = load_actor_params_from_spec(data_dir / "governance_spec.xlsx")
+    logger.info(f"Loaded {len(ceo_params)} CEO params, {len(asa_params)} ASA params")
+
+    # ── Build tree config (ASA-focal) ──
+    cfg = TreeConfig(
+        w_draws=w_draws,
+        vote_weights=vote_weights,
+        ceo_params=ceo_params,
+        asa_params=asa_params,
+        probs=dict(TREE_DEFAULT_PROBS),
+        focal_actor="ASA",
+        param_names=list(ESTIMABLE_PARAM_NAMES),
+        laplacian=not args.no_laplacian,
     )
 
-    if args.board_policy:
-        mode = MODE_ASA_POLICY_BOARD
-    elif args.level == 2:
-        mode = MODE_ASA_L2
-    else:
-        mode = MODE_ASA
+    # ── Build the full game tree ──
+    logger.info("Building ASA-focal game tree...")
+    initial_state = make_initial_state()
+    root, eu_draws = build_game_tree("D0_ceo", initial_state, cfg)
 
-    # Resolve scenarios to run
-    scenarios = (["ceo_stayed", "ceo_resigned"] if args.scenario == "both"
-                 else [args.scenario])
+    logger.info(f"Root EU = {root.eu:+.4f} (ASA utility, mean over {w_draws.shape[0]} draws)")
 
-    if args.all_checkpoints:
-        dfs = []
-        for scenario in scenarios:
-            df_s = solver.solve_all_checkpoints(
-                focal_actor="ASA",
-                mode=mode,
-                n_draws=args.n_draws,
-                scenario=scenario,
-            )
-            dfs.append(df_s)
-        df = __import__("pandas").concat(dfs, ignore_index=True)
-        print("\n" + "=" * 70)
-        print("ASA-FOCAL ARA RESULTS")
-        print("=" * 70)
-        print(df.to_string(index=False, formatters={
-            c: "{:.2f}".format for c in df.columns if c.startswith("Pr_")
-        }))
-        print()
-    else:
-        results = {}
-        dfs = []
+    # ── Print summary ──
+    print(f"\n{'=' * 70}")
+    print("ASA-FOCAL GAME TREE RESULTS")
+    print("=" * 70)
+    _print_tree_summary(root, depth=0)
 
-        if args.scenario == "both":
-            # Use solve_scenarios() which computes D0_ceo predictive
-            results = solver.solve_scenarios(
-                focal_actor="ASA",
-                checkpoint_id=args.checkpoint,
-                mode=mode,
-                n_draws=args.n_draws,
-            )
-            # Print D0_ceo predictive distribution
-            first_result = next(iter(results.values()))
-            print(f"\n{'=' * 70}")
-            print("D0_ceo PREDICTED DISTRIBUTION (ASA's model of CEO)")
-            print("=" * 70)
-            for action, prob in first_result.d0_ceo_predictive.items():
-                print(f"  {action}: {prob:.1%}")
+    # ── Generate tree diagrams ──
+    out_dir = PROJECT_ROOT / "outputs"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-            for scenario, result in results.items():
-                dfs.append(result.summary_df())
-                print(f"\n{'=' * 70}")
-                print(f"ASA-FOCAL ARA RESULTS — scenario: {scenario} "
-                      f"(Pr = {result.scenario_prob:.1%})")
-                print("=" * 70)
-                print(result.display_summary())
-                result.print_diagnostics()
-        else:
-            for scenario in scenarios:
-                result = solver.solve(
-                    focal_actor="ASA",
-                    checkpoint_id=args.checkpoint,
-                    mode=mode,
-                    n_draws=args.n_draws,
-                    scenario=scenario,
-                )
-                results[scenario] = result
-                dfs.append(result.summary_df())
+    tag = "ASA_posterior"
+    logger.info("Rendering tree diagrams...")
+    render_tree(root,
+                title="Game Tree -- Probabilities  (ASA-focal, posterior)",
+                diagram_mode="prob",
+                output_path=str(out_dir / f"tree_prob_{tag}"))
+    render_tree(root,
+                title="Game Tree -- Expected Utility  (ASA-focal, posterior)",
+                diagram_mode="eu",
+                output_path=str(out_dir / f"tree_eu_{tag}"))
 
-                print(f"\n{'=' * 70}")
-                print(f"ASA-FOCAL ARA RESULTS — scenario: {scenario}")
-                print("=" * 70)
-                print(result.display_summary())
-                result.print_diagnostics()
+    # ── Generate interactive HTML ──
+    actual_path = str(PROJECT_ROOT / "data" / "actual_outcomes.json")
+    html_path = render_interactive_tree(
+        root=root,
+        results={},
+        focal="ASA",
+        checkpoint_id="posterior",
+        actual_outcomes_path=actual_path,
+        output_dir=out_dir,
+    )
+    logger.info(f"Interactive HTML saved to {html_path}")
 
-        df = __import__("pandas").concat(dfs, ignore_index=True)
 
-    output_path = args.output or str(PROJECT_ROOT / "outputs" / "asa_mode_results.csv")
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
-    logger.info(f"Results saved to {output_path}")
-
-    # Generate unified tree diagram (single tree from D0_ceo)
-    if not args.all_checkpoints:
-        logger.info("Generating tree diagrams…")
-        out_dir = PROJECT_ROOT / "outputs"
-
-        # D0_ceo probabilities from Bayesian prior
-        alpha = solver.ceo_departure_prior_alpha
-        beta_ = solver.ceo_departure_prior_beta
-        d0_probs = {
-            "CEO_resign": alpha / (alpha + beta_),
-            "CEO_stay": beta_ / (alpha + beta_),
-        }
-
-        root = build_unified_tree(
-            solver, results, "ASA", args.checkpoint,
-            mode, bias=None, n_mc=200, d0_probs=d0_probs,
-        )
-        tag = f"ASA_{args.checkpoint}"
-        render_tree(root,
-                    title=f"Game Tree — Probabilities  (ASA, {args.checkpoint})",
-                    diagram_mode="prob",
-                    output_path=str(out_dir / f"tree_prob_{tag}"))
-        render_tree(root,
-                    title=f"Game Tree — Expected Utility  (ASA, {args.checkpoint})",
-                    diagram_mode="eu",
-                    output_path=str(out_dir / f"tree_eu_{tag}"))
+def _print_tree_summary(node, depth=0, max_depth=3):
+    """Print a compact tree summary."""
+    indent = "  " * depth
+    if node.node_type == "terminal":
+        print(f"{indent}Terminal EU={node.eu:+.4f}")
+        return
+    print(f"{indent}{node.node_name} [{node.owner}] EU={node.eu:+.4f}")
+    if depth < max_depth:
+        for label, prob, child in node.children:
+            if prob > 0.001:
+                print(f"{indent}  -> {label} (p={prob:.3f})")
+                _print_tree_summary(child, depth + 1, max_depth)
 
 
 if __name__ == "__main__":

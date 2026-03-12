@@ -61,26 +61,26 @@ def _is_actual_edge(node_name: str, edge_label: str, actual: dict) -> bool:
     if edge_label == actual_action:
         return True
 
-    # Vote node: fuzzy matching
+    # Vote node: fuzzy matching (handles both "Strike (45%)" labels and raw "overwhelming")
     if node_name == "V":
-        if "strike" in actual_action.lower():
-            # Actual was a strike — match the strike edge
-            if "Strike" in edge_label and "No" not in edge_label:
-                return True
-        elif "no" in actual_action.lower():
-            if "No strike" in edge_label:
-                return True
+        el = edge_label.lower()
+        aa = actual_action.lower()
+        if aa == "overwhelming" or aa == "strike_overwhelming":
+            return "overwhelming" in el
+        if aa in ("first_strike", "strike"):
+            return ("strike" in el or "first_strike" in el) and "no" not in el and "overwhelming" not in el
+        if aa in ("no_strike", "no strike"):
+            return "no_strike" in el or "no strike" in el
         return False
 
-    # Review node: fuzzy matching
+    # Review node: fuzzy matching (handles both "Negative (19%)" labels and raw "negative")
     if node_name == "R":
-        if actual_action == "negative" and "Negative" in edge_label:
-            return True
-        if actual_action == "balanced" and "Balanced" in edge_label:
-            return True
-        if actual_action == "positive" and "Positive" in edge_label:
-            return True
-        return False
+        el = edge_label.lower()
+        aa = actual_action.lower()
+        # Map legacy "adverse" to "negative"
+        if aa == "adverse":
+            aa = "negative"
+        return aa in el
 
     # Pass-through nodes always match
     if node_name in ("M_agm", "M_rev") and edge_label == "pass-through":
@@ -121,6 +121,9 @@ def viznode_to_dict(
         "type": node.node_type,
         "owner": node.owner,
         "eu": round(node.eu, 4),
+        "eu_board": round(node.eu_board, 4),
+        "eu_asa": round(node.eu_asa, 4),
+        "eu_ceo": round(node.eu_ceo, 4),
         "nice_label": NICE_NODE.get(node.node_name, node.node_name),
         "colour": OWNER_COLOURS.get(node.owner, "#CCC"),
         "scenario": scenario_context,
@@ -168,6 +171,9 @@ def viznode_to_dict(
             "prob": round(prob, 4),
             "is_actual": edge_is_actual,
             "child_eu": round(child.eu, 4),
+            "child_eu_board": round(child.eu_board, 4),
+            "child_eu_asa": round(child.eu_asa, 4),
+            "child_eu_ceo": round(child.eu_ceo, 4),
             "commentary": commentary.get(f"{node.id}__{label}", ""),
             "child": child_dict,
         }
@@ -603,6 +609,794 @@ def render_html(
     logger.info(f"Saved interactive HTML: {output_path}")
 
 
+def render_html_multi(
+    tree_jsons: dict,
+    focal: str,
+    checkpoint_id: str,
+    output_path: Path,
+) -> None:
+    """Write a multi-mode interactive HTML file with mode selector.
+
+    tree_jsons maps mode_key -> JSON string of serialized tree.
+    """
+    MODE_LABELS = {
+        "stochastic": "All Stochastic",
+        "board": "Board Strategic",
+        "asa": "ASA Strategic",
+        "ceo": "CEO Strategic",
+    }
+    # Build the JS object literal for all tree data
+    entries = []
+    for key in ["stochastic", "board", "asa", "ceo"]:
+        if key in tree_jsons:
+            entries.append(f'  "{key}": {tree_jsons[key]}')
+    all_data_js = "{\n" + ",\n".join(entries) + "\n}"
+
+    # Build mode selector option tags
+    options_html = []
+    for key in ["stochastic", "board", "asa", "ceo"]:
+        if key in tree_jsons:
+            label = MODE_LABELS.get(key, key)
+            options_html.append(f'<option value="{key}">{label}</option>')
+    options_str = "\n    ".join(options_html)
+
+    html = _HTML_TEMPLATE_MULTI.replace("__ALL_TREE_DATA__", all_data_js)
+    html = html.replace("__MODE_OPTIONS__", options_str)
+    html = html.replace("__FOCAL__", focal)
+    html = html.replace("__CHECKPOINT__", checkpoint_id)
+    html = html.replace("__TITLE__", f"ARA Game Tree \u2014 Unified")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    logger.info(f"Saved interactive HTML: {output_path}")
+
+
+_HTML_TEMPLATE_MULTI = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background: #FAFAFA; overflow: hidden; }
+
+/* ── Controls bar ───────────────────────────────────── */
+#controls {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 300;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; background: #fff; border-bottom: 1px solid #ddd;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+#controls button {
+  padding: 5px 14px; border: 1px solid #bbb; border-radius: 4px;
+  background: #fff; cursor: pointer; font-size: 12px; font-family: inherit;
+  transition: background 0.15s;
+}
+#controls button:hover { background: #f0f0f0; }
+#controls button.active { background: #4A90D9; color: #fff; border-color: #4A90D9; }
+#controls select {
+  padding: 5px 10px; border: 1px solid #bbb; border-radius: 4px;
+  font-size: 12px; font-family: inherit; cursor: pointer;
+  background: #fff;
+}
+#info-bar { margin-left: auto; color: #777; font-size: 12px; }
+
+/* ── Legend ──────────────────────────────────────────── */
+#legend {
+  position: fixed; bottom: 12px; left: 16px; z-index: 300;
+  background: #fff; border: 1px solid #ddd; border-radius: 6px;
+  padding: 10px 14px; font-size: 11px; line-height: 1.7;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+}
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-swatch {
+  display: inline-block; width: 14px; height: 14px; border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.15); flex-shrink: 0;
+}
+.legend-line {
+  display: inline-block; width: 18px; height: 0;
+  border-top: 2.5px solid #999; flex-shrink: 0;
+}
+
+/* ── Tooltip ────────────────────────────────────────── */
+#tooltip {
+  display: none; position: absolute; z-index: 400;
+  background: #fff; border: 1px solid #bbb; border-radius: 6px;
+  padding: 10px 14px; max-width: 400px; font-size: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+  pointer-events: none;
+}
+.tt-title { font-weight: 600; margin-bottom: 4px; }
+.tt-row { display: flex; justify-content: space-between; gap: 12px; }
+.tt-label { color: #555; }
+.tt-val { font-weight: 500; }
+.tt-sep { border-top: 1px solid #eee; margin: 6px 0; }
+.tt-commentary { color: #444; font-style: italic; line-height: 1.45; }
+
+/* ── Node popup ─────────────────────────────────────── */
+#overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.15); z-index: 450;
+}
+#node-popup {
+  display: none; position: fixed; z-index: 500;
+  background: #fff; border: 1px solid #ccc; border-radius: 8px;
+  padding: 16px 20px; overflow-y: auto; font-size: 13px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+}
+#node-popup h3 { font-size: 14px; margin-bottom: 6px; }
+#node-popup .badge {
+  display: inline-block; padding: 2px 8px; border-radius: 3px;
+  color: #fff; font-size: 10px; font-weight: 600; margin-right: 4px;
+}
+#node-popup .section-title {
+  font-size: 12px; font-weight: 600; margin: 10px 0 4px; color: #333;
+  border-bottom: 1px solid #eee; padding-bottom: 2px;
+}
+#node-popup table { width: 100%; border-collapse: collapse; margin: 4px 0; font-size: 12px; }
+#node-popup th { text-align: left; color: #666; font-weight: 500; padding: 3px 6px; border-bottom: 1px solid #eee; }
+#node-popup td { padding: 3px 6px; }
+#node-popup .commentary-text { font-style: italic; color: #444; line-height: 1.5; margin-top: 4px; }
+.popup-close {
+  position: absolute; top: 8px; right: 12px; cursor: pointer;
+  font-size: 18px; color: #999; line-height: 1;
+}
+.popup-close:hover { color: #333; }
+
+/* ── Tree ───────────────────────────────────────────── */
+#tree-container { position: fixed; top: 42px; left: 0; right: 0; bottom: 0; }
+svg { width: 100%; height: 100%; }
+.link { fill: none; stroke: #999; stroke-opacity: 0.6; stroke-width: 1.5; }
+.link.actual { stroke: #E85D5D; stroke-width: 3; stroke-opacity: 1; }
+.link-hover-target { fill: none; stroke: transparent; stroke-width: 18; cursor: pointer; }
+.link-label {
+  font-size: 10px; fill: #555; text-anchor: middle;
+  pointer-events: none; dominant-baseline: auto;
+}
+.node-shape { stroke-width: 1.5; cursor: pointer; }
+.node-label {
+  text-anchor: middle; dominant-baseline: central;
+  font-size: 10px; font-weight: 600; fill: #fff;
+  pointer-events: none;
+}
+.node-eu-label {
+  text-anchor: middle; dominant-baseline: central;
+  font-size: 7px; fill: #fff; font-weight: 400;
+  pointer-events: none;
+}
+.expand-badge {
+  text-anchor: middle; dominant-baseline: central;
+  font-size: 9px; font-weight: 600; fill: #fff;
+  pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<!-- Controls -->
+<div id="controls">
+  <label for="mode-select" style="font-size:12px;font-weight:600;color:#333">Mode:</label>
+  <select id="mode-select" onchange="switchMode(this.value)">
+    __MODE_OPTIONS__
+  </select>
+  <button id="btn-prob" class="active" onclick="setView('prob')">Probability View</button>
+  <button id="btn-eu" onclick="setView('eu')">Expected Utility View</button>
+  <button id="btn-actual" class="active" onclick="toggleActual()">Actual Path</button>
+  <button onclick="expandAll()">Expand All</button>
+  <button onclick="collapseAll()">Collapse All</button>
+  <button onclick="fitToScreen()">Fit to Screen</button>
+  <span id="info-bar"></span>
+</div>
+
+<!-- Legend -->
+<div id="legend">
+  <div class="legend-item"><span class="legend-swatch" style="background:#4A90D9"></span> Board (decision)</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#50C878"></span> ASA (decision)</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#E85D5D"></span> CEO (decision)</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#AAAAAA; border-radius:50%"></span> Nature (chance)</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#888; transform:rotate(45deg)"></span> Terminal</div>
+  <div class="legend-item"><span class="legend-line" style="border-color:#E85D5D"></span> Actual outcome</div>
+  <div class="legend-item"><span class="legend-line" style="border-color:#999"></span> Model edge</div>
+</div>
+
+<!-- Tooltip -->
+<div id="tooltip"></div>
+
+<!-- Node popup overlay -->
+<div id="overlay" onclick="closePopup()"></div>
+<div id="node-popup"><span class="popup-close" onclick="closePopup()">&times;</span><div id="popup-content"></div></div>
+
+<!-- Tree container -->
+<div id="tree-container"><svg id="tree-svg"></svg></div>
+
+<script>
+// ── All tree data (one per mode) ──
+const ALL_TREES = __ALL_TREE_DATA__;
+const MODE_LABELS = {
+  "stochastic": "All Stochastic",
+  "board": "Board Strategic",
+  "asa": "ASA Strategic",
+  "ceo": "CEO Strategic"
+};
+
+let CURRENT_MODE = "stochastic";
+let TREE_DATA = ALL_TREES[CURRENT_MODE];
+const FOCAL_ACTOR = "__FOCAL__";
+let VIEW_MODE = "prob";
+let SHOW_ACTUAL = true;
+
+// ── Owner colours ──
+const COLOURS = {"Board":"#4A90D9","ASA":"#50C878","CEO":"#E85D5D","Nature":"#AAAAAA"};
+
+// ── SVG setup ──
+const container = document.getElementById("tree-container");
+const svg = d3.select("#tree-svg");
+const width = container.clientWidth;
+const height = container.clientHeight;
+
+const g = svg.append("g");
+
+// Zoom
+const zoom = d3.zoom()
+    .scaleExtent([0.15, 3])
+    .on("zoom", (e) => g.attr("transform", e.transform));
+svg.call(zoom);
+
+// Initial transform
+const margin = {top: 40, left: 140};
+svg.call(zoom.transform, d3.zoomIdentity.translate(margin.left, height / 2).scale(0.85));
+
+// ── Convert nested data to d3.hierarchy ──
+function childrenAccessor(d) {
+    if (!d.children || d.children.length === 0) return null;
+    return d.children.map(e => {
+        const child = {...e.child};
+        child._edge = {
+            label: e.label,
+            nice_label: e.nice_label,
+            prob: e.prob,
+            is_actual: e.is_actual,
+            child_eu: e.child_eu,
+            commentary: e.commentary,
+        };
+        return child;
+    });
+}
+
+let root;
+
+function buildHierarchy(treeData) {
+    root = d3.hierarchy(treeData, childrenAccessor);
+
+    // Store original children for expand/collapse
+    function walkAll(d, fn) {
+        fn(d);
+        const kids = d.children || d._collapsed;
+        if (kids) kids.forEach(c => walkAll(c, fn));
+    }
+    walkAll(root, d => { d._allChildren = d.children; });
+
+    // Collapse branching nodes deeper than level 3
+    walkAll(root, d => {
+        if (d.depth >= 3 && d.children && d.children.length > 1) {
+            d._collapsed = d.children;
+            d.children = null;
+        }
+    });
+
+    // Auto-expand actual outcome path
+    function expandActualPath(d) {
+        const kids = d.children || d._collapsed;
+        if (!kids) return;
+        for (const child of kids) {
+            if (child.data._edge && child.data._edge.is_actual) {
+                if (d._collapsed) { d.children = d._collapsed; d._collapsed = null; }
+                expandActualPath(child);
+            }
+        }
+    }
+    if (SHOW_ACTUAL) expandActualPath(root);
+}
+
+buildHierarchy(TREE_DATA);
+
+// ── Tree layout ──
+const nodeW = 54, nodeH = 32;
+const treeLayout = d3.tree().nodeSize([nodeH + 14, 260]);
+
+function update(source) {
+    const duration = 400;
+    treeLayout(root);
+
+    // ── Links ──
+    const links = root.links();
+    const linkSel = g.selectAll(".link-group").data(links, d => d.target.data.id);
+
+    const linkEnter = linkSel.enter().append("g").attr("class", "link-group");
+
+    linkEnter.append("path")
+        .attr("class", d => "link" + (SHOW_ACTUAL && d.target.data._edge && d.target.data._edge.is_actual ? " actual" : ""))
+        .attr("d", d => linkPath(source, source));
+
+    linkEnter.append("path")
+        .attr("class", "link-hover-target")
+        .attr("d", d => linkPath(source, source))
+        .on("mouseover", (ev, d) => showTooltip(ev, d))
+        .on("mousemove", (ev) => moveTooltip(ev))
+        .on("mouseout", () => hideTooltip());
+
+    linkEnter.append("text")
+        .attr("class", "link-label")
+        .attr("dy", -4);
+
+    const linkMerge = linkEnter.merge(linkSel);
+
+    linkMerge.select(".link")
+        .transition().duration(duration)
+        .attr("d", d => linkPath(d.source, d.target))
+        .attr("class", d => "link" + (SHOW_ACTUAL && d.target.data._edge && d.target.data._edge.is_actual ? " actual" : ""))
+        .attr("stroke-width", d => {
+            const edge = d.target.data._edge;
+            if (SHOW_ACTUAL && edge && edge.is_actual) return 3;
+            if (edge && edge.prob < 0.01) return 0.5;
+            return Math.max(1, (edge ? edge.prob : 0.5) * 4);
+        })
+        .attr("stroke-opacity", d => {
+            const edge = d.target.data._edge;
+            if (SHOW_ACTUAL && edge && edge.is_actual) return 1;
+            if (edge && edge.prob < 0.01) return 0.25;
+            return 0.6;
+        });
+
+    linkMerge.select(".link-hover-target")
+        .transition().duration(duration)
+        .attr("d", d => linkPath(d.source, d.target));
+
+    linkMerge.select(".link-label")
+        .transition().duration(duration)
+        .attr("x", d => (d.source.y + d.target.y) / 2)
+        .attr("y", d => (d.source.x + d.target.x) / 2)
+        .text(d => edgeLabelText(d));
+
+    linkSel.exit()
+        .transition().duration(duration).style("opacity", 0).remove();
+
+    // ── Nodes ──
+    const nodes = root.descendants();
+    const nodeSel = g.selectAll(".node-group").data(nodes, d => d.data.id);
+
+    const nodeEnter = nodeSel.enter().append("g")
+        .attr("class", "node-group")
+        .attr("transform", `translate(${source.y0 || 0},${source.x0 || 0})`);
+
+    nodeEnter.each(function(d) {
+        const el = d3.select(this);
+        const col = COLOURS[d.data.owner] || "#888";
+        if (d.data.type === "terminal") {
+            el.append("rect")
+                .attr("class", "node-hit-area")
+                .attr("x", -nodeW/2).attr("y", -nodeH/2)
+                .attr("width", nodeW).attr("height", nodeH)
+                .attr("fill", "transparent").attr("stroke", "none");
+            el.append("polygon")
+                .attr("class", "node-shape")
+                .attr("points", `0,${-nodeH/2} ${nodeW/2},0 0,${nodeH/2} ${-nodeW/2},0`)
+                .attr("fill", col).attr("stroke", d3.color(col).darker(0.4))
+                .style("pointer-events", "none");
+        } else if (d.data.type === "chance") {
+            el.append("ellipse")
+                .attr("class", "node-shape")
+                .attr("rx", nodeW/2).attr("ry", nodeH/2)
+                .attr("fill", col).attr("stroke", d3.color(col).darker(0.4));
+        } else {
+            el.append("rect")
+                .attr("class", "node-shape")
+                .attr("x", -nodeW/2).attr("y", -nodeH/2)
+                .attr("width", nodeW).attr("height", nodeH)
+                .attr("rx", 4).attr("ry", 4)
+                .attr("fill", col).attr("stroke", d3.color(col).darker(0.4));
+        }
+    });
+
+    nodeEnter
+        .on("click", (ev, d) => { ev.stopPropagation(); toggle(d); })
+        .on("mouseover", (ev, d) => { showNodePopup(d); })
+        .on("mouseout", (ev, d) => { scheduleHidePopup(); });
+
+    nodeEnter.append("text")
+        .attr("class", "node-label")
+        .attr("dy", d => (VIEW_MODE === "eu" && d.data.type !== "terminal") ? -4 : 0);
+
+    nodeEnter.append("text")
+        .attr("class", "node-eu-label")
+        .attr("dy", 8);
+
+    nodeEnter.append("circle")
+        .attr("class", "expand-badge-bg")
+        .attr("cx", nodeW/2 + 2)
+        .attr("cy", 0)
+        .attr("r", 9);
+
+    nodeEnter.append("text")
+        .attr("class", "expand-badge")
+        .attr("x", nodeW/2 + 2)
+        .attr("dy", 1);
+
+    const nodeMerge = nodeEnter.merge(nodeSel);
+
+    nodeMerge.transition().duration(duration)
+        .attr("transform", d => `translate(${d.y},${d.x})`);
+
+    nodeMerge.select(".node-label")
+        .text(d => {
+            const n = d.data.name;
+            return n === "Terminal" ? "T" : n;
+        })
+        .attr("dy", d => (VIEW_MODE === "eu" && d.data.type !== "terminal") ? -4 : 0);
+
+    nodeMerge.select(".node-eu-label")
+        .text(d => VIEW_MODE === "eu" ? `B:${d.data.eu_board >= 0 ? "+" : ""}${d.data.eu_board.toFixed(1)} A:${d.data.eu_asa >= 0 ? "+" : ""}${d.data.eu_asa.toFixed(1)} C:${d.data.eu_ceo >= 0 ? "+" : ""}${d.data.eu_ceo.toFixed(1)}` : "")
+        .attr("visibility", d => VIEW_MODE === "eu" ? "visible" : "hidden");
+
+    function countDescendants(node) {
+        let n = 0;
+        const kids = node._collapsed || node.children;
+        if (kids) kids.forEach(c => { n += 1 + countDescendants(c); });
+        return n;
+    }
+
+    nodeMerge.select(".expand-badge-bg")
+        .attr("fill", d => (d._collapsed && d._collapsed.length > 0) ? "#E8853D" : "none")
+        .attr("stroke", d => (d._collapsed && d._collapsed.length > 0) ? "#C96E2A" : "none")
+        .attr("stroke-width", 1.5);
+
+    nodeMerge.select(".expand-badge")
+        .text(d => {
+            if (!d._collapsed || d._collapsed.length === 0) return "";
+            const n = countDescendants(d);
+            return "+" + n;
+        });
+
+    nodeSel.exit()
+        .transition().duration(duration)
+        .attr("transform", `translate(${source.y},${source.x})`)
+        .style("opacity", 0).remove();
+
+    nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
+}
+
+function linkPath(s, t) {
+    return `M${s.y},${s.x}C${(s.y+t.y)/2},${s.x} ${(s.y+t.y)/2},${t.x} ${t.y},${t.x}`;
+}
+
+function edgeLabelText(d) {
+    const edge = d.target.data._edge;
+    if (!edge) return "";
+    const nice = edge.nice_label.replace(/\n/g, " ");
+    if (VIEW_MODE === "prob") {
+        return `${nice}  p=${(edge.prob * 100).toFixed(1)}%`;
+    } else {
+        const b = edge.child_eu_board, a = edge.child_eu_asa, c = edge.child_eu_ceo;
+        return `${nice}  B:${b >= 0 ? "+" : ""}${b.toFixed(2)} A:${a >= 0 ? "+" : ""}${a.toFixed(2)} C:${c >= 0 ? "+" : ""}${c.toFixed(2)}`;
+    }
+}
+
+function toggle(d) {
+    if (d.children) {
+        d._collapsed = d.children;
+        d.children = null;
+    } else if (d._collapsed) {
+        d.children = d._collapsed;
+        d._collapsed = null;
+    }
+    update(d);
+}
+
+function expandAll() {
+    function walkAll(d, fn) {
+        fn(d);
+        const kids = d.children || d._collapsed;
+        if (kids) kids.forEach(c => walkAll(c, fn));
+    }
+    walkAll(root, d => {
+        if (d._collapsed) { d.children = d._collapsed; d._collapsed = null; }
+    });
+    update(root);
+}
+
+function collapseAll() {
+    function walkAll(d, fn) {
+        fn(d);
+        const kids = d.children || d._collapsed;
+        if (kids) kids.forEach(c => walkAll(c, fn));
+    }
+    walkAll(root, d => {
+        if (d.depth >= 1 && d.children && d.children.length > 1) {
+            d._collapsed = d.children; d.children = null;
+        }
+    });
+    update(root);
+}
+
+function fitToScreen() {
+    const nodes = root.descendants();
+    if (nodes.length === 0) return;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    nodes.forEach(d => {
+        minX = Math.min(minX, d.x - nodeH);
+        maxX = Math.max(maxX, d.x + nodeH);
+        minY = Math.min(minY, d.y - nodeW);
+        maxY = Math.max(maxY, d.y + nodeW + 80);
+    });
+    const treeW = maxY - minY;
+    const treeH = maxX - minX;
+    const pad = 60;
+    const availW = container.clientWidth - pad * 2;
+    const availH = container.clientHeight - pad * 2;
+    const scale = Math.min(availW / treeW, availH / treeH, 1.5);
+    const tx = pad - minY * scale + (availW - treeW * scale) / 2;
+    const ty = pad - minX * scale + (availH - treeH * scale) / 2;
+    svg.transition().duration(500)
+        .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+}
+
+// ── View toggle ──
+function setView(mode) {
+    VIEW_MODE = mode;
+    document.getElementById("btn-prob").classList.toggle("active", mode === "prob");
+    document.getElementById("btn-eu").classList.toggle("active", mode === "eu");
+    update(root);
+}
+
+// ── Actual path toggle ──
+function toggleActual() {
+    SHOW_ACTUAL = !SHOW_ACTUAL;
+    document.getElementById("btn-actual").classList.toggle("active", SHOW_ACTUAL);
+    update(root);
+}
+
+// ── Mode switch ──
+function switchMode(modeKey) {
+    CURRENT_MODE = modeKey;
+    TREE_DATA = ALL_TREES[modeKey];
+
+    // Clear existing tree
+    g.selectAll("*").remove();
+
+    // Rebuild hierarchy and render
+    buildHierarchy(TREE_DATA);
+    update(root);
+    setTimeout(fitToScreen, 100);
+
+    // Update info bar
+    const label = MODE_LABELS[modeKey] || modeKey;
+    document.getElementById("info-bar").textContent = `Mode: ${label}`;
+}
+
+// ── Tooltip (edge mouseover) ──
+const tooltip = document.getElementById("tooltip");
+
+function showTooltip(ev, d) {
+    const edge = d.target.data._edge;
+    if (!edge) return;
+    const nd = d.source.data;
+
+    let html = `<div class="tt-title">${edge.nice_label.replace(/\n/g, " ")}</div>`;
+    html += `<div class="tt-row"><span class="tt-label">Probability:</span><span class="tt-val">${(edge.prob*100).toFixed(1)}%</span></div>`;
+    html += `<div class="tt-row"><span class="tt-label">Expected Utility:</span><span class="tt-val">${edge.child_eu >= 0 ? "+" : ""}${edge.child_eu.toFixed(4)}</span></div>`;
+
+    const decomp = nd.utility_decomposition;
+    if (decomp && Object.keys(decomp).length > 0) {
+        html += `<div class="tt-sep"></div>`;
+        html += `<div class="tt-label" style="margin-bottom:2px">Utility Components:</div>`;
+        for (const [k, v] of Object.entries(decomp)) {
+            const name = k.replace(/_/g, " ");
+            html += `<div class="tt-row"><span class="tt-label">${name}</span><span class="tt-val">${v >= 0 ? "+" : ""}${v.toFixed(4)}</span></div>`;
+        }
+    }
+
+    if (edge.commentary) {
+        html += `<div class="tt-sep"></div>`;
+        html += `<div class="tt-commentary">${edge.commentary}</div>`;
+    }
+
+    tooltip.innerHTML = html;
+    tooltip.style.display = "block";
+    moveTooltip(ev);
+}
+
+function moveTooltip(ev) {
+    const x = ev.pageX + 14;
+    const y = ev.pageY - 10;
+    tooltip.style.left = x + "px";
+    tooltip.style.top = y + "px";
+}
+
+function hideTooltip() {
+    tooltip.style.display = "none";
+}
+
+// ── Node popup (mouseover) ──
+let _popupHideTimer = null;
+
+function showNodePopup(d) {
+    if (_popupHideTimer) { clearTimeout(_popupHideTimer); _popupHideTimer = null; }
+
+    const nd = d.data;
+    const el = document.getElementById("popup-content");
+    let html = "";
+
+    const col = COLOURS[nd.owner] || "#888";
+    html += `<h3>${nd.nice_label.replace(/\n/g, " &mdash; ")}</h3>`;
+    html += `<span class="badge" style="background:${col}">${nd.owner}</span>`;
+    html += `<span class="badge" style="background:#888">${nd.type}</span>`;
+    // Show all three actor EUs
+    const euColors = {"Board": "#4A90D9", "ASA": "#50C878", "CEO": "#E85D5D"};
+    html += `<div style="margin:4px 0 6px">`;
+    html += `<span style="font-size:12px; color:#4A90D9; margin-right:10px">Board EU = ${nd.eu_board >= 0 ? "+" : ""}${nd.eu_board.toFixed(4)}</span>`;
+    html += `<span style="font-size:12px; color:#50C878; margin-right:10px">ASA EU = ${nd.eu_asa >= 0 ? "+" : ""}${nd.eu_asa.toFixed(4)}</span>`;
+    html += `<span style="font-size:12px; color:#E85D5D">CEO EU = ${nd.eu_ceo >= 0 ? "+" : ""}${nd.eu_ceo.toFixed(4)}</span>`;
+    html += `</div>`;
+
+    // Terminal node utility decomposition (multi-actor breakdown)
+    const termDecomp = nd.terminal_decomposition;
+    if (termDecomp && Object.keys(termDecomp).length > 0) {
+        const actors = {};
+        const actorEU = {};
+        for (const [k, v] of Object.entries(termDecomp)) {
+            if (k.startsWith("_")) continue;
+            if (k.endsWith("_EU")) {
+                const actor = k.replace("_EU", "");
+                actorEU[actor] = v;
+            } else {
+                const sep = k.indexOf("__");
+                if (sep > 0) {
+                    const actor = k.substring(0, sep);
+                    const comp = k.substring(sep + 2);
+                    if (!actors[actor]) actors[actor] = [];
+                    actors[actor].push([comp, v]);
+                }
+            }
+        }
+        const actorColours = {"Board": "#4A90D9", "CEO": "#E85D5D", "ASA": "#50C878"};
+        for (const actor of ["Board", "CEO", "ASA"]) {
+            const comps = actors[actor];
+            const eu = actorEU[actor];
+            if (eu === undefined) continue;
+            const col = actorColours[actor] || "#888";
+            html += `<div class="section-title" style="color:${col}">${actor} EU = ${eu >= 0 ? "+" : ""}${eu.toFixed(4)}</div>`;
+            if (comps && comps.length > 0) {
+                html += `<table><tr><th>Component</th><th>Value</th></tr>`;
+                for (const [comp, v] of comps) {
+                    const name = comp.replace(/_/g, " ");
+                    const cls = v < -0.01 ? ' style="color:#C0392B"' : v > 0.01 ? ' style="color:#27AE60"' : '';
+                    html += `<tr><td>${name}</td><td${cls}>${v >= 0 ? "+" : ""}${v.toFixed(4)}</td></tr>`;
+                }
+                html += `</table>`;
+            }
+        }
+    }
+
+    // Edge probabilities (children) with all 3 actor EUs
+    if (nd.children && nd.children.length > 0) {
+        html += `<div class="section-title">Actions / Splits</div>`;
+        html += `<table><tr><th>Action</th><th>Probability</th><th style="color:#4A90D9">Board EU</th><th style="color:#50C878">ASA EU</th><th style="color:#E85D5D">CEO EU</th></tr>`;
+        for (const e of nd.children) {
+            const actual = (SHOW_ACTUAL && e.is_actual) ? ' style="background:#FFF0F0; font-weight:600"' : '';
+            html += `<tr${actual}>`;
+            html += `<td>${e.nice_label.replace(/\n/g, " ")}${SHOW_ACTUAL && e.is_actual ? " \u2B50" : ""}</td>`;
+            html += `<td>${(e.prob*100).toFixed(1)}%</td>`;
+            html += `<td>${e.child_eu_board >= 0 ? "+" : ""}${e.child_eu_board.toFixed(4)}</td>`;
+            html += `<td>${e.child_eu_asa >= 0 ? "+" : ""}${e.child_eu_asa.toFixed(4)}</td>`;
+            html += `<td>${e.child_eu_ceo >= 0 ? "+" : ""}${e.child_eu_ceo.toFixed(4)}</td>`;
+            html += `</tr>`;
+        }
+        html += `</table>`;
+    }
+
+    // Utility decomposition
+    const decomp = nd.utility_decomposition;
+    const focalDecomp = nd.focal_utility_decomposition;
+    const hasFocalDecomp = focalDecomp && Object.keys(focalDecomp).length > 0;
+    if ((decomp && Object.keys(decomp).length > 0) || hasFocalDecomp) {
+        html += `<div class="section-title">Utility Decomposition</div>`;
+        if (decomp && Object.keys(decomp).length > 0) {
+            if (hasFocalDecomp) {
+                html += `<div style="font-size:11px;color:#555;margin:3px 0 2px;font-weight:600">${nd.owner}</div>`;
+            }
+            html += `<table><tr><th>Component</th><th>Value</th></tr>`;
+            for (const [k, v] of Object.entries(decomp)) {
+                html += `<tr><td>${k.replace(/_/g, " ")}</td><td>${v >= 0 ? "+" : ""}${v.toFixed(4)}</td></tr>`;
+            }
+            html += `</table>`;
+        }
+        if (hasFocalDecomp) {
+            html += `<div style="font-size:11px;color:#555;margin:6px 0 2px;font-weight:600">${FOCAL_ACTOR} (focal)</div>`;
+            html += `<table><tr><th>Component</th><th>Value</th></tr>`;
+            for (const [k, v] of Object.entries(focalDecomp)) {
+                html += `<tr><td>${k.replace(/_/g, " ")}</td><td>${v >= 0 ? "+" : ""}${v.toFixed(4)}</td></tr>`;
+            }
+            html += `</table>`;
+        }
+    }
+
+    // Outcome stats
+    const stats = nd.outcome_stats;
+    if (stats && Object.keys(stats).length > 0) {
+        html += `<div class="section-title">Outcome Statistics</div>`;
+        html += `<table><tr><th>Metric</th><th>Value</th></tr>`;
+        for (const [k, v] of Object.entries(stats)) {
+            const label = k.replace(/_/g, " ");
+            const val = typeof v === "number"
+                ? (k.startsWith("Pr_") || k.includes("percent") ? (v*100).toFixed(1) + "%" : v.toFixed(4))
+                : v;
+            html += `<tr><td>${label}</td><td>${val}</td></tr>`;
+        }
+        html += `</table>`;
+    }
+
+    // Node commentary
+    if (nd.node_commentary) {
+        html += `<div class="section-title">Commentary</div>`;
+        html += `<div class="commentary-text">${nd.node_commentary}</div>`;
+    }
+
+    el.innerHTML = html;
+
+    const popup = document.getElementById("node-popup");
+    const svgEl = document.getElementById("tree-svg");
+    const pt = svgEl.createSVGPoint();
+    pt.x = d.y + nodeW/2 + 20;
+    pt.y = d.x;
+    const ctm = g.node().getCTM();
+    const screenPt = pt.matrixTransform(ctm);
+
+    const pw = 440, maxH = window.innerHeight * 0.7;
+    let left = screenPt.x + 10;
+    let top = screenPt.y - 40;
+    if (left + pw > window.innerWidth) left = screenPt.x - pw - 30;
+    if (top < 50) top = 50;
+    if (top + maxH > window.innerHeight - 10) top = window.innerHeight - maxH - 10;
+
+    popup.style.left = left + "px";
+    popup.style.top = top + "px";
+    popup.style.width = pw + "px";
+    popup.style.maxHeight = maxH + "px";
+    popup.style.display = "block";
+    document.getElementById("overlay").style.display = "none";
+}
+
+function scheduleHidePopup() {
+    _popupHideTimer = setTimeout(() => {
+        document.getElementById("node-popup").style.display = "none";
+    }, 200);
+}
+
+function closePopup() {
+    if (_popupHideTimer) { clearTimeout(_popupHideTimer); _popupHideTimer = null; }
+    document.getElementById("overlay").style.display = "none";
+    document.getElementById("node-popup").style.display = "none";
+}
+
+document.getElementById("node-popup").addEventListener("mouseenter", () => {
+    if (_popupHideTimer) { clearTimeout(_popupHideTimer); _popupHideTimer = null; }
+});
+document.getElementById("node-popup").addEventListener("mouseleave", () => {
+    scheduleHidePopup();
+});
+
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePopup(); });
+
+// ── Initial render ──
+update(root);
+setTimeout(fitToScreen, 100);
+</script>
+</body>
+</html>
+"""
+
+
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -651,7 +1445,7 @@ svg { width: 100%; height: 100%; }
 .node-group { cursor: pointer; }
 .node-shape { stroke-width: 1.5px; }
 .node-label { fill: #fff; font-size: 10px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
-.node-eu-label { fill: #fff; font-size: 8px; text-anchor: middle; font-style: italic; pointer-events: none; }
+.node-eu-label { fill: #fff; font-size: 7px; text-anchor: middle; font-style: italic; pointer-events: none; }
 .expand-icon {
   font-size: 11px; font-weight: 600; cursor: pointer;
   text-anchor: middle; dominant-baseline: central;
@@ -978,7 +1772,7 @@ function update(source) {
         .attr("dy", d => (VIEW_MODE === "eu" && d.data.type !== "terminal") ? -4 : 0);
 
     nodeMerge.select(".node-eu-label")
-        .text(d => VIEW_MODE === "eu" ? `EU=${d.data.eu >= 0 ? "+" : ""}${d.data.eu.toFixed(2)}` : "")
+        .text(d => VIEW_MODE === "eu" ? `B:${d.data.eu_board >= 0 ? "+" : ""}${d.data.eu_board.toFixed(1)} A:${d.data.eu_asa >= 0 ? "+" : ""}${d.data.eu_asa.toFixed(1)} C:${d.data.eu_ceo >= 0 ? "+" : ""}${d.data.eu_ceo.toFixed(1)}` : "")
         .attr("visibility", d => VIEW_MODE === "eu" ? "visible" : "hidden");
 
     // Count hidden descendants for collapsed badge
@@ -1023,8 +1817,8 @@ function edgeLabelText(d) {
     if (VIEW_MODE === "prob") {
         return `${nice}  p=${(edge.prob * 100).toFixed(1)}%`;
     } else {
-        const eu = edge.child_eu;
-        return `${nice}  EU=${eu >= 0 ? "+" : ""}${eu.toFixed(3)}`;
+        const b = edge.child_eu_board, a = edge.child_eu_asa, c = edge.child_eu_ceo;
+        return `${nice}  B:${b >= 0 ? "+" : ""}${b.toFixed(2)} A:${a >= 0 ? "+" : ""}${a.toFixed(2)} C:${c >= 0 ? "+" : ""}${c.toFixed(2)}`;
     }
 }
 
@@ -1156,34 +1950,67 @@ function showNodePopup(d) {
     html += `<h3>${nd.nice_label.replace(/\n/g, " &mdash; ")}</h3>`;
     html += `<span class="badge" style="background:${col}">${nd.owner}</span>`;
     html += `<span class="badge" style="background:#888">${nd.type}</span>`;
-    html += `<span style="font-size:12px; color:#666; margin-left:8px">EU = ${nd.eu >= 0 ? "+" : ""}${nd.eu.toFixed(4)}</span>`;
+    // Show all three actor EUs
+    html += `<div style="margin:4px 0 6px">`;
+    html += `<span style="font-size:12px; color:#4A90D9; margin-right:10px">Board EU = ${nd.eu_board >= 0 ? "+" : ""}${nd.eu_board.toFixed(4)}</span>`;
+    html += `<span style="font-size:12px; color:#50C878; margin-right:10px">ASA EU = ${nd.eu_asa >= 0 ? "+" : ""}${nd.eu_asa.toFixed(4)}</span>`;
+    html += `<span style="font-size:12px; color:#E85D5D">CEO EU = ${nd.eu_ceo >= 0 ? "+" : ""}${nd.eu_ceo.toFixed(4)}</span>`;
+    html += `</div>`;
 
-    // Terminal node utility decomposition (component breakdown)
+    // Terminal node utility decomposition (multi-actor breakdown)
     const termDecomp = nd.terminal_decomposition;
     if (termDecomp && Object.keys(termDecomp).length > 0) {
-        html += `<div class="section-title">Utility Components</div>`;
-        html += `<table><tr><th>Component</th><th>Value</th></tr>`;
-        let total = 0;
+        // Group components by actor prefix (Board__, CEO__, ASA__)
+        const actors = {};
+        const actorEU = {};
         for (const [k, v] of Object.entries(termDecomp)) {
-            const name = k.replace(/_/g, " ");
-            const cls = v < -0.01 ? ' style="color:#C0392B"' : v > 0.01 ? ' style="color:#27AE60"' : '';
-            html += `<tr><td>${name}</td><td${cls}>${v >= 0 ? "+" : ""}${v.toFixed(4)}</td></tr>`;
-            total += v;
+            if (k.startsWith("_")) continue;  // skip meta keys
+            if (k.endsWith("_EU")) {
+                // Top-level EU summary (e.g. Board_EU, CEO_EU)
+                const actor = k.replace("_EU", "");
+                actorEU[actor] = v;
+            } else {
+                // Component (e.g. Board__w_inaction_base)
+                const sep = k.indexOf("__");
+                if (sep > 0) {
+                    const actor = k.substring(0, sep);
+                    const comp = k.substring(sep + 2);
+                    if (!actors[actor]) actors[actor] = [];
+                    actors[actor].push([comp, v]);
+                }
+            }
         }
-        html += `<tr style="border-top:2px solid #999;font-weight:600"><td>Total</td><td>${total >= 0 ? "+" : ""}${total.toFixed(4)}</td></tr>`;
-        html += `</table>`;
+        const actorColours = {"Board": "#4A90D9", "CEO": "#E85D5D", "ASA": "#50C878"};
+        for (const actor of ["Board", "CEO", "ASA"]) {
+            const comps = actors[actor];
+            const eu = actorEU[actor];
+            if (eu === undefined) continue;
+            const col = actorColours[actor] || "#888";
+            html += `<div class="section-title" style="color:${col}">${actor} EU = ${eu >= 0 ? "+" : ""}${eu.toFixed(4)}</div>`;
+            if (comps && comps.length > 0) {
+                html += `<table><tr><th>Component</th><th>Value</th></tr>`;
+                for (const [comp, v] of comps) {
+                    const name = comp.replace(/_/g, " ");
+                    const cls = v < -0.01 ? ' style="color:#C0392B"' : v > 0.01 ? ' style="color:#27AE60"' : '';
+                    html += `<tr><td>${name}</td><td${cls}>${v >= 0 ? "+" : ""}${v.toFixed(4)}</td></tr>`;
+                }
+                html += `</table>`;
+            }
+        }
     }
 
-    // Edge probabilities (children)
+    // Edge probabilities (children) with all 3 actor EUs
     if (nd.children && nd.children.length > 0) {
         html += `<div class="section-title">Actions / Splits</div>`;
-        html += `<table><tr><th>Action</th><th>Probability</th><th>EU</th></tr>`;
+        html += `<table><tr><th>Action</th><th>Probability</th><th style="color:#4A90D9">Board EU</th><th style="color:#50C878">ASA EU</th><th style="color:#E85D5D">CEO EU</th></tr>`;
         for (const e of nd.children) {
             const actual = (SHOW_ACTUAL && e.is_actual) ? ' style="background:#FFF0F0; font-weight:600"' : '';
             html += `<tr${actual}>`;
             html += `<td>${e.nice_label.replace(/\n/g, " ")}${SHOW_ACTUAL && e.is_actual ? " \u2B50" : ""}</td>`;
             html += `<td>${(e.prob*100).toFixed(1)}%</td>`;
-            html += `<td>${e.child_eu >= 0 ? "+" : ""}${e.child_eu.toFixed(4)}</td>`;
+            html += `<td>${e.child_eu_board >= 0 ? "+" : ""}${e.child_eu_board.toFixed(4)}</td>`;
+            html += `<td>${e.child_eu_asa >= 0 ? "+" : ""}${e.child_eu_asa.toFixed(4)}</td>`;
+            html += `<td>${e.child_eu_ceo >= 0 ? "+" : ""}${e.child_eu_ceo.toFixed(4)}</td>`;
             html += `</tr>`;
         }
         html += `</table>`;
@@ -1313,22 +2140,25 @@ setTimeout(fitToScreen, 100);
 # ── Top-level entry point ─────────────────────────────────────────────
 
 def render_interactive_tree(
-    root: VizNode,
+    root,
     results: dict,
     focal: str,
     checkpoint_id: str,
     actual_outcomes_path=None,
     output_dir=None,
     d0_probs=None,
+    skip_commentary: bool = False,
 ) -> Path:
     """Generate a self-contained interactive HTML tree visualisation.
 
     Parameters
     ----------
-    root : VizNode  unified tree from build_unified_tree()
+    root : VizNode or dict[str, VizNode]
+        Single tree (backward compat) or dict mapping mode_key -> VizNode.
+        Mode keys: "stochastic", "board", "asa", "ceo".
     results : dict[str, SolveResult]  scenario -> SolveResult
     focal : str  focal actor ("Board" or "ASA")
-    checkpoint_id : str  e.g. "C0"
+    checkpoint_id : str  e.g. "unified"
     actual_outcomes_path : str or Path  path to actual_outcomes.json
     output_dir : Path  output directory (default: PROJECT_ROOT / "outputs")
     d0_probs : dict  D0_ceo probabilities (unused here, reserved)
@@ -1349,22 +2179,37 @@ def render_interactive_tree(
     else:
         logger.info("No actual outcomes loaded; red lines disabled")
 
-    # Load API key and generate commentary
-    api_key = _load_api_key()
-    logger.info("Generating LLM commentary..." if api_key else "No API key; commentary will use placeholders")
+    # Normalize input: single tree -> multi-tree dict
+    if isinstance(root, dict):
+        trees = root
+        multi_mode = True
+    else:
+        trees = {"stochastic": root}
+        multi_mode = False
 
-    # First pass: serialize tree without commentary (needed for commentary prompts)
-    tree_dict_raw = viznode_to_dict(root, results, focal, actual, {})
+    # Load API key and generate commentary from the stochastic (default) tree
+    if skip_commentary:
+        api_key = None
+        logger.info("Skipping LLM commentary (--no-commentary)")
+    else:
+        api_key = _load_api_key()
+        logger.info("Generating LLM commentary..." if api_key else "No API key; commentary will use placeholders")
 
-    # Generate commentary
+    default_tree = trees.get("stochastic", next(iter(trees.values())))
+    tree_dict_raw = viznode_to_dict(default_tree, results, focal, actual, {})
     commentary = generate_commentary(tree_dict_raw, focal, checkpoint_id, api_key)
 
-    # Second pass: serialize tree WITH commentary
-    tree_dict = viznode_to_dict(root, results, focal, actual, commentary)
+    # Serialize all trees (commentary shared from stochastic mode)
+    all_tree_jsons = {}
+    for mode_key, tree_root in trees.items():
+        tree_dict = viznode_to_dict(tree_root, results, focal, actual, commentary)
+        all_tree_jsons[mode_key] = json.dumps(tree_dict, indent=None)
 
     # Render HTML
-    tree_json = json.dumps(tree_dict, indent=None)
     output_path = output_dir / f"tree_interactive_{focal}_{checkpoint_id}.html"
-    render_html(tree_json, focal, checkpoint_id, output_path)
+    if multi_mode:
+        render_html_multi(all_tree_jsons, focal, checkpoint_id, output_path)
+    else:
+        render_html(all_tree_jsons["stochastic"], focal, checkpoint_id, output_path)
 
     return output_path

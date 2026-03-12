@@ -27,23 +27,11 @@ pip install -r requirements.txt
 
 ### Development
 ```bash
-# Board-focal ARA at checkpoint C0, 100 belief draws
-python -m run.run_board_mode --checkpoint C0 --n_draws 100
+# Build all 4 strategic modes, produces interactive HTML with mode selector
+python -m run.run_unified_ARA --n_draws 500
 
-# CEO resigned scenario only (what actually happened)
-python -m run.run_board_mode --checkpoint C0 --scenario ceo_resigned --n_draws 100
-
-# ASA-focal ARA
-python -m run.run_asa_mode --checkpoint C0 --n_draws 100
-
-# Level-2 opponent modelling (opponents model focal actor strategically)
-python -m run.run_board_mode --checkpoint C3 --level 2 --n_draws 100
-
-# All checkpoints (Board perspective)
-python -m run.run_board_mode --all_checkpoints --n_draws 50
-
-# Sensitivity analysis over utility weight grid
-python -m run.sensitivity --focal Board --checkpoint C0 --n_draws 20
+# Without Laplacian smoothing
+python -m run.run_unified_ARA --n_draws 500 --no-laplacian
 ```
 
 ### Testing
@@ -72,10 +60,10 @@ Qantas/
 │   ├── tree.py                      # TreeEvaluator — node-indexed value recursion
 │   └── solver.py                    # Solver — full orchestration & parallelization
 │
-├── run/                             # CLI entry points (3 main scripts)
+├── run/                             # CLI entry points
 │   ├── __init__.py
-│   ├── run_board_mode.py            # Board-focal ARA with scenario control
-│   ├── run_asa_mode.py              # ASA-focal ARA with board policy option
+│   ├── run_unified_ARA.py           # Unified game tree (all strategic modes)
+│   ├── game_tree.py                 # Shared tree builder and utilities
 │   ├── sensitivity.py               # Grid sensitivity over utility weights
 │   └── visualise_tree.py            # Tree visualization (development utility)
 │
@@ -136,7 +124,7 @@ Node recursion pattern:
 ## Development Guidelines
 
 ### Code Style
-- **File naming:** snake_case (e.g., `chance_models.py`, `run_board_mode.py`)
+- **File naming:** snake_case (e.g., `chance_models.py`, `run_unified_ARA.py`)
 - **Function naming:** snake_case with verb prefix (e.g., `feasible_actions()`, `load_governance_spec()`)
 - **Class naming:** PascalCase (e.g., `DecisionState`, `BeliefBundle`, `TreeEvaluator`)
 - **Variable naming:** snake_case for normal variables; `SCREAMING_SNAKE_CASE` for module-level constants
@@ -193,14 +181,8 @@ distribution = pred.compute(node_name, state, focal_beliefs_draw)
 
 | Command | Description |
 |---------|-------------|
-| `python -m run.run_board_mode --checkpoint C0 --n_draws 100` | Board-focal ARA at checkpoint C0 |
-| `python -m run.run_board_mode --all_checkpoints --n_draws 50` | Run all 5 checkpoints (Cpre, C0–C3) |
-| `python -m run.run_board_mode --scenario ceo_resigned --n_draws 100` | CEO resigned scenario only |
-| `python -m run.run_board_mode --level 2 --n_draws 100` | Level-2 opponent modelling (recursive) |
-| `python -m run.run_board_mode --no-bias-board --n_draws 100` | Counterfactual: unbiased Board |
-| `python -m run.run_asa_mode --checkpoint C0 --n_draws 100` | ASA-focal ARA |
-| `python -m run.run_asa_mode --board_policy --n_draws 100` | ASA mode with Board using fixed policy |
-| `python -m run.sensitivity --focal Board --checkpoint C0 --n_draws 20` | Sensitivity grid over utility weights |
+| `python -m run.run_unified_ARA --n_draws 500` | Build all 4 modes, interactive HTML with mode selector |
+| `python -m run.run_unified_ARA --n_draws 500 --no-laplacian` | Same without Laplacian smoothing |
 | `python -m pytest tests/test_engine.py -v` | Run all tests |
 | `python -m pytest tests/test_engine.py::TestClass -v` | Run specific test class |
 

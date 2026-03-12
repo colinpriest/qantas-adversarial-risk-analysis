@@ -37,5 +37,13 @@ utility-quantification/cache/
 # Secrets
 .env
 
+# Node.js (sharp dependency for image processing)
+node_modules/
+package-lock.json
+
 # Windows artifacts
 nul
+
+# Excel backups (auto-generated)
+data/*_backup_*.xlsx
+data/*_corrupted.xlsx

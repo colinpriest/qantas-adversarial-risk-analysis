@@ -4,7 +4,7 @@
     "D0_ceo": "CEO_resign",
     "D1": "D1_review",
     "A2": "A2_rec_strike",
-    "V": "strike_overwhelming",
+    "V": "overwhelming",
     "V_details": {
         "vote_percent": 0.8293,
         "strike_indicator": true,
@@ -12,9 +12,10 @@
     },
     "M_agm": "market_reaction",
     "D_rev": "Drev_no_action",
-    "R": "adverse",
+    "R": "balanced",
     "R_details": {
-        "review_adverse": true
+        "review_outcome": "balanced",
+        "_note": "Woodward review: 'mistakes were made' without conceding liability — balanced finding"
     },
     "M_rev": "market_reaction",
     "D4": null,

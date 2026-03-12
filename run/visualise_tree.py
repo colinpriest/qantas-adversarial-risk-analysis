@@ -111,6 +111,9 @@ class VizNode:
     node_type: str          # decision / chance / terminal
     owner: str
     eu: float = 0.0
+    eu_board: float = 0.0
+    eu_asa: float = 0.0
+    eu_ceo: float = 0.0
     children: list = field(default_factory=list)   # (label, prob, VizNode)
     terminal_decomposition: dict = field(default_factory=dict)  # utility components at terminal
 

@@ -4111,19 +4111,29 @@ def compute_action_probabilities_from_posterior(
 # V: conditional on A2 action (strike recommendation shifts vote distribution upward)
 # D4/D4_post: conditional on vote outcome (CEO more likely to leave after bad vote)
 # R: Dirichlet(38, 160, 1) → E = (0.191, 0.804, 0.005) for (neg, bal, pos)
+def _load_a2_probs_from_calibration() -> dict:
+    """Load A2 action probabilities from ASA calibration pipeline output."""
+    from pathlib import Path as _Path
+    cal_path = _Path(__file__).parent / "outputs" / "asa" / "asa_a2_calibration.json"
+    if cal_path.exists():
+        import json as _json
+        with open(cal_path, "r", encoding="utf-8") as f:
+            return _json.load(f)["tree_probs"]
+    # Fallback for tests/development
+    return {
+        "resigned_D0_minimal":        {"A2_no_strike": 0.036, "A2_rec_strike": 0.964},
+        "resigned_D1_review":         {"A2_no_strike": 0.090, "A2_rec_strike": 0.910},
+        "stayed_D0_minimal":          {"A2_no_strike": 0.014, "A2_rec_strike": 0.986},
+        "stayed_D1_review":           {"A2_no_strike": 0.036, "A2_rec_strike": 0.964},
+        "stayed_D3_ceo_transition":   {"A2_no_strike": 0.113, "A2_rec_strike": 0.887},
+    }
+
+
 TREE_DEFAULT_PROBS = {
     "D0_ceo": {"CEO_resign": 0.962, "CEO_stay": 0.038},
-    # A2: 5-path Beta means from background/asa/asa_bayesian_params.md
-    # Keyed by (CEO_resigned_early, d1_action) — flattened to composite keys
-    "A2": {
-        # CEO resigned paths
-        "resigned_D0_minimal":        {"A2_no_strike": 0.100, "A2_rec_strike": 0.900},  # Beta(18,2)
-        "resigned_D1_review":         {"A2_no_strike": 0.176, "A2_rec_strike": 0.824},  # Beta(14,3)
-        # CEO stayed paths
-        "stayed_D0_minimal":          {"A2_no_strike": 0.040, "A2_rec_strike": 0.960},  # Beta(24,1)
-        "stayed_D1_review":           {"A2_no_strike": 0.118, "A2_rec_strike": 0.882},  # Beta(15,2)
-        "stayed_D3_ceo_transition":   {"A2_no_strike": 0.400, "A2_rec_strike": 0.600},  # Beta(9,6)
-    },
+    # A2: calibrated from asa_utility_quantification.py direct probability
+    # elicitation pipeline -> outputs/asa/asa_a2_calibration.json
+    "A2": _load_a2_probs_from_calibration(),
     "V": {
         "A2_no_strike":  {"no_strike": 0.55, "first_strike": 0.30, "overwhelming": 0.15},
         "A2_rec_strike": {"no_strike": 0.15, "first_strike": 0.40, "overwhelming": 0.45},

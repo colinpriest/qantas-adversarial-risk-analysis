@@ -25,6 +25,63 @@ from engine.modes import ModeConfig
 from engine.utilities import TerminalOutcome, compute_utility
 from engine.chance_models import ChanceModels, OverconfidenceBias
 
+import json
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Fallback effective sample size if calibration JSON lacks beta_priors
+_A2_BETA_N_EFF_FALLBACK = 200
+
+
+def _load_a2_beta_priors() -> dict[str, tuple[float, float]]:
+    """Load calibrated A2 Beta(alpha, beta) priors from calibration JSON.
+
+    Reads the pre-computed Beta priors from the ASA utility quantification
+    pipeline (outputs/asa/asa_a2_calibration.json).  If the JSON includes
+    a 'beta_priors' section, those are used directly.  Otherwise falls back
+    to converting P(strike) -> Beta(alpha, n_eff - alpha).
+
+    Returns dict: path_key -> (alpha, beta)
+    """
+    cal_path = Path(__file__).parent.parent / "outputs" / "asa" / "asa_a2_calibration.json"
+    if cal_path.exists():
+        with open(cal_path, "r", encoding="utf-8") as f:
+            cal = json.load(f)
+        priors = {}
+        # Prefer pre-computed Beta priors from calibration pipeline
+        if "beta_priors" in cal and cal["beta_priors"]:
+            for path_key, bp in cal["beta_priors"].items():
+                priors[path_key] = (bp["alpha"], bp["beta"])
+        else:
+            # Fallback: convert P(strike) -> Beta
+            for path_key, probs in cal["tree_probs"].items():
+                p_strike = probs["A2_rec_strike"]
+                alpha = max(1, round(p_strike * _A2_BETA_N_EFF_FALLBACK))
+                beta_param = max(1, _A2_BETA_N_EFF_FALLBACK - alpha)
+                priors[path_key] = (alpha, beta_param)
+        logger.debug(
+            "Loaded A2 Beta priors from %s: %s",
+            cal_path,
+            {k: f"Beta({a},{b}) mean={a/(a+b):.3f}" for k, (a, b) in priors.items()},
+        )
+        return priors
+    else:
+        logger.warning(
+            "A2 calibration file not found: %s. "
+            "Using fallback Beta priors (test/development only).",
+            cal_path,
+        )
+        # Fallback for tests — matches last calibration run
+        return {
+            "resigned_D0_minimal":      (48, 2),
+            "resigned_D1_review":       (46, 4),
+            "stayed_D0_minimal":        (49, 1),
+            "stayed_D1_review":         (48, 2),
+            "stayed_D3_ceo_transition": (44, 6),
+        }
+
 
 class PredictiveDistribution:
     """
@@ -66,6 +123,8 @@ class PredictiveDistribution:
             R_nested if R_nested is not None
             else max(2, min(5, R_rollouts))
         )
+        # A2 Beta priors: loaded from calibration pipeline output
+        self._a2_beta_priors = _load_a2_beta_priors()
 
     def predict(
         self,
@@ -349,43 +408,39 @@ class PredictiveDistribution:
             return "D4_stay" if "D4_stay" in feasible else feasible[0]
 
         elif actor == "ASA" and node_name == "A2":
-            # ASA recommendation — 5-path Beta priors from
-            # background/asa/asa_bayesian_params.md.
+            # ASA recommendation — 5-path Beta priors derived from
+            # asa_utility_quantification.py direct probability elicitation.
             #
-            # Each A2 node's P(Recommend strike) is modelled as a Beta
-            # distribution conditioned on the path (CEO resign/stay × D1 action).
-            # Parameters are derived from the utility dynamics analysis and
-            # the information state at each node.
+            # P(strike) at each A2 node originates from LLM elicitation,
+            # calibrated via a logistic model with monotonicity and signaling
+            # gap constraints. These calibrated probabilities are converted
+            # to Beta(alpha, beta) distributions with n_eff=50 (matching
+            # background/asa/asa-informative-prior.md specification).
             #
-            # A2-1: CEO resigns → Do nothing         Beta(18, 2)  mean=0.900
-            # A2-2: CEO resigns → Commission review  Beta(14, 3)  mean=0.824
-            # A2-3: CEO stays   → Do nothing         Beta(24, 1)  mean=0.960
-            # A2-4: CEO stays   → Commission review  Beta(15, 2)  mean=0.882
-            # A2-5: CEO stays   → Board forces exit  Beta(9,  6)  mean=0.600
+            # Loaded from outputs/asa/asa_a2_calibration.json at class init.
+            # See _load_a2_beta_priors() for the conversion.
             d1_action = history.get("D1", "D0_minimal")
             ceo_resigned_early = history.get("D0_ceo") == "CEO_resign"
 
             if rng is None:
-                # No rng: MAP — all means ≥ 0.60, recommend strike
+                # No rng: MAP — all calibrated means >= 0.88, recommend strike
                 return "A2_rec_strike" if "A2_rec_strike" in feasible else feasible[0]
 
-            # Sample p_strike from path-conditional Beta prior
+            # Look up path key for Beta prior
             if ceo_resigned_early:
                 if d1_action == "D1_review":
-                    # A2-2: CEO resigns → Review: Beta(14, 3) mean=0.824
-                    p_strike = rng.beta(14, 3)
+                    path_key = "resigned_D1_review"
                 else:
-                    # A2-1: CEO resigns → Do nothing: Beta(18, 2) mean=0.900
-                    p_strike = rng.beta(18, 2)
+                    path_key = "resigned_D0_minimal"
             elif d1_action == "D3_ceo_transition":
-                # A2-5: CEO stays → Board forces exit: Beta(9, 6) mean=0.600
-                p_strike = rng.beta(9, 6)
+                path_key = "stayed_D3_ceo_transition"
             elif d1_action == "D1_review":
-                # A2-4: CEO stays → Commission review: Beta(15, 2) mean=0.882
-                p_strike = rng.beta(15, 2)
+                path_key = "stayed_D1_review"
             else:
-                # A2-3: CEO stays → Do nothing: Beta(24, 1) mean=0.960
-                p_strike = rng.beta(24, 1)
+                path_key = "stayed_D0_minimal"
+
+            alpha, beta_param = self._a2_beta_priors[path_key]
+            p_strike = rng.beta(alpha, beta_param)
 
             if rng.random() >= p_strike:
                 return "A2_no_strike" if "A2_no_strike" in feasible else feasible[0]

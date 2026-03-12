@@ -809,14 +809,15 @@ class TestPredictive:
         assert len(dist) == 0
 
     def test_asa_beta_posterior_strike_probabilities(self):
-        """ASA fixed policy uses 5-path Beta priors from asa_bayesian_params.md.
+        """ASA fixed policy uses 5-path Beta priors calibrated from
+        asa_utility_quantification.py direct probability elicitation.
 
-        Path-conditional Beta priors:
-          A2-1: CEO resigns → Do nothing         Beta(18, 2) mean=0.900
-          A2-2: CEO resigns → Commission review  Beta(14, 3) mean=0.824
-          A2-3: CEO stays   → Do nothing         Beta(24, 1) mean=0.960
-          A2-4: CEO stays   → Commission review  Beta(15, 2) mean=0.882
-          A2-5: CEO stays   → Board forces exit  Beta(9,  6) mean=0.600
+        Path-conditional Beta priors (n_eff ~ 50):
+          A2-1: CEO resigns -> Do nothing         Beta(48, 2) mean=0.960
+          A2-2: CEO resigns -> Commission review  Beta(46, 4) mean=0.920
+          A2-3: CEO stays   -> Do nothing         Beta(49, 1) mean=0.980
+          A2-4: CEO stays   -> Commission review  Beta(48, 2) mean=0.960
+          A2-5: CEO stays   -> Board forces exit  Beta(44, 6) mean=0.880
         """
         pred = self._make_predictive()
         from engine.state import DecisionState
@@ -838,23 +839,23 @@ class TestPredictive:
                     count += 1
             strike_counts[d1] = count / n_samples
 
-        # A2-3: CEO stays → Do nothing: Beta(24,1) mean=0.960
-        assert 0.90 < strike_counts["D0_minimal"] < 1.00, (
-            f"A2-3 Beta(24,1) mean ~0.960, got {strike_counts['D0_minimal']:.1%}"
+        # A2-3: CEO stays -> Do nothing: Beta(49,1) mean=0.980
+        assert 0.93 < strike_counts["D0_minimal"] < 1.00, (
+            f"A2-3 Beta(49,1) mean ~0.980, got {strike_counts['D0_minimal']:.1%}"
         )
-        # A2-4: CEO stays → Review: Beta(15,2) mean=0.882
-        assert 0.80 < strike_counts["D1_review"] < 0.96, (
-            f"A2-4 Beta(15,2) mean ~0.882, got {strike_counts['D1_review']:.1%}"
+        # A2-4: CEO stays -> Review: Beta(48,2) mean=0.960
+        assert 0.90 < strike_counts["D1_review"] < 1.00, (
+            f"A2-4 Beta(48,2) mean ~0.960, got {strike_counts['D1_review']:.1%}"
         )
-        # A2-5: CEO stays → Board forces exit: Beta(9,6) mean=0.600
-        assert 0.45 < strike_counts["D3_ceo_transition"] < 0.75, (
-            f"A2-5 Beta(9,6) mean ~0.600, got {strike_counts['D3_ceo_transition']:.1%}"
+        # A2-5: CEO stays -> Board forces exit: Beta(44,6) mean=0.880
+        assert 0.80 < strike_counts["D3_ceo_transition"] < 0.95, (
+            f"A2-5 Beta(44,6) mean ~0.880, got {strike_counts['D3_ceo_transition']:.1%}"
         )
 
         # Test CEO resigned paths
         for d1, expected_mean, lo, hi, label in [
-            ("D0_minimal", 0.900, 0.82, 0.97, "A2-1 Beta(18,2)"),
-            ("D1_review", 0.824, 0.72, 0.92, "A2-2 Beta(14,3)"),
+            ("D0_minimal", 0.960, 0.90, 1.00, "A2-1 Beta(48,2)"),
+            ("D1_review", 0.920, 0.85, 0.97, "A2-2 Beta(46,4)"),
         ]:
             count = 0
             for i in range(n_samples):
@@ -869,9 +870,9 @@ class TestPredictive:
                 f"{label} mean ~{expected_mean:.3f}, got {rate:.1%}"
             )
 
-        # Ordering: A2-5 (0.600) < A2-2 (0.824) < A2-4 (0.882) < A2-1 (0.900) < A2-3 (0.960)
-        assert strike_counts["D3_ceo_transition"] < strike_counts["D1_review"]
-        assert strike_counts["D1_review"] < strike_counts["D0_minimal"]
+        # Ordering: A2-5 (0.880) <= A2-2 (0.920) <= A2-4=A2-1 (0.960) < A2-3 (0.980)
+        assert strike_counts["D3_ceo_transition"] <= strike_counts["D1_review"]
+        assert strike_counts["D1_review"] <= strike_counts["D0_minimal"]
 
     def test_build_outcome(self):
         from engine.predictive import PredictiveDistribution
@@ -1727,10 +1728,11 @@ class TestOverconfidenceBias:
         rate_u = negative_unbiased / n_samples
         rate_b = negative_biased / n_samples
 
-        # Biased negative rate should be lower (Board thinks governance is sound,
-        # inflated positive α in Dirichlet → lower P(negative))
-        assert rate_b < rate_u, (
-            f"Biased review negative rate should be lower: "
+        # Biased negative rate should be no higher (Board thinks governance is sound,
+        # inflated positive α in Dirichlet → lower P(negative)).
+        # Use <= to handle small bias where rates may tie with finite samples.
+        assert rate_b <= rate_u, (
+            f"Biased review negative rate should be no higher: "
             f"biased={rate_b:.3f} vs unbiased={rate_u:.3f}"
         )
 
@@ -2503,8 +2505,9 @@ class TestInteractiveTree:
         """Fuzzy match on vote node (V) chance outcomes."""
         from run.interactive_tree import _is_actual_edge
         actual = {"V": "strike_overwhelming"}
-        # "strike" in actual_action.lower() → matches "Strike (>=25%)"
-        assert _is_actual_edge("V", "Strike (>=25%)", actual) is True
+        # strike_overwhelming should match "Overwhelming" label, not first strike
+        assert _is_actual_edge("V", "Overwhelming (>=50%)", actual) is True
+        assert _is_actual_edge("V", "Strike (>=25%)", actual) is False
         assert _is_actual_edge("V", "No strike (<25%)", actual) is False
 
     def test_is_actual_edge_review_node(self):

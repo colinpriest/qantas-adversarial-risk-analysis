@@ -25,8 +25,8 @@ Qantas/
 │   └── solver.py                      # Solver — full orchestration across draws & actions
 │
 ├── run/                               # CLI entry points
-│   ├── run_board_mode.py              # Board-focal ARA (primary)
-│   ├── run_asa_mode.py                # ASA-focal ARA
+│   ├── run_unified_ARA.py             # Unified game tree (all strategic modes)
+│   ├── game_tree.py                   # Shared tree builder and utilities
 │   ├── sensitivity.py                 # Grid sensitivity analysis
 │   └── apply_estimated_weights.py     # Apply quantification outputs to governance_spec
 │
@@ -59,38 +59,8 @@ Qantas/
 ## Quick Start
 
 ```bash
-# Board-focal ARA — both scenarios (CEO resigned vs stayed)
-python -m run.run_board_mode --checkpoint C0 --n_draws 100
-
-# CEO resigned scenario only (what actually happened)
-python -m run.run_board_mode --checkpoint C0 --scenario ceo_resigned --n_draws 100
-
-# CEO stayed scenario only (counterfactual)
-python -m run.run_board_mode --checkpoint C0 --scenario ceo_stayed --n_draws 100
-
-# Pre-crisis checkpoint (31-Aug-2023, ACCC action date)
-python -m run.run_board_mode --checkpoint Cpre --n_draws 100
-
-# ASA-focal ARA at checkpoint C0
-python -m run.run_asa_mode --checkpoint C0 --n_draws 100
-
-# All checkpoints (Board perspective)
-python -m run.run_board_mode --all_checkpoints --n_draws 50
-
-# Level-2 opponent modelling (opponents model the focal actor strategically)
-python -m run.run_board_mode --checkpoint C3 --level 2 --n_draws 100
-
-# ASA mode with Board using fixed policy (no ARA)
-python -m run.run_asa_mode --checkpoint C0 --board_policy --n_draws 100
-
-# Board mode with ASA using fixed policy (no ARA)
-python -m run.run_board_mode --checkpoint C0 --asa_policy --n_draws 100
-
-# Board mode counterfactual: unbiased Board (no overconfidence)
-python -m run.run_board_mode --checkpoint C0 --no-bias-board --n_draws 100
-
-# Sensitivity analysis over utility weight grid
-python -m run.sensitivity --focal Board --checkpoint C0 --n_draws 20
+# Build all 4 strategic modes in one run, produces interactive HTML with mode selector
+python -m run.run_unified_ARA --n_draws 500
 
 # Run tests
 python -m pytest tests/test_engine.py -v
@@ -98,34 +68,21 @@ python -m pytest tests/test_engine.py -v
 
 ## Run Scripts
 
-### `run_board_mode.py` — Board-Focal Analysis
+### `run_unified_ARA.py` — Unified Game Tree
 
-Computes Board's optimal governance reform at D1 under strategic uncertainty about ASA and CEO responses.
+Builds all four strategic modes (All Stochastic, Board Strategic, ASA Strategic, CEO Strategic) in a single run. Produces one interactive HTML dashboard with a mode selector dropdown to switch between views in the browser — no need to re-run the script.
 
-
-| Argument            | Default                          | Description                                                                  |
-| ------------------- | -------------------------------- | ---------------------------------------------------------------------------- |
-| `--checkpoint`      | `C0`                             | Belief checkpoint (Cpre, C0–C3)                                              |
-| `--all_checkpoints` | off                              | Run all checkpoints                                                          |
-| `--scenario`        | `both`                           | Pre-game CEO scenario: `ceo_stayed`, `ceo_resigned`, or `both`               |
-| `--n_draws`         | `100`                            | Number of belief posterior draws                                             |
-| `--K`               | `200`                            | Opponent parameter samples per prediction                                    |
-| `--R_rollouts`      | `20`                             | Rollouts per opponent action evaluation                                      |
-| `--level`           | `2`                              | Opponent modelling depth (1 or 2)                                            |
-| `--asa_policy`      | off                              | Use empirical fixed policy for ASA instead of ARA                            |
-| `--no-bias-board`   | off                              | Disable Board overconfidence bias (counterfactual: accurate self-assessment) |
-| `--seed`            | `42`                             | Random seed                                                                  |
-| `--output`          | `outputs/board_mode_results.csv` | Output path                                                                  |
+All three actor EU streams (Board, CEO, ASA) are propagated through every node. Board decisions always use argmax-count from posterior weight draws for stochastic probabilities. Generates PNG tree diagrams (stochastic mode) and interactive HTML dashboard with multi-actor utility decomposition.
 
 
-### `run_asa_mode.py` — ASA-Focal Analysis
-
-Same interface as Board mode, with ASA as the focal actor. Additional argument:
-
-
-| Argument         | Default | Description                            |
-| ---------------- | ------- | -------------------------------------- |
-| `--board_policy` | off     | Board uses fixed policy instead of ARA |
+| Argument             | Default                                    | Description                                           |
+| -------------------- | ------------------------------------------ | ----------------------------------------------------- |
+| `--n_draws`          | `500`                                      | Number of posterior weight draws                      |
+| `--posterior-draws`  | `outputs/stan_posterior_draws.npz`          | Path to posterior draws file                          |
+| `--param-estimates`  | `outputs/parameter_estimates.csv`           | Path to parameter estimates (for vote weights)        |
+| `--no-laplacian`     | off                                        | Disable Laplacian smoothing on stochastic decision probs |
+| `--seed`             | `42`                                       | Random seed                                           |
+| `--output`           | (none)                                     | Output CSV path                                       |
 
 
 ### `sensitivity.py` — Parameter Sensitivity
@@ -145,7 +102,7 @@ Sweeps a grid over utility weights (81 combinations by default) and tracks how t
 
 ### `board_utility_quantification.py` — Board Utility Parameter Estimation
 
-A supporting calibration pipeline that estimates the Board utility function weights using LLM stakeholder simulation (gpt-4o-mini). The engine (`run_board_mode.py`) uses the resulting parameter values from `governance_spec.xlsx`.
+A supporting calibration pipeline that estimates the Board utility function weights using LLM stakeholder simulation (gpt-4o-mini). The engine (`run_unified_ARA.py`) uses the resulting parameter values from `governance_spec.xlsx`.
 
 The pipeline uses a two-stage estimation strategy:
 - **Stage 4A (Softmax MLE):** Estimates 8 action-varying parameters from choice probabilities
