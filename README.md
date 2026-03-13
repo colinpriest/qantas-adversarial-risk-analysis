@@ -26,13 +26,19 @@ Qantas/
 │
 ├── run/                               # CLI entry points
 │   ├── run_unified_ARA.py             # Unified game tree (all strategic modes)
-│   ├── game_tree.py                   # Shared tree builder and utilities
+│   ├── game_tree.py                   # Fast tree builder with posterior weight draws
+│   ├── interactive_tree.py            # Interactive HTML dashboard with LLM commentary
+│   ├── visualise_tree.py              # Static tree visualization (PNG)
 │   ├── sensitivity.py                 # Grid sensitivity analysis
 │   └── apply_estimated_weights.py     # Apply quantification outputs to governance_spec
 │
+├── paper-results-pack.py              # Section 7 results: PPC, sensitivity, counterfactuals
 ├── board_utility_quantification.py    # Board utility parameter estimation pipeline
+├── asa_utility_quantification.py      # ASA utility parameter estimation pipeline
+│
 ├── utility-quantification/            # Quantification supporting files
-│   ├── cache/                         # LLM response cache (SHA-256 keyed)
+│   ├── cache/                         # Board LLM response cache (SHA-256 keyed)
+│   ├── asa-cache/                     # ASA LLM response cache
 │   ├── ara_board_utility_experiment_spec.md  # Formal specification
 │   └── what-was-built.md             # Implementation notes
 │
@@ -42,11 +48,13 @@ Qantas/
 │   └── checkpoints/                   # Belief checkpoint .npz files (Cpre, C0–C3)
 │
 ├── tests/
-│   ├── test_engine.py                 # 114 tests across 14 test classes
+│   ├── test_engine.py                 # 151 tests across 16 test classes
 │   └── create_test_data.py            # Generate synthetic checkpoint data
 │
+├── results-pack/                      # Paper Section 7 outputs (CSV tables, PNG figures)
 ├── outputs/                           # Results from run scripts (CSV, HTML dashboards)
 ├── models/                            # Stan models (belief_model.stan, media_better.stan)
+├── docs/                              # Formal specifications and diagrams
 ├── deprecated/                        # Legacy V1 pipeline scripts
 └── requirements.txt
 ```
@@ -54,13 +62,16 @@ Qantas/
 ## Prerequisites
 
 - Python 3.8+
-- Dependencies: `pip install -r requirements.txt` (numpy, pandas, openpyxl, cmdstanpy)
+- Dependencies: `pip install -r requirements.txt` (numpy, pandas, openpyxl, cmdstanpy, scipy, matplotlib)
 
 ## Quick Start
 
 ```bash
 # Build all 4 strategic modes in one run, produces interactive HTML with mode selector
 python -m run.run_unified_ARA --n_draws 500
+
+# Generate paper results pack (Section 7 tables and figures)
+python paper-results-pack.py --n_draws 500
 
 # Run tests
 python -m pytest tests/test_engine.py -v
@@ -85,6 +96,23 @@ All three actor EU streams (Board, CEO, ASA) are propagated through every node. 
 | `--output`           | (none)                                     | Output CSV path                                       |
 
 
+### `paper-results-pack.py` — Paper Section 7 Results
+
+Generates 6 analyses for the academic paper, output to `results-pack/`:
+
+| Output | Format | Description |
+| ------ | ------ | ----------- |
+| Posterior predictive check | CSV | Model predictions vs actual 2023 AGM outcomes (5 events) |
+| Sensitivity analysis | CSV + PNG | Tornado chart of Board EU sensitivity to utility parameters |
+| Counterfactual analysis | CSV | What-if Board chose differently at D1 (both scenarios) |
+| EU decomposition | CSV + PNG | Board EU broken into weighted phi component contributions |
+| Vote distributions | PNG | Posterior predictive vote fraction per D1 action (unbiased + biased) |
+| Value of information | CSV | Strategic value of early observation (ASA action, vote outcome) |
+
+```bash
+python paper-results-pack.py --n_draws 500
+```
+
 ### `sensitivity.py` — Parameter Sensitivity
 
 Sweeps a grid over utility weights (81 combinations by default) and tracks how the optimal action shifts.
@@ -105,8 +133,8 @@ Sweeps a grid over utility weights (81 combinations by default) and tracks how t
 A supporting calibration pipeline that estimates the Board utility function weights using LLM stakeholder simulation (gpt-4o-mini). The engine (`run_unified_ARA.py`) uses the resulting parameter values from `governance_spec.xlsx`.
 
 The pipeline uses a two-stage estimation strategy:
-- **Stage 4A (Softmax MLE):** Estimates 8 action-varying parameters from choice probabilities
-- **Stage 4B (Factor Rating OLS):** Estimates 5 scenario-level parameters from LLM factor importance ratings
+- **Stage 4A (Softmax MLE):** Estimates 10 action-varying parameters from choice probabilities
+- **Stage 4B (Factor Rating OLS):** Estimates scenario-level parameters from LLM factor importance ratings
 
 ```bash
 # Full pipeline (~$0.60 at gpt-4o-mini prices)
@@ -134,6 +162,21 @@ python -m run.apply_estimated_weights outputs/parameter_estimates.csv --dry-run
 Output: `outputs/board_utility_dashboard.html` (self-contained interactive dashboard with 12 tabs). See [docs/board-utility-quantification.md](docs/board-utility-quantification.md) for full documentation.
 
 
+### `asa_utility_quantification.py` — ASA Utility Parameter Estimation
+
+Estimates ASA utility weights using the same LLM stakeholder simulation framework. Uses context + interaction phi decomposition where context terms fire equally for both actions and interaction terms fire only for `rec_strike`.
+
+```bash
+# Full pipeline
+python asa_utility_quantification.py --all
+
+# Re-run estimation only
+python asa_utility_quantification.py --stage 4,5,6
+```
+
+Output: `outputs/asa_utility_dashboard.html`.
+
+
 ## Game Tree
 
 The analysis starts on **31-Aug-2023** (ACCC legal action against Qantas). The first branch point is the CEO's resignation decision on **05-Sep-2023**, which splits the tree into two scenarios:
@@ -159,21 +202,23 @@ D0_ceo  [CEO: resign or stay?]  (05-Sep-2023)
                     │
                     └─► M_agm  [Market reaction]
                          │
-                         └─► D_rev  [Board: review / CEO removal]
-                              ├─ Drev_no_action  /  Drev_commission_review  /  Drev_sack_ceo
+                         └─► D4  [CEO: respond]  (CEO has first-mover advantage)
+                              ├─ D4_stay  /  D4_resign  /  D4_negotiate_exit
                               │
-                              └─► R  [Nature: review findings]
-                                   │   R ~ Bernoulli(pi_R)  if commissioned
+                              └─► D_rev  [Board: review / CEO removal]
+                                   ├─ Drev_no_action  /  Drev_commission_review  /  Drev_sack_ceo
                                    │
-                                   └─► M_rev  [Market reaction]
+                                   └─► R  [Nature: review findings]
+                                        │   R ~ Dirichlet(38, 160, 1) → (negative, balanced, positive)
                                         │
-                                        └─► D4  [CEO: respond]  (only if CEO present)
-                                             ├─ D4_stay  /  D4_resign  /  D4_negotiate_exit
+                                        └─► M_rev  [Market reaction]
                                              │
-                                             └─► Terminal  →  compute utility
+                                             └─► D4_post_review / D_rev_post_review  (if adverse + CEO present)
+                                                  │
+                                                  └─► Terminal  →  compute utility
 ```
 
-**Feasibility rules:** CEO removal at D3 or D_rev automatically eliminates D4 options. D3_ceo_transition requires `CEO_present` (infeasible if CEO already resigned). Review commission is gated by `review_not_commissioned`. CEO actions require `CEO_present`.
+**Feasibility rules:** CEO removal at D3, D_rev, or D_rev_post_review automatically eliminates downstream CEO options. D3_ceo_transition requires `CEO_present` (infeasible if CEO already resigned). Review commission is gated by `review_not_commissioned`. Post-review round activates only on negative review findings with CEO still present.
 
 ## Data Contracts
 
@@ -211,29 +256,29 @@ Prior distributions (normal, lognormal, beta, uniform, gamma) for each perspecti
 | C3         | 2023-11-03 | Pre-AGM peak distrust                   |
 
 
-Each `.npz` contains 500 posterior draws: `B_mkt`, `B_mgmt`, `alpha_vote`, `gamma_A`, `gamma_D`, `sigma_vote`, `review_param_1`, `review_param_2`.
+Each `.npz` contains 500 posterior draws: `B_mkt`, `B_mgmt`, `alpha_vote`, `gamma_A`, `gamma_AH`, `gamma_D`, `sigma_vote`, `review_param_1`, `review_param_2`.
 
 ## Engine Modules
 
 ### `state.py` — Game State & Data Loading
 
-- `**DecisionState`** — Tracks `CEO_present`, `review_commissioned`, `review_completed`, `CEO_removed`, `CEO_resigned_early`. Enforces feasibility rules from `governance_spec.xlsx`. Provides `feasible_actions()`, `apply()`, `next_node()`, `for_scenario()`. D0_ceo actions (`CEO_resign`, `CEO_stay`) are handled by `apply()`; `for_scenario()` delegates to it.
-- `**BeliefBundle**` — Loads checkpoint `.npz` files. `get_draw(i)` returns all parameters for draw *i*.
-- `**ParameterSampler*`* — Samples opponent utility parameters from priors in `opponent_priors.xlsx`.
+- **`DecisionState`** — Tracks `CEO_present`, `review_commissioned`, `review_completed`, `CEO_removed`, `CEO_resigned_early`, `headline_incident`, `post_review_round`. Enforces feasibility rules from `governance_spec.xlsx`. Provides `feasible_actions()`, `apply()`, `next_node()`, `for_scenario()`.
+- **`BeliefBundle`** — Loads checkpoint `.npz` files. `get_draw(i)` returns all parameters for draw *i*.
+- **`ParameterSampler`** — Samples opponent utility parameters from priors in `opponent_priors.xlsx`.
 
 ### `chance_models.py` — Stochastic Outcomes
 
-- `**VoteModel**` — Vote percentage via logit-normal: `logit(V) ~ N(alpha + B_mkt + gamma_A * strike + gamma_D * reform, sigma)`. ASA strike amplifies opposition; governance reform dampens it. Board overconfidence bias scales sigma down (`sigma_scale < 1`) to model overprecision.
-- `**ReviewModel**` — Adverse finding via `Bernoulli(expit(review_param_1 + adjustments))`, conditional on review being commissioned.
+- **`VoteModel`** — Vote percentage via logit-normal: `logit(V) ~ N(alpha + B_mkt + gamma_A * strike + gamma_AH * strike * headline + gamma_D * reform, sigma)`. ASA strike amplifies opposition; headline interaction (`gamma_AH`) further boosts it; governance reform dampens it. Board overconfidence bias scales sigma down (`sigma_scale < 1`) to model overprecision. Crisis floor via `Beta(50, 150)`.
+- **`ReviewModel`** — Trinary findings via `Dirichlet(38, 160, 1)` over (negative, balanced, positive). Board-initiated crisis review: balanced dominates (~80%), negative ~19%, positive <1%.
 
 ### `utilities.py` — Actor Utility Functions
 
 
 | Actor | Objective                                                   | Key terms                                                                                                                                                       |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Board | Minimize opposition & disruption                            | Vote penalty (quadratic above 25%), CEO loss cost, reform implementation cost                                                                                   |
-| ASA   | Maximize accountability outcomes                            | Vote reward (linear), CEO removal bonus, adverse review bonus, mobilisation cost                                                                                |
-| CEO   | Maximize CRRA wealth utility, minimize non-monetary penalty | U = W^(1-γ)/(1-γ) − D; wealth by departure mode (W_resign, W_stay_sacked, W_stay_kept); additive penalty D (sacking, AGM humiliation, disgrace, adverse review) |
+| Board | Minimize opposition & disruption                            | Vote penalty (quadratic above 25%), CEO loss cost with shock attenuation, reform implementation cost, review finding penalties, CEO accountability benefit       |
+| ASA   | Maximize accountability outcomes                            | Vote reward (linear), CEO removal bonus, review commission bonus, mobilisation cost, context + interaction decomposition                                         |
+| CEO   | Maximize CRRA wealth utility, minimize non-monetary penalty | U = W^(1-γ)/(1-γ) − λD; wealth by departure mode (W_resign, W_stay_sacked, W_stay_kept); graduated D penalties (D_sacked > D_resign_late > D_negotiate > D_stay) |
 
 
 ### `modes.py` — Analysis Configurations
@@ -246,6 +291,7 @@ Each `.npz` contains 500 posterior draws: `B_mkt`, `B_mgmt`, `alpha_vote`, `gamm
 | `MODE_BOARD_L2`         | Board | ASA=ARA, CEO=ARA      | 2     |
 | `MODE_ASA_L2`           | ASA   | Board=ARA, CEO=ARA    | 2     |
 | `MODE_ASA_POLICY_BOARD` | ASA   | Board=Policy, CEO=ARA | 1     |
+| `MODE_BOARD_POLICY_ASA` | Board | ASA=Policy, CEO=ARA   | 1     |
 
 
 ### `predictive.py` — ARA Opponent Modelling
@@ -290,12 +336,15 @@ Outcome statistics per action include: `Pr_strike`, `Pr_overwhelming`, `Pr_CEO_r
 - **All parameters externalized to Excel** — no magic numbers in code
 - **Focal symmetry verified:** swapping Board/ASA flips max/expectation at decision nodes
 - **CEO removal automatically eliminates D4 nodes** via feasibility rules
+- **Post-review round** for negative findings with CEO present — enables second-stage Board/CEO interaction
+- **CEO loss shock attenuation** — strike, overwhelming vote, and adverse review progressively reduce Board's cost of CEO removal
+- **Trinary review model** — Dirichlet(38, 160, 1) over negative/balanced/positive findings replaces binary adverse/benign
+- **D0_ceo prior** — Jeffreys Beta(0.5, 0.5) + 12 Australian no-contrition CEO departures → Beta(12.5, 0.5), mean 96.2%
 
 ## Tests
 
-114 tests across 14 classes covering data loading, feasibility rules, chance models, utilities, mode configurations, predictive distributions, tree evaluation, solver integration, spec validation, edge cases, overconfidence bias, D0_ceo decision node, scenario conditioning, and scenario utilities.
+151 tests across 16 classes covering data loading, feasibility rules, chance models, utilities, mode configurations, predictive distributions, tree evaluation, solver integration, spec validation, edge cases, overconfidence bias, D0_ceo decision node, scenario conditioning, scenario utilities, and interactive tree output.
 
 ```bash
 python -m pytest tests/test_engine.py -v
 ```
-
