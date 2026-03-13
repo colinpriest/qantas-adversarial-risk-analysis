@@ -1,4 +1,4 @@
-# Qantas Adversarial Risk Analysis (ARA) — V2 Engine
+# Qantas Adversarial Risk Analysis (ARA)
 
 A three-player adversarial risk analysis engine for Qantas governance decisions. The system combines Bayesian belief estimation (Stan) with game-theoretic tree recursion (Python) to compute optimal governance policies under strategic uncertainty.
 
@@ -26,6 +26,8 @@ Qantas/
 │
 ├── run/                               # CLI entry points
 │   ├── run_unified_ARA.py             # Unified game tree (all strategic modes)
+│   ├── run_board_mode.py              # Board-focal single-mode runner
+│   ├── run_asa_mode.py                # ASA-focal single-mode runner
 │   ├── game_tree.py                   # Fast tree builder with posterior weight draws
 │   ├── interactive_tree.py            # Interactive HTML dashboard with LLM commentary
 │   ├── visualise_tree.py              # Static tree visualization (PNG)
@@ -62,7 +64,10 @@ Qantas/
 ## Prerequisites
 
 - Python 3.8+
-- Dependencies: `pip install -r requirements.txt` (numpy, pandas, openpyxl, cmdstanpy, scipy, matplotlib)
+- Dependencies: `pip install -r requirements.txt`
+  - Core engine: numpy, pandas, openpyxl, cmdstanpy
+  - Results & quantification: scipy, matplotlib, unidecode, json-repair
+  - Interactive dashboard: instructor, openai, pydantic, python-dotenv, tqdm
 
 ## Quick Start
 
@@ -86,28 +91,30 @@ Builds all four strategic modes (All Stochastic, Board Strategic, ASA Strategic,
 All three actor EU streams (Board, CEO, ASA) are propagated through every node. Board decisions always use argmax-count from posterior weight draws for stochastic probabilities. Generates PNG tree diagrams (stochastic mode) and interactive HTML dashboard with multi-actor utility decomposition.
 
 
-| Argument             | Default                                    | Description                                           |
-| -------------------- | ------------------------------------------ | ----------------------------------------------------- |
-| `--n_draws`          | `500`                                      | Number of posterior weight draws                      |
-| `--posterior-draws`  | `outputs/stan_posterior_draws.npz`          | Path to posterior draws file                          |
-| `--param-estimates`  | `outputs/parameter_estimates.csv`           | Path to parameter estimates (for vote weights)        |
-| `--no-laplacian`     | off                                        | Disable Laplacian smoothing on stochastic decision probs |
-| `--seed`             | `42`                                       | Random seed                                           |
-| `--output`           | (none)                                     | Output CSV path                                       |
+| Argument            | Default                            | Description                                              |
+| ------------------- | ---------------------------------- | -------------------------------------------------------- |
+| `--n_draws`         | `500`                              | Number of posterior weight draws                         |
+| `--posterior-draws` | `outputs/stan_posterior_draws.npz` | Path to posterior draws file                             |
+| `--param-estimates` | `outputs/parameter_estimates.csv`  | Path to parameter estimates (for vote weights)           |
+| `--no-laplacian`    | off                                | Disable Laplacian smoothing on stochastic decision probs |
+| `--seed`            | `42`                               | Random seed                                              |
+| `--output`          | (none)                             | Output CSV path                                          |
 
 
 ### `paper-results-pack.py` — Paper Section 7 Results
 
 Generates 6 analyses for the academic paper, output to `results-pack/`:
 
-| Output | Format | Description |
-| ------ | ------ | ----------- |
-| Posterior predictive check | CSV | Model predictions vs actual 2023 AGM outcomes (5 events) |
-| Sensitivity analysis | CSV + PNG | Tornado chart of Board EU sensitivity to utility parameters |
-| Counterfactual analysis | CSV | What-if Board chose differently at D1 (both scenarios) |
-| EU decomposition | CSV + PNG | Board EU broken into weighted phi component contributions |
-| Vote distributions | PNG | Posterior predictive vote fraction per D1 action (unbiased + biased) |
-| Value of information | CSV | Strategic value of early observation (ASA action, vote outcome) |
+
+| Output                     | Format    | Description                                                          |
+| -------------------------- | --------- | -------------------------------------------------------------------- |
+| Posterior predictive check | CSV       | Model predictions vs actual 2023 AGM outcomes (5 events)             |
+| Sensitivity analysis       | CSV + PNG | Tornado chart of Board EU sensitivity to utility parameters          |
+| Counterfactual analysis    | CSV       | What-if Board chose differently at D1 (both scenarios)               |
+| EU decomposition           | CSV + PNG | Board EU broken into weighted phi component contributions            |
+| Vote distributions         | PNG       | Posterior predictive vote fraction per D1 action (unbiased + biased) |
+| Value of information       | CSV       | Strategic value of early observation (ASA action, vote outcome)      |
+
 
 ```bash
 python paper-results-pack.py --n_draws 500
@@ -133,6 +140,7 @@ Sweeps a grid over utility weights (81 combinations by default) and tracks how t
 A supporting calibration pipeline that estimates the Board utility function weights using LLM stakeholder simulation (gpt-4o-mini). The engine (`run_unified_ARA.py`) uses the resulting parameter values from `governance_spec.xlsx`.
 
 The pipeline uses a two-stage estimation strategy:
+
 - **Stage 4A (Softmax MLE):** Estimates 10 action-varying parameters from choice probabilities
 - **Stage 4B (Factor Rating OLS):** Estimates scenario-level parameters from LLM factor importance ratings
 
@@ -150,17 +158,18 @@ python -m run.apply_estimated_weights outputs/parameter_estimates.csv
 python -m run.apply_estimated_weights outputs/parameter_estimates.csv --dry-run
 ```
 
-| Argument       | Default           | Description                          |
-| -------------- | ----------------- | ------------------------------------ |
-| `--stage`      | `all`             | Comma-separated stages (1-6) or 'all' |
-| `--model`      | `gpt-4o-mini`    | LLM model for elicitation            |
-| `--n_reps`     | `40`              | Repetitions per scenario             |
-| `--n_starts`   | `10`              | L-BFGS-B starting points             |
-| `--bootstrap_B`| `500`             | Bootstrap samples for SEs            |
-| `--output_dir` | `outputs/`        | Output directory                     |
+
+| Argument        | Default       | Description                           |
+| --------------- | ------------- | ------------------------------------- |
+| `--stage`       | `all`         | Comma-separated stages (1-6) or 'all' |
+| `--model`       | `gpt-4o-mini` | LLM model for elicitation             |
+| `--n_reps`      | `40`          | Repetitions per scenario              |
+| `--n_starts`    | `10`          | L-BFGS-B starting points              |
+| `--bootstrap_B` | `500`         | Bootstrap samples for SEs             |
+| `--output_dir`  | `outputs/`    | Output directory                      |
+
 
 Output: `outputs/board_utility_dashboard.html` (self-contained interactive dashboard with 12 tabs). See [docs/board-utility-quantification.md](docs/board-utility-quantification.md) for full documentation.
-
 
 ### `asa_utility_quantification.py` — ASA Utility Parameter Estimation
 
@@ -175,7 +184,6 @@ python asa_utility_quantification.py --stage 4,5,6
 ```
 
 Output: `outputs/asa_utility_dashboard.html`.
-
 
 ## Game Tree
 
@@ -262,20 +270,20 @@ Each `.npz` contains 500 posterior draws: `B_mkt`, `B_mgmt`, `alpha_vote`, `gamm
 
 ### `state.py` — Game State & Data Loading
 
-- **`DecisionState`** — Tracks `CEO_present`, `review_commissioned`, `review_completed`, `CEO_removed`, `CEO_resigned_early`, `headline_incident`, `post_review_round`. Enforces feasibility rules from `governance_spec.xlsx`. Provides `feasible_actions()`, `apply()`, `next_node()`, `for_scenario()`.
-- **`BeliefBundle`** — Loads checkpoint `.npz` files. `get_draw(i)` returns all parameters for draw *i*.
-- **`ParameterSampler`** — Samples opponent utility parameters from priors in `opponent_priors.xlsx`.
+- **DecisionState** — Tracks `CEO_present`, `review_commissioned`, `review_completed`, `CEO_removed`, `CEO_resigned_early`, `headline_incident`, `post_review_round`. Enforces feasibility rules from `governance_spec.xlsx`. Provides `feasible_actions()`, `apply()`, `next_node()`, `for_scenario()`.
+- **BeliefBundle** — Loads checkpoint `.npz` files. `get_draw(i)` returns all parameters for draw *i*.
+- **ParameterSampler** — Samples opponent utility parameters from priors in `opponent_priors.xlsx`.
 
 ### `chance_models.py` — Stochastic Outcomes
 
-- **`VoteModel`** — Vote percentage via logit-normal: `logit(V) ~ N(alpha + B_mkt + gamma_A * strike + gamma_AH * strike * headline + gamma_D * reform, sigma)`. ASA strike amplifies opposition; headline interaction (`gamma_AH`) further boosts it; governance reform dampens it. Board overconfidence bias scales sigma down (`sigma_scale < 1`) to model overprecision. Crisis floor via `Beta(50, 150)`.
-- **`ReviewModel`** — Trinary findings via `Dirichlet(38, 160, 1)` over (negative, balanced, positive). Board-initiated crisis review: balanced dominates (~80%), negative ~19%, positive <1%.
+- **VoteModel** — Vote percentage via logit-normal: `logit(V) ~ N(alpha + B_mkt + gamma_A * strike + gamma_AH * strike * headline + gamma_D * reform, sigma)`. ASA strike amplifies opposition; headline interaction (`gamma_AH`) further boosts it; governance reform dampens it. Board overconfidence bias scales sigma down (`sigma_scale < 1`) to model overprecision. Crisis floor via `Beta(50, 150)`.
+- **ReviewModel** — Trinary findings via `Dirichlet(38, 160, 1)` over (negative, balanced, positive). Board-initiated crisis review: balanced dominates (~80%), negative ~19%, positive <1%.
 
 ### `utilities.py` — Actor Utility Functions
 
 
-| Actor | Objective                                                   | Key terms                                                                                                                                                       |
-| ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Actor | Objective                                                   | Key terms                                                                                                                                                        |
+| ----- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Board | Minimize opposition & disruption                            | Vote penalty (quadratic above 25%), CEO loss cost with shock attenuation, reform implementation cost, review finding penalties, CEO accountability benefit       |
 | ASA   | Maximize accountability outcomes                            | Vote reward (linear), CEO removal bonus, review commission bonus, mobilisation cost, context + interaction decomposition                                         |
 | CEO   | Maximize CRRA wealth utility, minimize non-monetary penalty | U = W^(1-γ)/(1-γ) − λD; wealth by departure mode (W_resign, W_stay_sacked, W_stay_kept); graduated D penalties (D_sacked > D_resign_late > D_negotiate > D_stay) |
@@ -348,3 +356,4 @@ Outcome statistics per action include: `Pr_strike`, `Pr_overwhelming`, `Pr_CEO_r
 ```bash
 python -m pytest tests/test_engine.py -v
 ```
+
