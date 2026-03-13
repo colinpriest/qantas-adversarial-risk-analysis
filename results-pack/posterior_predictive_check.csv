@@ -1,0 +1,6 @@
+Event,Predicted,Actual,Match,Notes
+CEO departure (D0_ceo),Pr(resign) = 96.2%,Resigned,True,"Beta(12.5, 0.5) posterior; 12/12 no-contrition departures"
+Board action (D1),Commission review (Pr = 99.0%),Commission review,True,Do nothing=1.0%; Commission review=99.0%
+ASA recommendation (A2),Pr(strike) = 95.1%,Strike recommended,True,Conditional on CEO resigned + D1_review
+Vote fraction (V),"Mean = 35.6%, SD = 13.0%",82.9%,False,"90% CI: [22.1%, 62.3%]; actual at 100th percentile"
+Review outcome (R),"Pr(balanced) = 80.4%, Pr(negative) = 19.1%, Pr(positive) = 0.5%",Balanced,True,"Dirichlet(38, 160, 1) prior; modal outcome"

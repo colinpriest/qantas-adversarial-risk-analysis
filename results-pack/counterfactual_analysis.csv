@@ -1,0 +1,6 @@
+Scenario,D1_action,D1_label,Is_optimal,Board_EU,ASA_EU,CEO_EU,Pr_strike,Pr_overwhelming,Pr_CEO_removed,E_vote_pct_logit_normal,SD_vote_pct,Pr_review_negative,Pr_review_balanced
+CEO resigned,D0_minimal,Do nothing,False,-5.4678,2.1273,-90.966,0.837,0.44,1.0,0.378,0.14,0.0,0.0
+CEO resigned,D1_review,Commission review,True,-4.9394,2.3618,-90.966,0.831,0.435,1.0,0.357,0.129,0.191,0.804
+CEO stayed,D0_minimal,Do nothing,False,0.7551,1.9491,-281.7427,0.842,0.444,0.801,0.378,0.14,0.0,0.0
+CEO stayed,D1_review,Commission review,True,1.686,2.2107,-283.2338,0.837,0.44,0.797,0.357,0.129,0.191,0.804
+CEO stayed,D3_ceo_transition,Force CEO exit,False,1.6364,2.7059,-375.739,0.822,0.429,1.0,0.393,0.145,0.0,0.0

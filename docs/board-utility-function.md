@@ -100,47 +100,59 @@ The Board owns three decision nodes in the game tree (plus conditional post-revi
 | Sack CEO          | `Drev_sack_ceo`          | `post_review_round_and_CEO_present`             | Board removes CEO after adverse review findings.                                 |
 | Commission review | `Drev_commission_review` | `post_review_round_and_review_not_commissioned` | Commission another review (only if first review was triggered at D_rev, not D1). |
 
-**Strategic context:** This node is reached only on adverse review paths where the CEO has survived to this point. The adverse_review_ceo_present_penalty (§5.15) creates a strong incentive for the Board to remove the CEO at this node, since retaining the CEO after documented governance failures exposes the Board to regulatory liability, shareholder revolt at the next AGM, and class-action risk.
+**Strategic context:** This node is reached only on negative review paths where the CEO has survived to this point. The `negative_review_finding_penalty` (term 12, §5.12) and the `inaction_ceo_present_penalty` (term 3, §5.3) together create a strong incentive for the Board to remove the CEO at this node, since retaining the CEO after documented governance failures exposes the Board to regulatory liability, shareholder revolt at the next AGM, and class-action risk.
 
 ***
 
 ## 3. Board Utility Function Formula
 
-The Board utility is computed at the Terminal node over the complete game outcome. Formally:
+The Board utility is computed at the Terminal node over the complete game outcome. The function has three structural layers: unconditional inaction penalties, vote-dependent penalties, and retained outcome-specific components.
 
 ```
 u_B(Z) = 0
-         − w_early   · 1[CEO_resigned_early]                                     (1)
-         − w_vote    · (V − 0.25)²₊                                              (2)
-         − w_over    · 1[overwhelming]                                            (3)
-         − w_spill   · V · 1[strike]                                              (4)
-         + w_CAR     · CAR · 1[review_commissioned]                               (5)
-         − w_cost    · C_direct · 1[review_commissioned]                          (6)
-         − w_impl    · (1[d1 = D3] + 1[d_rev = sack] + 1[d_rev' = sack])        (7)
-         − w_loss    · 1[CEO_removed ∧ ¬CEO_resigned_early]                      (8)
-         − w_rep     · 1[overwhelming]                                            (9)
-         − w_spill2  · 1[strike ∧ CEO_present_at_end]                            (10)
-         − w_reg     · 1[strike ∧ CEO_present_at_end]                            (11)
-         − w_d1_liab · 1[overwhelming ∧ d1 = D0_minimal]                         (12)
-         − w_legal1  · 1[strike ∧ d1 = D0_minimal]                              (13)
-         − w_legal2  · 1[strike ∧ CEO_present_at_end]                            (14)
-         − w_adverse · 1[review_commissioned ∧ review_adverse ∧ CEO_present_at_end] (15)
+         ── 1. INACTION COMPONENTS (unconditional) ──
+         − w_inact_base   · 1[board_inactive]                                 (1)
+         − w_inact_no_rev · 1[¬review_commissioned]                           (2)
+         − w_inact_ceo    · 1[ceo_present_at_end]                             (3)
+         − w_inact_no_sack · 1[¬removed_involuntary]                          (4)
+
+         ── 2. VOTE PENALTIES (linear in normalized excess) ──
+         − w_v_strike · max(0, (V − 0.25) / 0.75)                            (5)
+         − w_v_over   · max(0, (V − 0.50) / 0.50)                            (6)
+
+         ── 3. RETAINED COMPONENTS ──
+         − w_pass     · 1[CEO_resigned_early]                                 (7)
+         + w_CAR⁺     · max(CAR, 0) · 1[review_commissioned]                 (8a)
+         − w_CAR⁻     · max(−CAR, 0) · 1[review_commissioned]               (8b)
+         − w_cost     · C_direct · 1[review_commissioned]                     (9)
+         − w_impl     · (1[d1 = D3] + 1[d_rev = sack] + 1[d_rev' = sack])   (10)
+         − max(0, w_loss − w_loss_over · 1[overwhelming])
+                       · 1[removed_involuntary]                               (11)
+         − w_rev_neg  · 1[review_commissioned ∧ outcome = negative]          (12)
+         − w_rev_bal  · 1[review_commissioned ∧ outcome = balanced]          (13)
+         − w_rev_post · 1[removed_involuntary ∧ ¬review_commissioned]        (14)
 ```
 
 where:
 
+-   `board_inactive` = Board took only minimal action: `d1 = D0_minimal` AND `d_rev ∉ {sack, review}` AND `d_rev' ≠ sack`
+-   `ceo_present_at_end = ¬CEO_removed ∧ ¬CEO_resigned_early`
+-   `removed_involuntary = CEO_removed ∧ ¬CEO_resigned_early`
 -   `(x)₊ = max(x, 0)` — the positive part function
--   `CEO_present_at_end = ¬CEO_removed ∧ ¬CEO_resigned_early`
--   `V` is the continuous vote fraction (e.g., 0.83 for 83%)
--   `CAR` is the cumulative abnormal return from the review findings release (can be positive or negative)
--   `C_direct` is the direct cost of the review in decimal CAR (positive value, subtracted)
+-   Vote penalties are **linear** in normalized excess (not quadratic)
+-   Review CAR uses **loss aversion**: `w_CAR⁺ = w_CAR / ((1 + λ) / 2)`, `w_CAR⁻ = λ · w_CAR⁺`
+-   Review outcome is **trinary**: negative, balanced, or positive (not binary adverse/positive)
 -   All indicator functions `1[·]` are {0, 1}-valued
 
 ### 3.1 Structural Rationale
 
-The utility function is designed as a **penalty-based objective** rather than a reward-maximising function. This reflects the Board's institutional position: in a crisis, the Board's goal is damage minimisation rather than opportunity exploitation. The additive structure captures the key insight that multiple sources of damage accumulate independently — a high protest vote, an adverse review, and CEO retention each impose separate costs that do not substitute for one another.
+The utility function is organized in three layers reflecting distinct governance mechanisms:
 
-The function is **linear in most indicators** (with the important exception of the quadratic vote penalty, term 2). This reflects the assumption that the Board evaluates outcomes categorically: either a strike occurred or it did not, either the CEO was removed or not. The quadratic vote penalty provides the critical exception — the Board cares not just about whether a strike occurs but about *how severe* the vote is beyond the 25% threshold. This convexity captures the escalating reputational damage from increasingly adverse vote outcomes.
+**Layer 1 — Inaction penalties** fire unconditionally regardless of vote level. They capture the Board's baseline governance obligations: act on known problems, commission oversight, ensure executive accountability. These create a non-zero cost floor for passive governance strategies even when the shareholder vote is mild.
+
+**Layer 2 — Vote penalties** scale linearly with vote excess above thresholds (25% strike, 50% overwhelming), normalized to [0, 1] range. The linear form (replacing the earlier quadratic specification) captures proportional escalation of reputational damage as the protest vote increases.
+
+**Layer 3 — Retained components** capture outcome-specific costs: CEO departure disruption, review findings impact, implementation costs, and due diligence requirements. The review CAR term uses Kahneman-Tversky loss aversion (lambda = 2.25) to reflect the asymmetric impact of negative vs positive market reactions.
 
 ***
 
@@ -148,354 +160,246 @@ The function is **linear in most indicators** (with the important exception of t
 
 All parameter values are stored in `data/governance_spec.xlsx`, sheet `utilities_board`. No magic numbers appear in code.
 
-| \# | Parameter Name                       | Symbol    | Value | Term | Data Basis                        |
-|----|--------------------------------------|-----------|-------|------|-----------------------------------|
-| 1  | `early_ceo_departure_cost`           | w_early   | 0.5   | (1)  | Subjective                        |
-| 2  | `vote_penalty_weight`                | w_vote    | 2.0   | (2)  | Subjective (calibrated)           |
-| 3  | `overwhelming_penalty_weight`        | w_over    | 3.0   | (3)  | Subjective                        |
-| 4  | `spill_risk_weight`                  | w_spill   | 2.5   | (4)  | Subjective (empirically anchored) |
-| 5  | `review_car_weight`                  | w_CAR     | 15.0  | (5)  | Data-derived                      |
-| 6  | `review_direct_cost_weight`          | w_cost    | 15.0  | (6)  | Data-derived                      |
-| 7  | `implementation_cost_sack`           | w_impl    | 0.3   | (7)  | Subjective                        |
-| 8  | `ceo_loss_cost`                      | w_loss    | 1.5   | (8)  | Subjective                        |
-| 9  | `reputational_spill_weight`          | w_rep     | 1.0   | (9)  | Subjective                        |
-| 10 | `second_strike_spill_penalty`        | w_spill2  | 8.0   | (10) | Empirically anchored              |
-| 11 | `board_regulatory_liability`         | w_reg     | 5.0   | (11) | Subjective (legally grounded)     |
-| 12 | `board_d1_liability`                 | w_d1_liab | 4.0   | (12) | Subjective (legally grounded)     |
-| 13 | `qantas_legal_d1_penalty`            | w_legal1  | 3.0   | (13) | Subjective (legally grounded)     |
-| 14 | `qantas_legal_d_rev_penalty`         | w_legal2  | 2.0   | (14) | Subjective (legally grounded)     |
-| 15 | `adverse_review_ceo_present_penalty` | w_adverse | 5.0   | (15) | Data-informed                     |
-
-**Classification key:**
-
--   **Data-derived**: Parameter value is directly computed from observable data or a calibrated statistical model.
--   **Empirically anchored**: Parameter value is informed by observable data but requires subjective scaling judgement.
--   **Subjective (legally grounded)**: Parameter reflects legal or regulatory consequences documented in statute or case law, but the *magnitude* is a modelling judgement.
--   **Subjective (calibrated)**: Parameter value is chosen to produce behaviourally plausible results and tested through sensitivity analysis.
--   **Subjective**: Parameter value is a modelling judgement without direct empirical calibration.
+| #  | Parameter Name                      | Symbol        | Value | Term  | Layer    |
+|----|-------------------------------------|---------------|-------|-------|----------|
+| 1  | `inaction_base_penalty`             | w_inact_base  | 3.0   | (1)   | Inaction |
+| 2  | `inaction_no_review_penalty`        | w_inact_no_rev| 2.0   | (2)   | Inaction |
+| 3  | `inaction_ceo_present_penalty`      | w_inact_ceo   | 5.0   | (3)   | Inaction |
+| 4  | `inaction_no_sack_penalty`          | w_inact_no_sack| 3.0  | (4)   | Inaction |
+| 5  | `vote_strike_penalty`               | w_v_strike    | 2.0   | (5)   | Vote     |
+| 6  | `vote_overwhelming_penalty`         | w_v_over      | 3.0   | (6)   | Vote     |
+| 7  | `board_passivity_after_departure`   | w_pass        | 0.5   | (7)   | Retained |
+| 8  | `review_car_weight`                 | w_CAR         | 15.0  | (8)   | Retained |
+| 8L | `review_car_loss_aversion`          | lambda_la     | 2.25  | (8)   | Retained |
+| 9  | `review_direct_cost_weight`         | w_cost        | 15.0  | (9)   | Retained |
+| 10 | `implementation_cost_sack`          | w_impl        | 1.0   | (10)  | Retained |
+| 11 | `ceo_loss_cost`                     | w_loss        | 1.5   | (11)  | Retained |
+| 11s| `ceo_loss_shock_overwhelming`       | w_loss_over   | 0.5   | (11)  | Retained |
+| 12 | `negative_review_finding_penalty`   | w_rev_neg     | 5.0   | (12)  | Retained |
+| 13 | `balanced_review_finding_penalty`   | w_rev_bal     | 2.5   | (13)  | Retained |
+| 14 | `review_after_removal_penalty`      | w_rev_post    | 3.0   | (14)  | Retained |
 
 ***
 
 ## 5. Detailed Parameter Specifications
 
-### 5.1 Early CEO Departure Cost — `early_ceo_departure_cost` = 0.5
+### 5.1 Inaction Base Penalty — `inaction_base_penalty` = 3.0
 
-**Term (1):** `u -= 0.5 · 1[CEO_resigned_early]`
+**Term (1):** `u -= 3.0 · 1[board_inactive]`
 
-**What it captures:** The cost to the Board when the CEO resigns before the game tree begins (the D0_ceo = CEO_resign scenario, corresponding to the historical event of 5 September 2023). Even though early resignation removes the CEO controversy from the AGM, it imposes transition costs: leadership vacuum during crisis, market uncertainty about succession, disruption to ongoing ACCC settlement negotiations.
+**What it captures:** The baseline governance cost when the Board takes only minimal action throughout the entire game: `d1 = D0_minimal` AND no sacking or review at D_rev or D_rev_post_review. This penalises complete passivity in the face of a known governance crisis.
 
-**Justification for value:** Set at 0.5 — significantly lower than the full `ceo_loss_cost` (1.5) because voluntary pre-crisis departure is far less disruptive than mid-crisis removal. The CEO controls the timing and narrative ("taking responsibility"), reducing market shock and allowing an orderly succession process. The Qantas Board had a succession candidate (Vanessa Hudson) identified, making the transition smoother than a contested removal.
+**Indicator definition:** `board_inactive` is true when `d1 = D0_minimal` AND `d_rev ∉ {sack, review}` AND `d_rev_post_review ≠ sack`. Any decisive action at any decision point clears this indicator.
 
-**Basis:** Subjective. The 0.5 value reflects the judgement that early voluntary departure imposes approximately one-third the disruption cost of involuntary removal. This ratio is consistent with CEO turnover literature showing that forced departures produce 2–4x the stock price impact of voluntary departures for large-cap firms.
+**Justification for value:** Set at 3.0. The penalty creates a meaningful cost floor for passive strategies even when the shareholder vote is mild. A Board that takes no action despite the known governance crisis faces reputational costs, institutional investor engagement, and proxy advisor criticism regardless of the AGM outcome.
 
-**Implication:** A low early departure cost makes the "ceo_resigned" scenario relatively benign for the Board. The Board's expected utility is considerably higher when the CEO departs voluntarily before the AGM than when the CEO stays and the Board must navigate the full governance crisis.
-
-***
-
-### 5.2 Vote Penalty Weight — `vote_penalty_weight` = 2.0
-
-**Term (2):** `u -= 2.0 · (V − 0.25)²`
-
-**What it captures:** The **quadratic** escalation of reputational damage as the protest vote exceeds the first-strike threshold of 25%. The quadratic functional form means that incremental votes beyond 25% impose increasing marginal cost — a 35% vote is worse than 30% by more than 30% is worse than 25%.
-
-**Justification for structure:** A first strike on the remuneration report is a public signal of shareholder dissatisfaction that triggers media coverage, proxy advisor scrutiny, and institutional investor engagement. The severity of these consequences scales nonlinearly: a bare first strike (26%) attracts modest attention, while a vote near 50% triggers a qualitatively different regulatory and reputational regime. The quadratic form `(V − 0.25)²` captures this escalation while remaining analytically tractable.
-
-**Justification for value:** At 2.0, the quadratic penalty produces the following scale of costs:
-
-| Vote % | Excess above 25% | Quadratic penalty | Total contribution |
-|--------|------------------|-------------------|--------------------|
-| 30%    | 0.05             | 0.0025            | −0.005             |
-| 40%    | 0.15             | 0.0225            | −0.045             |
-| 50%    | 0.25             | 0.0625            | −0.125             |
-| 60%    | 0.35             | 0.1225            | −0.245             |
-| 83%    | 0.58             | 0.3364            | −0.673             |
-
-The quadratic term alone contributes moderately; its primary function is to differentiate between outcomes within the "first strike achieved" region. The bulk of the vote-related disutility comes from the `spill_risk_weight` (linear in V) and the indicator-based penalties (terms 10–14).
-
-**Basis:** Subjective (calibrated). The weight was set to ensure that the total vote-related disutility (sum of terms 2, 3, 4, 9, 10–14) produces a meaningful ordering of outcomes: overwhelming \> standard strike \> near-miss. Sensitivity analysis confirms that results are robust to perturbations of ±50% in this weight.
+**Basis:** Estimated via ordinal probit regression on expert governance assessments (board utility quantification pipeline, Stage 4A softmax MLE).
 
 ***
 
-### 5.3 Overwhelming Penalty Weight — `overwhelming_penalty_weight` = 3.0
+### 5.2 Inaction No-Review Penalty — `inaction_no_review_penalty` = 2.0
 
-**Term (3):** `u -= 3.0 · 1[overwhelming]`
+**Term (2):** `u -= 2.0 · 1[¬review_commissioned]`
 
-**What it captures:** A discrete penalty for an overwhelming protest vote (≥50% against the remuneration report). An overwhelming vote is qualitatively distinct from a standard first strike: it signals majority shareholder dissatisfaction, attracts national media coverage, and places the Board under immediate pressure to act.
+**What it captures:** The governance cost of failing to commission an independent review. In a crisis context, the absence of an independent review signals that the Board is not engaging with the underlying governance problems. This is distinct from the base inaction penalty: a Board that takes CEO transition action at D1 without commissioning a review still incurs this penalty.
 
-**Justification for value:** The threshold for "overwhelming" is set at 50% (from `vote_thresholds` sheet). The 3.0 penalty reflects the Board's assessment that crossing the 50% line imposes:
+**Justification for value:** Set at 2.0 — lower than the base inaction penalty (3.0) because failing to commission a review is a less egregious omission than complete passivity. The Board may have legitimate reasons for not commissioning a review (e.g., the CEO has already departed), but the absence of independent oversight is still a governance weakness.
 
--   Heightened media scrutiny and sustained negative press coverage
--   Automatic engagement demands from institutional investors (proxy advisors flag the company for "urgent governance action")
--   Increased probability of director not being re-elected at the next AGM
-
-The penalty is separate from and additive with the `reputational_spill_weight` (term 9), which captures the reputational contagion effect. Together, an overwhelming vote contributes at least 4.0 in disutility (3.0 + 1.0) before any other consequences.
-
-**Basis:** Subjective. The 3.0 value reflects the modelling judgement that crossing the 50% threshold is approximately 3x more salient to the Board than a generic unit of governance disruption.
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
 
 ***
 
-### 5.4 Spill Risk Weight — `spill_risk_weight` = 2.5
+### 5.3 Inaction CEO-Present Penalty — `inaction_ceo_present_penalty` = 5.0
 
-**Term (4):** `u -= 2.5 · V · 1[strike]`
+**Term (3):** `u -= 5.0 · 1[ceo_present_at_end]`
 
-**What it captures:** A **linear** penalty in the vote percentage, conditional on a first strike occurring. This captures the escalating risk of a board spill (under the Corporations Act 2001, ss 250U–250W "two-strikes rule") and the general severity of shareholder opposition.
+**What it captures:** The governance cost when the CEO responsible for the crisis remains in position at the terminal node. This is the largest inaction penalty, reflecting the Board's fundamental obligation to ensure executive accountability. Retaining the CEO exposes the Board to:
 
-**Justification for structure:** The linear form `V · 1[strike]` means that the penalty scales directly with the vote outcome once the 25% threshold is crossed. A vote of 83% (as actually occurred for Qantas) imposes `2.5 × 0.83 = 2.075` in disutility, while a bare first strike at 26% imposes only `2.5 × 0.26 = 0.65`. This captures the empirical reality that a higher protest vote signals greater probability of:
+-   Near-certain second strike at the next AGM (under the Corporations Act 2001 two-strikes rule)
+-   Regulatory scrutiny from ASIC for failing to address demonstrated governance failures
+-   Sustained negative media coverage and institutional investor engagement
 
--   A second strike at the next AGM
--   A successful spill resolution (requires \>50% at the *next* AGM after a second strike)
--   Loss of institutional investor confidence
+**Justification for value:** Set at 5.0 — the highest inaction component. The value reflects that CEO retention is the single most visible indicator of Board inaction to external stakeholders. When the CEO who triggered the crisis remains in place, all other governance actions (reviews, reforms) are perceived as inadequate by shareholders and regulators.
 
-**Justification for value:** The 2.5 coefficient was calibrated against the empirical data on second-strike outcomes from 2020–2024 (`background/ceo/2nd-strike.md`):
-
--   No ASX 200 company that received a first strike in 2023 received a second strike in 2024
--   Between 2011 and 2024, no incumbent director has lost their board seat at a spill meeting
--   Spill resolutions average under 7% support (2024) and 4.5% support (2025)
-
-Despite the historically low base rate of successful spills, the coefficient is set at 2.5 (rather than near zero) because the *prospect* of a spill — even if unlikely to succeed — creates acute governance pressure: the Board must prepare for a spill meeting, divert attention from operations, and manage institutional investor relations during the intervening year.
-
-**Basis:** Subjective (empirically anchored). The value reflects a balance between the very low base rate of actual spill outcomes and the substantial reputational and operational cost of the spill *process*.
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
 
 ***
 
-### 5.5 Review CAR Weight — `review_car_weight` = 15.0
+### 5.4 Inaction No-Sack Penalty — `inaction_no_sack_penalty` = 3.0
 
-**Term (5):** `u += 15.0 · CAR · 1[review_commissioned]`
+**Term (4):** `u -= 3.0 · 1[¬removed_involuntary]`
 
-**What it captures:** The market-valuation impact of the governance review findings, measured as cumulative abnormal return (CAR) during the findings release window. A positive CAR (market relief) increases Board utility; a negative CAR (adverse market reaction) decreases it.
+**What it captures:** The governance cost when the Board does not explicitly remove the CEO through involuntary departure (sacking at D1, D_rev, or D_rev_post_review). This fires even when the CEO departs voluntarily (resign or negotiate at D4), because the Board's failure to exercise its removal authority signals institutional weakness.
 
-**Justification for structure:** The review CAR enters Board utility **linearly** because the Board experiences market reactions directly through their fiduciary responsibility to shareholders and through their personal shareholdings, options, and reputation. The `review_car_weight` translates the decimal CAR (e.g., −0.05 for a 5% drop) into utility-scale units.
+**Distinction from term (3):** Term (3) fires when the CEO is present at the end; term (4) fires when the Board did not *actively* remove the CEO. Both fire when the CEO stays; only term (4) fires when the CEO resigns voluntarily (the Board did not sack, but the CEO departed). Neither fires when the Board sacks the CEO.
 
-**Justification for value:** The weight of 15.0 was calibrated from the ASX governance review case study data (`background/board/governance-review-case-studies.md`), which documents findings-release CARs for six companies:
+**Justification for value:** Set at 3.0, matching the base inaction penalty. The value reflects the importance the Board places on demonstrating decisive authority, distinct from simply achieving CEO departure through any channel.
 
-| Company            | Period  | Findings Window CAR |
-|--------------------|---------|---------------------|
-| CBA                | 2017–18 | +1.75%              |
-| Westpac            | 2019–20 | −3.00%              |
-| Rio Tinto          | 2020    | −2.65%              |
-| Star Entertainment | 2021–22 | −13.95%             |
-| BOQ                | 2022–23 | −5.70%              |
-| Qantas             | 2023–24 | +0.85%              |
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
 
-These CARs range from −13.95% to +1.75%, with a distribution centred around −5% (the location parameter of the review model). At w_CAR = 15.0:
+***
+
+### 5.5 Vote Strike Penalty — `vote_strike_penalty` = 2.0
+
+**Term (5):** `u -= 2.0 · max(0, (V − 0.25) / 0.75)`
+
+**What it captures:** The **linear** escalation of reputational damage as the protest vote exceeds the first-strike threshold of 25%, normalized to the [0, 1] range. The normalization `(V − 0.25) / 0.75` maps the excess vote to a unit interval: a bare first strike (26%) produces a penalty of approximately 0.013, while an 83% vote produces a penalty of 1.55.
+
+**Justification for structure:** The linear form (replacing the earlier quadratic specification) captures proportional escalation of reputational damage. Each additional percentage point of protest vote above 25% imposes a constant marginal cost. The normalization ensures that the penalty is interpretable: a weight of 2.0 means that the maximum possible vote-strike penalty (at V = 100%) is 2.0 units.
+
+| Vote % | Normalized excess | Penalty contribution |
+|--------|-------------------|----------------------|
+| 30%    | 0.067             | −0.133               |
+| 40%    | 0.200             | −0.400               |
+| 50%    | 0.333             | −0.667               |
+| 60%    | 0.467             | −0.933               |
+| 83%    | 0.773             | −1.547               |
+
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
+
+***
+
+### 5.6 Vote Overwhelming Penalty — `vote_overwhelming_penalty` = 3.0
+
+**Term (6):** `u -= 3.0 · max(0, (V − 0.50) / 0.50)`
+
+**What it captures:** Additional linear penalty for vote excess above the 50% overwhelming threshold, normalized to [0, 1]. An overwhelming vote is qualitatively distinct from a standard first strike: it signals majority shareholder dissatisfaction, attracts national media coverage, and places the Board under immediate pressure to act. The two-strikes rule (Corporations Act 2001, ss 250U-250W) makes an overwhelming first strike particularly threatening.
+
+**Justification for value:** Set at 3.0 — higher than the strike penalty (2.0) because crossing the 50% line triggers qualitatively different consequences: automatic engagement demands from institutional investors, heightened regulatory scrutiny, and increased director re-election risk. The normalization means that at V = 83%, the overwhelming penalty contributes `3.0 × 0.66 = 1.98` in disutility.
+
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
+
+***
+
+### 5.7 Board Passivity After Departure — `board_passivity_after_departure` = 0.5
+
+**Term (7):** `u -= 0.5 · 1[CEO_resigned_early]`
+
+**What it captures:** The cost to the Board when the CEO resigns before the game tree begins (the D0_ceo = CEO_resign scenario). Even though early resignation removes the CEO controversy from the AGM, it imposes transition costs: leadership vacuum during crisis, market uncertainty about succession, disruption to ongoing operations. The penalty captures the Board's failure to manage the departure proactively.
+
+**Justification for value:** Set at 0.5 — significantly lower than the full `ceo_loss_cost` (1.5) because voluntary pre-crisis departure is far less disruptive than mid-crisis involuntary removal. The CEO controls the timing and narrative, reducing market shock and allowing orderly succession.
+
+**Basis:** Subjective. The 0.5 value reflects the judgement that early voluntary departure imposes approximately one-third the disruption cost of involuntary removal, consistent with CEO turnover literature showing forced departures produce 2-4x the stock price impact of voluntary departures.
+
+***
+
+### 5.8 Review CAR Weight — `review_car_weight` = 15.0 (with loss aversion lambda = 2.25)
+
+**Terms (8a, 8b):**
+```
+u += w_CAR_pos · max(CAR, 0) · 1[review_commissioned]
+u -= w_CAR_neg · max(−CAR, 0) · 1[review_commissioned]
+```
+
+where `w_CAR_pos = w_CAR / ((1 + lambda) / 2)` and `w_CAR_neg = lambda · w_CAR_pos`.
+
+**What it captures:** The market-valuation impact of governance review findings, measured as cumulative abnormal return (CAR) during the findings release window. The asymmetric treatment reflects Kahneman-Tversky loss aversion: negative CARs impose disproportionately larger utility costs than positive CARs of equal magnitude provide benefit.
+
+**Loss aversion decomposition:** With `w_CAR = 15.0` and `lambda = 2.25`:
+-   `w_CAR_pos = 15.0 / 1.625 = 9.23` — weight on positive CAR
+-   `w_CAR_neg = 2.25 × 9.23 = 20.77` — weight on negative CAR
 
 | CAR outcome      | Utility contribution |
 |------------------|----------------------|
-| Star (−13.95%)   | −2.09                |
-| BOQ (−5.70%)     | −0.86                |
-| Westpac (−3.00%) | −0.45                |
-| CBA (+1.75%)     | +0.26                |
-| Qantas (+0.85%)  | +0.13                |
+| Star (−13.95%)   | −2.90                |
+| BOQ (−5.70%)     | −1.18                |
+| Westpac (−3.00%) | −0.62                |
+| CBA (+1.75%)     | +0.16                |
+| Qantas (+0.85%)  | +0.08                |
 
-These magnitudes are commensurate with the other utility components (e.g., `ceo_loss_cost` = 1.5, `second_strike_spill_penalty` = 8.0), ensuring that the review outcome is a material consideration in Board decision-making but does not dominate all other factors.
+**Data source:** ASX governance review case study data (`background/board/governance-review-case-studies.md`), documenting findings-release CARs for six companies ranging from −13.95% to +1.75%.
 
-**Basis:** Data-derived. The weight is calibrated so that the empirical range of observed CARs (±14%) maps to a utility range of approximately ±2.1, which places review risk in the middle tier of Board concerns (above implementation costs, below second-strike risk).
-
-**Note on the t-distribution:** The review CAR is drawn from a Student-t hierarchy (see §7.2), which produces heavy tails. At ν=3 degrees of freedom, extreme draws (e.g., CAR = −20%) are not negligible. The high w_CAR = 15.0 means these tail events have a substantial impact on expected utility, which is the intended design: the possibility of a catastrophic review outcome (like Star's −13.95%) should materially deter the Board from commissioning a review unless the expected benefit justifies the tail risk.
+**Basis:** Data-derived. The anchor weight is calibrated from empirical CARs; the loss aversion parameter (2.25) is from Tversky and Kahneman (1992).
 
 ***
 
-### 5.6 Review Direct Cost Weight — `review_direct_cost_weight` = 15.0
+### 5.9 Review Direct Cost Weight — `review_direct_cost_weight` = 15.0
 
-**Term (6):** `u -= 15.0 · C_direct · 1[review_commissioned]`
+**Term (9):** `u -= 15.0 · C_direct · 1[review_commissioned]`
 
-**What it captures:** The direct, observable costs of commissioning an external governance review: independent reviewer fees, management distraction, and internal resource consumption.
+**What it captures:** The direct costs of commissioning an external governance review: independent reviewer fees, management distraction, and internal resource consumption.
 
-**Data source:** `background/board/direct-costs-governance-review.md` — a detailed research paper estimating three cost components for an ASX-listed company with market capitalisation of AUD 10 billion (Qantas 2023–24):
+**Data source:** `background/board/direct-costs-governance-review.md` estimates total direct costs of approximately AUD 9.6 million (0.00096 decimal CAR) for an ASX-listed company with AUD 10 billion market capitalisation. The direct cost follows `C_direct ~ Gamma(4.55, rate = 4741)`, mean = 9.6 bps.
 
-| Component                                               | Central Estimate (AUD) | Decimal CAR  |
-|---------------------------------------------------------|------------------------|--------------|
-| A: Independent reviewer fees                            | 3,000,000              | −0.00030     |
-| B: Management distraction (cognitive bandwidth method)  | 2,400,000              | −0.00040     |
-| C: Internal resource consumption + remediation overhead | 2,600,000              | −0.00026     |
-| **Total**                                               | **9,600,000**          | **−0.00096** |
+**Justification for value:** At w_cost = 15.0 and expected C_direct = 0.00096, the expected contribution is `15.0 × 0.00096 = 0.014` — economically small relative to other utility components. The weight matches the review CAR weight so that market reactions and direct costs are on the same utility scale.
 
-The direct cost follows a Gamma distribution:
-
-```
-C_direct ~ Gamma(α = 4.55, rate β = 4741)
-```
-
-Properties: mean ≈ 9.6 bps, SD ≈ 4.5 bps, mode ≈ 7.5 bps, 90% CI: [3.1, 18.5] bps.
-
-**Justification for value:** The weight is set at 15.0 (matching the review CAR weight) so that both the findings-release market reaction and the direct costs of the review are expressed on the same utility scale. At w_cost = 15.0 and expected C_direct = 0.00096:
-
-```
-Expected direct cost contribution = 15.0 × 0.00096 ≈ 0.014
-```
-
-This is economically small relative to other utility components — the direct cost of a review contributes approximately 0.014 units of disutility, compared to 1.5 for CEO loss or 8.0 for second-strike risk. This is consistent with the research finding that direct review costs are "small relative to the factors on the benefit side" (direct-costs-governance-review.md, §5.2).
-
-**Basis:** Data-derived. Both the Gamma distribution parameters and the weight are calibrated from the research document's cost estimates.
+**Basis:** Data-derived.
 
 ***
 
-### 5.7 Implementation Cost — `implementation_cost_sack` = 0.3
+### 5.10 Implementation Cost — `implementation_cost_sack` = 1.0
 
-**Term (7):** Applied once for each sacking action:
+**Term (10):** Applied once for each sacking action:
 
--   `u -= 0.3` if `d1 = D3_ceo_transition`
--   `u -= 0.3` if `d_rev = Drev_sack_ceo`
--   `u -= 0.3` if `d_rev_post_review = Drev_sack_ceo`
+-   `u -= 1.0` if `d1 = D3_ceo_transition`
+-   `u -= 1.0` if `d_rev = Drev_sack_ceo`
+-   `u -= 1.0` if `d_rev_post_review = Drev_sack_ceo`
 
 **What it captures:** The administrative and transitional cost of implementing a CEO removal: board deliberation time, legal counsel for termination, succession process management, and short-term operational disruption during the leadership transition.
 
-**Justification for value:** Set at 0.3 — deliberately low relative to other costs because the implementation mechanics of CEO removal at an ASX-listed company are well-established. The Board has access to legal counsel, succession planning frameworks, and HR support. The 0.3 value represents the incremental cost of executing the decision, not the broader consequences of CEO departure (which are captured by `ceo_loss_cost`, term 8).
-
-**Basis:** Subjective. The 0.3 value was reduced from 1.0 (in the V2 commit) after recognising that the original value double-counted disruption effects already captured by `ceo_loss_cost`. The current value ensures that implementation cost is a minor factor in the Board's decision — the Board should not retain a problematic CEO solely because of administrative inconvenience.
-
-**Implication:** The low implementation cost means that the cost of sacking the CEO at D_rev or D_rev_post_review is dominated by the `ceo_loss_cost` (1.5) rather than the act of implementing the decision (0.3). This is intentional: the Board's hesitation to remove the CEO should stem from genuine disruption concerns, not procedural overhead.
-
-***
-
-### 5.8 CEO Loss Cost — `ceo_loss_cost` = 1.5
-
-**Term (8):** `u -= 1.5 · 1[CEO_removed ∧ ¬CEO_resigned_early]`
-
-**What it captures:** The broader disruption cost to the Board from losing the CEO through involuntary or mid-game removal (sacking at D1/D_rev/D_rev_post_review, or CEO resignation/negotiation at D4/D4_post_review). This includes:
-
--   Loss of institutional knowledge and CEO-specific relationships
--   Market uncertainty during the transition period
--   Potential for adverse media coverage of the removal itself
--   Risk that the successor performs worse in the short term
-
-**Exclusion:** Not applied when the CEO resigned early (pre-game, D0_ceo = CEO_resign), because that scenario has its own cost (`early_ceo_departure_cost` = 0.5). The early resignation is less disruptive because it is voluntary, controlled, and occurs before the AGM crisis intensifies.
-
-**Justification for value:** The 1.5 value (positive, representing a cost) was corrected from an erroneous −1.5 (negative) that had been present in the Excel data contract. The sign error was critical: with `ceo_loss_cost = −1.5`, the Board's utility *increased* when the CEO was removed, inverting the intended incentive structure. The corrected value of +1.5 ensures that CEO removal imposes a genuine cost on the Board, creating the intended tension between accountability (removing a problematic CEO) and stability (retaining institutional knowledge).
-
-**Basis:** Subjective. The 1.5 value is a modelling judgement that places CEO loss cost in the "moderate" tier — substantial enough to create meaningful reluctance to remove the CEO, but not so large that it prevents removal even when multiple other penalty terms (second-strike, regulatory liability) favour it.
-
-**Historical note:** This was the subject of a critical bug fix (2026-03-03). The sign error caused the Board to prefer CEO removal in all scenarios, which contradicted the observed behaviour of Australian boards (who typically exhaust alternatives before removing a CEO).
-
-***
-
-### 5.9 Reputational Spill Weight — `reputational_spill_weight` = 1.0
-
-**Term (9):** `u -= 1.0 · 1[overwhelming]`
-
-**What it captures:** The reputational contagion effect of an overwhelming vote. When more than 50% of shareholders vote against the remuneration report, the event becomes a "governance crisis" that spills over into:
-
--   The company's broader brand and customer reputation
--   Other directors' external board positions (directors of "problem companies" receive fewer board invitations)
--   The company's ability to attract and retain talent at all levels
-
-**Justification for value:** Set at 1.0 — a moderate additional penalty on top of the `overwhelming_penalty_weight` (3.0). Together, an overwhelming vote imposes 4.0 units of direct indicator-based disutility. The reputational spill is smaller than the direct overwhelming penalty because reputational contagion operates over a longer time horizon and is partially absorbed by the company's broader franchise value.
+**Justification for value:** Set at 1.0 — the incremental cost of executing the removal decision, distinct from the broader consequences of CEO departure captured by `ceo_loss_cost` (term 11).
 
 **Basis:** Subjective.
 
 ***
 
-### 5.10 Second-Strike Spill Penalty — `second_strike_spill_penalty` = 8.0
+### 5.11 CEO Loss Cost — `ceo_loss_cost` = 1.5 (with shock attenuation)
 
-**Term (10):** `u -= 8.0 · 1[strike ∧ CEO_present_at_end]`
+**Term (11):** `u -= max(0, w_loss − w_loss_over · 1[overwhelming]) · 1[removed_involuntary]`
 
-**What it captures:** The existential risk to Board members from the Corporations Act 2001 two-strikes rule (ss 250U–250W). When a first strike occurs and the CEO remains in position at the end of the game, the Board faces:
+**What it captures:** The broader disruption cost from involuntary CEO removal (sacking at D1/D_rev/D_rev_post_review, or CEO resignation/negotiation at D4/D4_post_review). The base cost is attenuated when an overwhelming vote has occurred, reflecting the reduced market shock when CEO removal follows a strong shareholder mandate.
 
-1.  **Near-certain second strike at the next AGM.** With the underlying governance problems unaddressed (the CEO who triggered the crisis is still in place), shareholders have strong incentives to deliver a second consecutive strike.
-2.  **Conditional spill resolution.** A second strike triggers a mandatory vote on a board spill resolution at the same AGM. Although spill resolutions have historically attracted very low support (averaging under 7% in 2024, 4.5% in 2025), the prospect of a spill is existentially threatening to individual directors.
-3.  **Year of governance limbo.** Between the first strike and the next AGM, the Board operates under sustained scrutiny from institutional investors, proxy advisors, and regulators, diverting attention from operations.
+**Shock attenuation mechanism:** The `ceo_loss_shock_overwhelming` parameter (0.5) reduces the effective CEO loss cost when the vote exceeds 50%. With an overwhelming vote, the effective cost is `max(0, 1.5 − 0.5) = 1.0`. Without the overwhelming vote, the full cost of 1.5 applies. The rationale is that an overwhelming shareholder mandate legitimises CEO removal, reducing the negative market reaction and institutional investor concern.
 
-**Justification for value:** The 8.0 value is the **largest single penalty** in the Board utility function. This reflects the asymmetry between the probability and the consequence of a board spill:
+**Exclusion:** Not applied when the CEO resigned early (pre-game, D0_ceo = CEO_resign), because that scenario is captured by `board_passivity_after_departure` (term 7).
 
--   The *probability* of a successful spill is very low (no incumbent ASX director has ever lost their seat at a spill meeting since the rule was introduced in 2011)
--   But the *consequence* of a spill is total: all directors (except the managing director) vacate their offices and must stand for re-election
--   The *process* of facing a spill resolution — even if it fails — imposes massive personal and reputational costs on directors
+**Historical note:** The sign of this parameter was the subject of a critical bug fix (2026-03-03). The original value of −1.5 in the Excel data contract caused CEO removal to *increase* Board utility.
 
-The 8.0 value is set so that the second-strike penalty dominates most other considerations. When a first strike has occurred and the CEO is still present, the sum of `second_strike_spill_penalty` (8.0), `board_regulatory_liability` (5.0), and `qantas_legal_d_rev_penalty` (2.0) totals 15.0 — creating overwhelming pressure for the Board to either remove the CEO or face catastrophic consequences.
-
-**Data sources:**
-
--   `background/ceo/2nd-strike.md`: Historical second-strike data (2020–2024), showing 0 second strikes in the ASX 200 in 2023, and spill resolution support averaging under 7%
--   Corporations Act 2001, ss 250U–250W: Legal framework for two-strikes rule
--   The value is empirically anchored to the severity of the spill mechanism but the specific magnitude (8.0) is a subjective scaling judgement
-
-**Basis:** Empirically anchored. The functional form (strike ∧ CEO_present_at_end) is grounded in the legal mechanism; the magnitude is a modelling judgement.
+**Basis:** Subjective. The 1.5 base value places CEO loss in the "moderate" tier — creating meaningful reluctance to remove the CEO, but not preventing removal when inaction penalties dominate.
 
 ***
 
-### 5.11 Board Regulatory Liability — `board_regulatory_liability` = 5.0
+### 5.12 Negative Review Finding Penalty — `negative_review_finding_penalty` = 5.0
 
-**Term (11):** `u -= 5.0 · 1[strike ∧ CEO_present_at_end]`
+**Term (12):** `u -= 5.0 · 1[review_commissioned ∧ outcome = negative]`
 
-**What it captures:** The personal regulatory risk to individual Board members from ASIC enforcement action when the Board demonstrably fails to respond to a governance crisis. If a first strike occurs (shareholders have formally signalled dissatisfaction) and the CEO remains in position (the Board took no action), individual directors face:
+**What it captures:** The governance liability from a negative review finding. When the Board's own governance review produces a negative outcome, the Board faces regulatory scrutiny, shareholder revolt risk at the next AGM, and class-action exposure. The review creates a documented record of known governance failures.
 
--   **ASIC director banning orders** under the Corporations Act 2001
--   **Personal fines** for breach of directors' duties (s 180 — duty of care and diligence)
--   **Class action exposure** as named respondents (not just the company)
+**Key change from prior specification:** This penalty fires regardless of whether the CEO is still present at the terminal node. Review findings reflect on Board governance quality independent of CEO status — a negative finding is damaging whether or not the Board subsequently removed the CEO.
 
-**Justification for value:** Set at 5.0 — the second-largest indicator penalty after the second-strike risk. The high value reflects that regulatory liability is *personal* to individual directors: unlike corporate penalties (which the company absorbs), ASIC banning orders and personal fines affect directors' careers, other board positions, and professional standing.
+**Justification for value:** Set at 5.0, reflecting the severity of documented governance failure. A negative review finding establishes a factual basis for regulatory enforcement (ASIC), shareholder class actions, and proxy advisor downgrade.
 
-**Justification for trigger:** The joint condition (strike ∧ CEO_present_at_end) captures the specific scenario that creates regulatory exposure: the Board had a clear signal of failure (the strike) and chose not to act (CEO still present). This is the pattern that ASIC has historically targeted in enforcement actions — demonstrated Board inaction in the face of known problems.
-
-**Basis:** Subjective (legally grounded). The regulatory mechanism is documented in the Corporations Act; the magnitude is a modelling judgement based on the severity of personal consequences to directors.
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
 
 ***
 
-### 5.12 Board D1 Liability — `board_d1_liability` = 4.0
+### 5.13 Balanced Review Finding Penalty — `balanced_review_finding_penalty` = 2.5
 
-**Term (12):** `u -= 4.0 · 1[overwhelming ∧ d1 = D0_minimal]`
+**Term (13):** `u -= 2.5 · 1[review_commissioned ∧ outcome = balanced]`
 
-**What it captures:** Additional regulatory and reputational liability when the Board took no action at D1 (minimal/status quo) despite the crisis being severe enough to produce an overwhelming vote (≥50%). This captures the specific failure mode where:
+**What it captures:** The moderate governance cost from a balanced review finding. A balanced outcome acknowledges some governance concerns while also recognising mitigating factors — the typical "mistakes were made but steps are being taken" conclusion of Board-initiated crisis reviews. While less damaging than a negative finding, a balanced review still imposes costs: it confirms that problems existed (useful to plaintiffs), generates media coverage, and requires the Board to demonstrate follow-through.
 
--   The Board was aware of the governance crisis before the AGM
--   The Board chose not to announce any reform package (no review, no CEO transition)
--   The vote outcome confirmed that a majority of shareholders considered the Board's inaction unacceptable
+**Distinction from negative penalty:** The balanced penalty (2.5) is exactly half the negative penalty (5.0), reflecting the reduced severity of "mixed" findings relative to clearly adverse ones. A positive review finding (no governance concerns identified) incurs no penalty.
 
-**Justification for trigger:** The overwhelming threshold (50%) is used rather than first-strike (25%) because the claim of Board negligence is stronger when a *majority* of shareholders rejected the status quo. A bare first strike (26%) could be attributed to proxy advisor influence or activist minority; an overwhelming vote is unambiguous.
-
-**Justification for value:** Set at 4.0. This is lower than the `board_regulatory_liability` (5.0) because D1 inaction is a sin of omission (failing to act proactively) rather than a sin of commission (retaining the CEO after explicit shareholder rejection). The 4.0 value creates a meaningful incentive for the Board to take *some* action at D1, even if the optimal choice is uncertain.
-
-**Basis:** Subjective (legally grounded).
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
 
 ***
 
-### 5.13 Qantas Legal D1 Penalty — `qantas_legal_d1_penalty` = 3.0
+### 5.14 Review After Removal Penalty — `review_after_removal_penalty` = 3.0
 
-**Term (13):** `u -= 3.0 · 1[strike ∧ d1 = D0_minimal]`
+**Term (14):** `u -= 3.0 · 1[removed_involuntary ∧ ¬review_commissioned]`
 
-**What it captures:** Qantas-specific legal exposure (class actions, ACCC/ASIC company-level penalties) that becomes more severe when the Board's pre-AGM inaction is demonstrated. If the Board took no action at D1 and a first strike subsequently occurred, this provides evidence of corporate-level governance failure that strengthens plaintiff claims in:
+**What it captures:** The due diligence cost when the Board removes the CEO involuntarily without having commissioned a governance review. Removing the CEO without independent review evidence exposes the Board to claims of:
 
--   **Shareholder class actions** alleging failure to disclose governance risks
--   **ACCC enforcement** (the Board's inaction suggests indifference to the underlying conduct issues)
--   **ASIC company penalties** for breach of continuous disclosure obligations
+-   Arbitrary or politically motivated removal (no documented basis)
+-   Failure to address systemic governance issues (removing the individual without diagnosing the system)
+-   Unfair dismissal claims from the departing CEO (no independent findings to justify removal)
 
-**Justification for value:** Set at 3.0, lower than the personal regulatory liability (5.0) because these are *company-level* consequences rather than personal director liabilities. The company's insurance and indemnification arrangements partially absorb these costs. The 3.0 value ensures that Qantas's legal exposure from D1 inaction is a meaningful but not dominant consideration.
+**Justification for structure:** This is an interaction term that separates the global no-review penalty (term 2, which is relatively small) from the context-specific incentive to commission a review before sacking the CEO. The combination of terms (2) and (14) means that failing to commission a review is mildly costly in general (2.0) but substantially more costly when the Board has also removed the CEO (2.0 + 3.0 = 5.0).
 
-**Basis:** Subjective (legally grounded).
+**Justification for value:** Set at 3.0 — large enough to create a strong incentive for the Board to commission a review before or alongside CEO removal, but not so large as to prevent removal in urgent circumstances.
 
-***
-
-### 5.14 Qantas Legal D_rev Penalty — `qantas_legal_d_rev_penalty` = 2.0
-
-**Term (14):** `u -= 2.0 · 1[strike ∧ CEO_present_at_end]`
-
-**What it captures:** Additional Qantas-specific legal exposure from the Board's failure to remove the CEO after a first strike. This overlaps with but is distinct from the regulatory liability (term 11): it captures the *company's* legal exposure rather than directors' personal exposure.
-
-**Justification for value:** Set at 2.0, the lowest of the legal/regulatory penalty terms. This reflects that D_rev inaction (keeping the CEO after a strike) is more readily defensible than D1 inaction: the Board can argue that it was assessing the situation, waiting for review findings, or giving the CEO an opportunity to respond. The legal exposure is real but more attenuated.
-
-**Basis:** Subjective (legally grounded).
-
-***
-
-### 5.15 Adverse Review + CEO Present Penalty — `adverse_review_ceo_present_penalty` = 5.0
-
-**Term (15):** `u -= 5.0 · 1[review_commissioned ∧ review_adverse ∧ CEO_present_at_end]`
-
-**What it captures:** The severe governance liability from retaining the CEO after the Board's own governance review has produced adverse (negative or neutral) findings. This is the "smoking gun" scenario: the Board commissioned an independent review, the review found problems, and the Board failed to act on the findings.
-
-**Justification for structure:** This penalty captures three interlocking consequences:
-
-1.  **Regulatory scrutiny.** A board that commissions a review and then ignores adverse findings is in a worse position than one that never commissioned a review at all. The review creates a documented record of known problems.
-2.  **Shareholder revolt at next AGM.** Published adverse findings with the CEO still in place provide a clear narrative for activist shareholders: "The Board knew about the problems and did nothing."
-3.  **Class-action exposure.** Adverse review findings, if published, establish that the Board was aware of governance failures — strengthening causation arguments in shareholder class actions.
-
-**Data source:** The probability of adverse findings is modelled as `p_adverse ~ Beta(10, 5)`, mean = 2/3, derived from the Dirichlet(5, 5, 5) distribution for non-regulatory reviews grouping negative and neutral outcomes together (`background/board/external-governance-review-Bayesian-distribution.md`, §4.2). Of the three non-regulatory ASX reviews in the dataset (2013–2023), one was negative (Rio Tinto), one was neutral (Mineral Resources), and one was positive (BOQ). Grouping negative and neutral as "adverse" gives a mean probability of approximately 67%.
-
-**Justification for value:** Set at 5.0, matching the `board_regulatory_liability`. This reflects the judgement that retaining the CEO after adverse review findings creates liability of comparable severity to retaining the CEO after a first strike — both represent documented governance failure with known consequences.
-
-**Implication:** The adverse review penalty is the primary mechanism that ensures the Board prefers to sack the CEO after adverse review findings. Combined with the `ceo_loss_cost` (1.5 to remove, 5.0 penalty to retain), the net incentive strongly favours removal. The only scenario where retaining the CEO is safe is when both conditions fail: no first strike AND a positive review.
-
-**Basis:** Data-informed. The review outcome distribution is derived from the ASX case study panel; the penalty magnitude is a subjective scaling judgement.
+**Basis:** Estimated via ordinal probit regression on expert governance assessments.
 
 ***
 
@@ -550,15 +454,15 @@ The Board overestimates the governance quality that the review will find, percei
 **Mechanism:** Two channels:
 
 1.  **CAR location shift:** μ_f_biased = μ_f + 0.03 (Board perceives CAR \~3pp more favourable)
-2.  **Adverse probability reduction:** β_biased = 5 × (1 + 10 × 0.03) = 6.5, so p_adverse \~ Beta(10, 6.5) with mean ≈ 0.606 (vs 0.667 unbiased)
+2.  **Outcome probability shift:** The Dirichlet positive-outcome concentration is inflated: α_pos_biased = 1 × (1 + 10 × 0.03) = 1.3, giving Dirichlet(38, 160, 1.3) with a slight tilt toward positive outcomes compared to the unbiased Dirichlet(38, 160, 1).
 
-| Parameter       | Unbiased | Biased | Effect                                               |
-|-----------------|----------|--------|------------------------------------------------------|
-| review_car_bias | 0.0      | 0.03   | Board perceives review CAR \~3pp higher              |
-| E[p_adverse]    | 0.667    | 0.606  | Board underestimates probability of adverse findings |
-| E[CAR]          | −5.0%    | −2.0%  | Board expects milder market reaction                 |
+| Parameter       | Unbiased              | Biased                 | Effect                                                    |
+|-----------------|-----------------------|------------------------|-----------------------------------------------------------|
+| review_car_bias | 0.0                   | 0.03                   | Board perceives review CAR \~3pp higher                   |
+| Outcome dist    | Dirichlet(38, 160, 1) | Dirichlet(38, 160, 1.3)| Board slightly overestimates probability of positive findings |
+| E[CAR]          | −5.0%                 | −2.0%                  | Board expects milder market reaction                      |
 
-**Calibration:** From case studies — with Board overconfidence factor β = 0.625, the Board perceives approximately 3pp improvement in the findings window CAR.
+**Calibration:** From case studies — with Board overconfidence factor beta = 0.625, the Board perceives approximately 3pp improvement in the findings window CAR. The Dirichlet shift is modest because the positive outcome concentration (1.3 vs 1.0) has minimal impact on the dominant balanced category (160).
 
 ### 6.4 Bias Parameters (Production Defaults)
 
@@ -606,18 +510,20 @@ V_final = max(V_logit_normal, V_floor)   if headline_incident
 -   f(D3_ceo_transition) \~ U(−1, 0.5): ambiguous effect; E[f] = −0.25
 -   γ_D is typically negative (from posterior), so positive f reduces B_agm → reduces vote
 
-The vote outcome feeds into utility terms (2), (3), (4), (9), (10), (11), (12), (13), (14) — all the vote-dependent and strike-dependent components.
+The vote outcome feeds into utility terms (5) and (6) — the linear vote penalties that scale with excess above the strike (25%) and overwhelming (50%) thresholds.
 
 ### 7.2 Review Model (R)
 
 If review is commissioned, the review produces:
 
-**Outcome rating (adverse vs positive):**
+**Outcome rating (trinary: negative, balanced, positive):**
 
 ```
-p_adverse ~ Beta(10, 5),    mean = 2/3
-adverse ~ Bernoulli(p_adverse)
+(p_neg, p_bal, p_pos) ~ Dirichlet(38, 160, 1)
+outcome ~ Categorical(p_neg, p_bal, p_pos)
 ```
+
+Expected outcome probabilities: E = (0.191, 0.804, 0.005) — balanced dominates at approximately 80%, negative approximately 19%, positive less than 1%. This reflects the empirical pattern of Board-initiated crisis reviews, which typically produce "mistakes were made" conclusions without conceding liability. The `post_review_round` (activating D4_post_review and D_rev_post_review nodes) is triggered only for "negative" outcomes. Source: `background/board/external-review-distributions.md`.
 
 **Market reaction (CAR):**
 
@@ -633,7 +539,7 @@ CAR ~ t(3, μ_f, σ_f)
 C_direct ~ Gamma(4.55, rate = 4741),    mean ≈ 9.6 bps
 ```
 
-The review outcome feeds into utility terms (5), (6), and (15).
+The review outcome feeds into utility terms (8a), (8b), (9), (12), and (13).
 
 **Distribution rationale:** The Student-t(3) for CAR produces genuinely heavy tails, accommodating extreme outcomes like Star's −13.95% findings-window CAR. The use of t(4) for μ_f (rather than Cauchy/t(1)) ensures that the mean of the location parameter is well-defined (E[μ_f] = −0.05), preventing single extreme draws from dominating Monte Carlo averages. See `docs/algebraic.md`, §3.2 for the detailed justification.
 
@@ -682,36 +588,40 @@ When the Board is an *opponent* (i.e., ASA or CEO is the focal actor), the focal
 
 ### 9.1 ASA's Priors on Board Utility Parameters
 
-| Parameter                            | Distribution         | Param1 (μ or shape) | Param2 (σ or scale) | Interpretation                                            |
-|--------------------------------------|----------------------|---------------------|---------------------|-----------------------------------------------------------|
-| `vote_penalty_weight`                | Normal(2.0, 0.5)     | 2.0                 | 0.5                 | ASA believes Board's vote sensitivity is \~2.0 ± 0.5      |
-| `ceo_loss_cost`                      | Normal(1.5, 0.5)     | 1.5                 | 0.5                 | ASA believes Board's CEO departure cost is \~1.5 ± 0.5    |
-| `spill_risk_weight`                  | Normal(2.5, 0.5)     | 2.5                 | 0.5                 | ASA believes Board's spill sensitivity is \~2.5 ± 0.5     |
-| `implementation_cost_review`         | LogNormal(−1.2, 0.3) | −1.2                | 0.3                 | ASA believes review implementation cost has median ≈ 0.30 |
-| `second_strike_spill_penalty`        | Normal(8.0, 2.0)     | 8.0                 | 2.0                 | ASA believes Board's spill fear is \~8.0 ± 2.0            |
-| `board_regulatory_liability`         | Normal(5.0, 1.5)     | 5.0                 | 1.5                 | ASA believes Board's regulatory exposure is \~5.0 ± 1.5   |
-| `board_d1_liability`                 | Normal(4.0, 1.0)     | 4.0                 | 1.0                 | ASA believes Board's D1 liability is \~4.0 ± 1.0          |
-| `qantas_legal_d1_penalty`            | Normal(3.0, 1.0)     | 3.0                 | 1.0                 | ASA believes Qantas legal exposure is \~3.0 ± 1.0         |
-| `qantas_legal_d_rev_penalty`         | Normal(2.0, 0.8)     | 2.0                 | 0.8                 | ASA believes D_rev legal exposure is \~2.0 ± 0.8          |
-| `adverse_review_ceo_present_penalty` | Normal(5.0, 2.0)     | 5.0                 | 2.0                 | ASA believes adverse-review penalty is \~5.0 ± 2.0        |
+| Parameter                            | Distribution         | Param1 (μ or shape) | Param2 (σ or scale) | Interpretation                                                  |
+|--------------------------------------|----------------------|---------------------|---------------------|-----------------------------------------------------------------|
+| `inaction_base_penalty`              | Normal(3.0, 1.0)     | 3.0                 | 1.0                 | ASA believes Board's base inaction penalty is \~3.0 ± 1.0       |
+| `inaction_no_review_penalty`         | Normal(2.0, 0.5)     | 2.0                 | 0.5                 | ASA believes Board's no-review penalty is \~2.0 ± 0.5           |
+| `inaction_ceo_present_penalty`       | Normal(5.0, 1.5)     | 5.0                 | 1.5                 | ASA believes Board's CEO-present penalty is \~5.0 ± 1.5         |
+| `inaction_no_sack_penalty`           | Normal(3.0, 1.0)     | 3.0                 | 1.0                 | ASA believes Board's no-sack penalty is \~3.0 ± 1.0             |
+| `vote_strike_penalty`               | Normal(2.0, 0.5)     | 2.0                 | 0.5                 | ASA believes Board's strike sensitivity is \~2.0 ± 0.5          |
+| `vote_overwhelming_penalty`          | Normal(3.0, 1.0)     | 3.0                 | 1.0                 | ASA believes Board's overwhelming sensitivity is \~3.0 ± 1.0    |
+| `ceo_loss_cost`                      | Normal(1.5, 0.5)     | 1.5                 | 0.5                 | ASA believes Board's CEO departure cost is \~1.5 ± 0.5          |
+| `ceo_loss_shock_overwhelming`        | Normal(0.5, 0.2)     | 0.5                 | 0.2                 | ASA believes overwhelming shock relief is \~0.5 ± 0.2           |
+| `implementation_cost_sack`           | Normal(1.0, 0.3)     | 1.0                 | 0.3                 | ASA believes sacking implementation cost is \~1.0 ± 0.3         |
+| `negative_review_finding_penalty`    | Normal(5.0, 2.0)     | 5.0                 | 2.0                 | ASA believes negative-review penalty is \~5.0 ± 2.0             |
+| `balanced_review_finding_penalty`    | Normal(2.5, 1.0)     | 2.5                 | 1.0                 | ASA believes balanced-review penalty is \~2.5 ± 1.0             |
+| `review_after_removal_penalty`       | Normal(3.0, 1.0)     | 3.0                 | 1.0                 | ASA believes review-after-removal penalty is \~3.0 ± 1.0        |
 
 ### 9.2 CEO's Priors on Board Utility Parameters
 
-| Parameter                            | Distribution      | Param1 | Param2 | Interpretation                                          |
-|--------------------------------------|-------------------|--------|--------|---------------------------------------------------------|
-| `vote_penalty_weight`                | Normal(2.0, 0.5)  | 2.0    | 0.5    | CEO believes Board's vote sensitivity is \~2.0 ± 0.5    |
-| `ceo_loss_cost`                      | Normal(1.5, 0.5)  | 1.5    | 0.5    | CEO believes departure cost is \~1.5 ± 0.5              |
-| `spill_risk_weight`                  | Normal(2.5, 0.5)  | 2.5    | 0.5    | CEO believes Board's spill sensitivity is \~2.5 ± 0.5   |
-| `review_car_weight`                  | Normal(15.0, 3.0) | 15.0   | 3.0    | CEO believes Board's CAR sensitivity is \~15.0 ± 3.0    |
-| `review_direct_cost_weight`          | Normal(15.0, 3.0) | 15.0   | 3.0    | CEO believes Board's cost sensitivity is \~15.0 ± 3.0   |
-| `implementation_cost_sack`           | Normal(0.3, 0.1)  | 0.3    | 0.1    | CEO believes sacking implementation cost is \~0.3 ± 0.1 |
-| `early_ceo_departure_cost`           | Normal(0.5, 0.2)  | 0.5    | 0.2    | CEO believes early departure cost is \~0.5 ± 0.2        |
-| `second_strike_spill_penalty`        | Normal(8.0, 2.0)  | 8.0    | 2.0    | CEO believes Board's spill fear is \~8.0 ± 2.0          |
-| `board_regulatory_liability`         | Normal(5.0, 1.5)  | 5.0    | 1.5    | CEO believes Board regulatory risk is \~5.0 ± 1.5       |
-| `board_d1_liability`                 | Normal(4.0, 1.0)  | 4.0    | 1.0    | CEO believes Board D1 liability is \~4.0 ± 1.0          |
-| `qantas_legal_d1_penalty`            | Normal(3.0, 1.0)  | 3.0    | 1.0    | CEO believes Qantas D1 legal risk is \~3.0 ± 1.0        |
-| `qantas_legal_d_rev_penalty`         | Normal(2.0, 0.8)  | 2.0    | 0.8    | CEO believes D_rev legal risk is \~2.0 ± 0.8            |
-| `adverse_review_ceo_present_penalty` | Normal(5.0, 2.0)  | 5.0    | 2.0    | CEO believes adverse-review penalty is \~5.0 ± 2.0      |
+| Parameter                            | Distribution      | Param1 | Param2 | Interpretation                                                    |
+|--------------------------------------|-------------------|--------|--------|-------------------------------------------------------------------|
+| `inaction_base_penalty`              | Normal(3.0, 1.0)  | 3.0    | 1.0    | CEO believes Board's base inaction penalty is \~3.0 ± 1.0         |
+| `inaction_no_review_penalty`         | Normal(2.0, 0.5)  | 2.0    | 0.5    | CEO believes Board's no-review penalty is \~2.0 ± 0.5             |
+| `inaction_ceo_present_penalty`       | Normal(5.0, 1.5)  | 5.0    | 1.5    | CEO believes Board's CEO-present penalty is \~5.0 ± 1.5           |
+| `inaction_no_sack_penalty`           | Normal(3.0, 1.0)  | 3.0    | 1.0    | CEO believes Board's no-sack penalty is \~3.0 ± 1.0               |
+| `vote_strike_penalty`               | Normal(2.0, 0.5)  | 2.0    | 0.5    | CEO believes Board's strike sensitivity is \~2.0 ± 0.5            |
+| `vote_overwhelming_penalty`          | Normal(3.0, 1.0)  | 3.0    | 1.0    | CEO believes Board's overwhelming sensitivity is \~3.0 ± 1.0      |
+| `board_passivity_after_departure`    | Normal(0.5, 0.2)  | 0.5    | 0.2    | CEO believes early departure cost is \~0.5 ± 0.2                  |
+| `review_car_weight`                  | Normal(15.0, 3.0) | 15.0   | 3.0    | CEO believes Board's CAR sensitivity is \~15.0 ± 3.0              |
+| `review_direct_cost_weight`          | Normal(15.0, 3.0) | 15.0   | 3.0    | CEO believes Board's cost sensitivity is \~15.0 ± 3.0             |
+| `implementation_cost_sack`           | Normal(1.0, 0.3)  | 1.0    | 0.3    | CEO believes sacking implementation cost is \~1.0 ± 0.3           |
+| `ceo_loss_cost`                      | Normal(1.5, 0.5)  | 1.5    | 0.5    | CEO believes departure cost is \~1.5 ± 0.5                        |
+| `ceo_loss_shock_overwhelming`        | Normal(0.5, 0.2)  | 0.5    | 0.2    | CEO believes overwhelming shock relief is \~0.5 ± 0.2             |
+| `negative_review_finding_penalty`    | Normal(5.0, 2.0)  | 5.0    | 2.0    | CEO believes negative-review penalty is \~5.0 ± 2.0               |
+| `balanced_review_finding_penalty`    | Normal(2.5, 1.0)  | 2.5    | 1.0    | CEO believes balanced-review penalty is \~2.5 ± 1.0               |
+| `review_after_removal_penalty`       | Normal(3.0, 1.0)  | 3.0    | 1.0    | CEO believes review-after-removal penalty is \~3.0 ± 1.0          |
 
 **Note:** The ASA and CEO priors on Board parameters are centred at the Board's actual parameter values, reflecting the assumption that opponents have approximately correct (but uncertain) beliefs about the Board's preferences. The standard deviations encode the degree of uncertainty about the Board's true preferences.
 
@@ -721,28 +631,25 @@ When the Board is an *opponent* (i.e., ASA or CEO is the focal actor), the focal
 
 | Source Document                                  | Location                                                               | Parameters Informed                                                              |
 |--------------------------------------------------|------------------------------------------------------------------------|----------------------------------------------------------------------------------|
-| ASX governance review case studies (2014–2023)   | `background/board/governance-review-case-studies.md`                   | `review_car_weight` (15.0), CAR distribution parameters                          |
-| Direct costs of governance review                | `background/board/direct-costs-governance-review.md`                   | `review_direct_cost_weight` (15.0), Gamma(4.55, 4741) parameters                 |
-| External governance review Bayesian distribution | `background/board/external-governance-review-Bayesian-distribution.md` | `adverse_review_ceo_present_penalty` data basis, Beta(10, 5) adverse probability |
+| ASX governance review case studies (2014-2023)   | `background/board/governance-review-case-studies.md`                   | `review_car_weight` (15.0), CAR distribution parameters                          |
+| Direct costs of governance review                | `background/board/direct-costs-governance-review.md`                   | `review_direct_cost_weight` (15.0), Gamma(4.55, 4741) parameters                |
+| External review outcome distributions            | `background/board/external-review-distributions.md`                    | Dirichlet(38, 160, 1) trinary outcome probabilities                              |
 | Board-level overconfidence literature review     | `background/board/board-level-overconfidence.md`                       | All overconfidence bias parameters (d1_floor, sigma_scale, etc.)                 |
-| Second-strike voting data (2020–2024)            | `background/ceo/2nd-strike.md`                                         | `second_strike_spill_penalty` (8.0), `spill_risk_weight` (2.5)                   |
 | Shareholder vote model v2 specification          | `background/shareholders/shareholder-vote-v2.md`                       | Vote model structure, governance effect specification                            |
 | External governance review analysis              | `background/board/external-governance-review-analysis.md`              | Review outcome classification, regulatory vs non-regulatory patterns             |
-| Corporations Act 2001, ss 250U–250W              | External (Commonwealth legislation)                                    | `second_strike_spill_penalty`, `board_regulatory_liability`                      |
-| Tversky & Kahneman 1992                          | External (academic literature)                                         | Overconfidence framework basis                                                   |
-| CFO forecast survey data (28,000+ forecasts)     | Referenced in overconfidence literature                                | `sigma_scale` (overprecision parameter)                                          |
-| Twardawski & Kind 2023, Brahma et al. 2023       | Referenced in overconfidence literature                                | Mean bias (overestimation) parameters                                            |
-| Coffeng et al. 2021                              | Referenced in overconfidence literature                                | Board decision quality calibration                                               |
-| Governance specification                         | `data/governance_spec.xlsx`                                            | All 15 parameter values (utilities_board sheet)                                  |
+| Corporations Act 2001, ss 250U-250W              | External (Commonwealth legislation)                                    | Inaction penalties (legal grounding for governance obligations)                   |
+| Tversky & Kahneman 1992                          | External (academic literature)                                         | `review_car_loss_aversion` (2.25), overconfidence framework                      |
+| CFO forecast survey data (28,000+ forecasts)     | Referenced in overconfidence literature                                 | `sigma_scale` (overprecision parameter)                                          |
+| Twardawski & Kind 2023, Brahma et al. 2023       | Referenced in overconfidence literature                                 | Mean bias (overestimation) parameters                                            |
+| Coffeng et al. 2021                              | Referenced in overconfidence literature                                 | Board decision quality calibration                                               |
+| Board utility quantification pipeline            | `board_utility_quantification.py`                                      | Estimated weights for inaction, vote, and review parameters                      |
+| Governance specification                         | `data/governance_spec.xlsx`                                            | All 16 parameter values (utilities_board sheet)                                  |
 | Opponent priors                                  | `data/opponent_priors.xlsx`                                            | ASA and CEO prior distributions on Board parameters                              |
 
 ### Classification of Parameter Basis
 
-| Basis                             | Parameters                                                                                                                          |
-|-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------|
-| **Data-derived**                  | `review_car_weight`, `review_direct_cost_weight`                                                                                    |
-| **Empirically anchored**          | `spill_risk_weight`, `second_strike_spill_penalty`                                                                                  |
-| **Subjective (legally grounded)** | `board_regulatory_liability`, `board_d1_liability`, `qantas_legal_d1_penalty`, `qantas_legal_d_rev_penalty`                         |
-| **Data-informed**                 | `adverse_review_ceo_present_penalty`                                                                                                |
-| **Subjective (calibrated)**       | `vote_penalty_weight`                                                                                                               |
-| **Subjective**                    | `early_ceo_departure_cost`, `overwhelming_penalty_weight`, `implementation_cost_sack`, `ceo_loss_cost`, `reputational_spill_weight` |
+| Basis                             | Parameters                                                                                                                                                                                                 |
+|-----------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Data-derived**                  | `review_car_weight`, `review_direct_cost_weight`                                                                                                                                                           |
+| **Estimated (ordinal probit)**    | `inaction_base_penalty`, `inaction_no_review_penalty`, `inaction_ceo_present_penalty`, `inaction_no_sack_penalty`, `vote_strike_penalty`, `vote_overwhelming_penalty`, `negative_review_finding_penalty`, `balanced_review_finding_penalty`, `review_after_removal_penalty` |
+| **Subjective**                    | `board_passivity_after_departure`, `implementation_cost_sack`, `ceo_loss_cost`, `ceo_loss_shock_overwhelming`                                                                                              |

@@ -168,13 +168,25 @@ $$
 
 ### 3.2 Review findings — two-component model
 
-**Component 1: Outcome rating.**
+**Component 1: Outcome rating (trinary).**
 
 $$
-p_{\text{adverse}} \sim \text{Beta}(10, 5), \quad \text{review\_adverse} \sim \text{Bernoulli}(p_{\text{adverse}})
+(p_{\text{neg}}, p_{\text{bal}}, p_{\text{pos}}) \sim \text{Dirichlet}(38, 160, 1)
 $$
 
-$p_{\text{adverse}}$ drawn once per belief draw (epistemic). Based on $\text{Dirichlet}(5,5,5)$ grouping negative + neutral as "adverse". Mean $= 2/3$.
+$$
+\mathbb{E} = (0.191, 0.804, 0.005)
+$$
+
+Balanced/neutral dominates (~80%) because board-commissioned reviews in crisis contexts admit "mistakes were made" without conceding legal liability. Negative is material (~19%) due to ACCC severity. Positive is negligible (<1%).
+
+$$
+\text{review\_outcome} \sim \text{Categorical}(p_{\text{neg}}, p_{\text{bal}}, p_{\text{pos}})
+$$
+
+$(p_{\text{neg}}, p_{\text{bal}}, p_{\text{pos}})$ drawn once per belief draw (epistemic). Outcome values: `"negative"`, `"balanced"`, `"positive"` (or `"none"` if review not commissioned).
+
+The post-review conditional round ($D_4' \rightarrow D_{\text{rev}}'$) activates only for **negative** outcomes (not balanced or positive).
 
 **Component 2: CAR.**
 
@@ -227,10 +239,14 @@ $$
 **Outcome rating:** Board believes positive outcomes are more likely:
 
 $$
-p_{\text{adverse}}^{\text{biased}} \sim \text{Beta}(10, 6.5), \quad \mathbb{E} = 0.606 \quad (\text{vs } 0.667 \text{ unbiased})
+\hat{\alpha}_{\text{pos}} = 1 \times (1 + 10 \times 0.03) = 1.3
 $$
 
-$\hat{\beta}_{\text{positive}} = 5 \times (1 + 10 \times 0.03) = 6.5$.
+$$
+(p_{\text{neg}}, p_{\text{bal}}, p_{\text{pos}})^{\text{biased}} \sim \text{Dirichlet}(38, 160, 1.3)
+$$
+
+Default bias (0.03): slight tilt toward positive outcomes.
 
 ### 4.4 Bias propagation
 
@@ -248,86 +264,103 @@ $$
 
 ### 5.2 Board utility (focal)
 
-Board minimises opposition and disruption. Define $\text{ceo\_at\_end} = \neg\text{CEO\_removed} \;\wedge\; \neg\text{CEO\_resigned\_early}$.
+Board minimises opposition and disruption. The utility function has three structural layers.
+
+Define:
+- $\text{ceo\_at\_end} = \neg\text{CEO\_removed} \;\wedge\; \neg\text{CEO\_resigned\_early}$
+- $\text{removed\_involuntary} = \text{CEO\_removed} \;\wedge\; \neg\text{CEO\_resigned\_early}$
+- $\text{board\_inactive} = (d_1 = \text{D0\_minimal}) \;\wedge\; d_{\text{rev}} \notin \{\text{sack}, \text{review}\} \;\wedge\; d_{\text{rev}}' \ne \text{sack}$
 
 $$
 \begin{aligned}
-u_B(Z) &= -w_{\text{early}} \cdot \mathbb{1}[\text{CEO\_resigned\_early}] \\
-&\quad - w_{\text{vote}} \cdot (V - 0.25)_+^2 \\
-&\quad - w_{\text{over}} \cdot \mathbb{1}[\text{overwhelming}] \\
-&\quad - w_{\text{spill}} \cdot V \cdot \mathbb{1}[\text{strike}] \\
-&\quad + w_{\text{CAR}} \cdot \text{CAR} \cdot \mathbb{1}[\text{review\_commissioned}] \\
-&\quad - w_{\text{cost}} \cdot C_{\text{direct}} \cdot \mathbb{1}[\text{review\_commissioned}] \\
+u_B(Z) &= \underbrace{
+  -w_{\text{inact\_base}} \cdot \mathbb{1}[\text{board\_inactive}]
+  - w_{\text{inact\_no\_rev}} \cdot \mathbb{1}[\neg\text{review\_commissioned}]
+  - w_{\text{inact\_ceo}} \cdot \mathbb{1}[\text{ceo\_at\_end}]
+  - w_{\text{inact\_no\_sack}} \cdot \mathbb{1}[\neg\text{removed\_involuntary}]
+}_{\text{1. Inaction components (unconditional)}} \\[6pt]
+&\quad \underbrace{
+  - w_{\text{v\_strike}} \cdot \frac{(V - 0.25)_+}{0.75}
+  - w_{\text{v\_over}} \cdot \frac{(V - 0.50)_+}{0.50}
+}_{\text{2. Vote penalties (linear in normalized excess)}} \\[6pt]
+&\quad - w_{\text{pass}} \cdot \mathbb{1}[\text{CEO\_resigned\_early}] \\
+&\quad + w_{\text{CAR}}^{+} \cdot (\text{CAR})_+ \cdot \mathbb{1}[\text{review\_comm}]
+  - w_{\text{CAR}}^{-} \cdot (-\text{CAR})_+ \cdot \mathbb{1}[\text{review\_comm}] \\
+&\quad - w_{\text{cost}} \cdot C_{\text{direct}} \cdot \mathbb{1}[\text{review\_comm}] \\
 &\quad - w_{\text{impl}} \cdot \bigl(\mathbb{1}[d_1 = \text{D3}] + \mathbb{1}[d_{\text{rev}} = \text{sack}] + \mathbb{1}[d_{\text{rev}}' = \text{sack}]\bigr) \\
-&\quad - w_{\text{loss}} \cdot \mathbb{1}[\text{CEO\_removed} \wedge \neg\text{CEO\_resigned\_early}] \\
-&\quad - w_{\text{rep}} \cdot \mathbb{1}[\text{overwhelming}] \\[6pt]
-&\quad - w_{\text{spill2}} \cdot \mathbb{1}[\text{strike} \;\wedge\; \text{ceo\_at\_end}] \\
-&\quad - w_{\text{reg}} \cdot \mathbb{1}[\text{strike} \;\wedge\; \text{ceo\_at\_end}] \\
-&\quad - w_{\text{d1\_liab}} \cdot \mathbb{1}[\text{overwhelming} \;\wedge\; d_1 = \text{D0\_minimal}] \\
-&\quad - w_{\text{legal\_d1}} \cdot \mathbb{1}[\text{strike} \;\wedge\; d_1 = \text{D0\_minimal}] \\
-&\quad - w_{\text{legal\_rev}} \cdot \mathbb{1}[\text{strike} \;\wedge\; \text{ceo\_at\_end}] \\
-&\quad - w_{\text{adverse\_ceo}} \cdot \mathbb{1}[\text{review\_commissioned} \;\wedge\; \text{adverse} \;\wedge\; \text{ceo\_at\_end}]
+&\quad - \max\!\bigl(0,\; w_{\text{loss}} - w_{\text{loss\_over}} \cdot \mathbb{1}[\text{overwhelming}]\bigr) \cdot \mathbb{1}[\text{removed\_involuntary}] \\
+&\quad - w_{\text{rev\_neg}} \cdot \mathbb{1}[\text{review\_comm} \;\wedge\; \text{outcome} = \text{negative}] \\
+&\quad - w_{\text{rev\_bal}} \cdot \mathbb{1}[\text{review\_comm} \;\wedge\; \text{outcome} = \text{balanced}] \\
+&\quad - w_{\text{rev\_post}} \cdot \mathbb{1}[\text{removed\_involuntary} \;\wedge\; \neg\text{review\_comm}]
 \end{aligned}
 $$
 
-**Legal and regulatory terms (last six lines):**
+**Review CAR loss aversion:**
 
-| Term | Trigger | Legal basis | Default |
-|------|---------|-------------|---------|
-| $w_{\text{spill2}}$ | strike $\wedge$ ceo\_at\_end | Corporations Act 2001 s.250V: second-strike Board spill | 8.0 |
-| $w_{\text{reg}}$ | strike $\wedge$ ceo\_at\_end | ASIC director banning, personal fines | 5.0 |
-| $w_{\text{d1\_liab}}$ | overwhelming $\wedge$ D0\_minimal | Board inaction despite $>50\%$ vote | 4.0 |
-| $w_{\text{legal\_d1}}$ | strike $\wedge$ D0\_minimal | Class actions, ACCC/ASIC penalties (D1 inaction) | 3.0 |
-| $w_{\text{legal\_rev}}$ | strike $\wedge$ ceo\_at\_end | Company legal exposure (CEO retained post-strike) | 2.0 |
-| $w_{\text{adverse\_ceo}}$ | review\_commissioned $\wedge$ adverse $\wedge$ ceo\_at\_end | Liability from retaining CEO after adverse review | 5.0 |
+$$
+w_{\text{CAR}}^{+} = \frac{w_{\text{CAR}}}{\frac{1 + \lambda_{\text{la}}}{2}}, \qquad w_{\text{CAR}}^{-} = \lambda_{\text{la}} \cdot w_{\text{CAR}}^{+}
+$$
+
+where $w_{\text{CAR}} = 15.0$ (anchor) and $\lambda_{\text{la}} = 2.25$ (loss aversion). Positive CARs receive weight $\approx 9.23$; negative CARs receive weight $\approx 20.77$.
 
 Full default weights:
 
-| Parameter                       | Symbol                    | Default |
-| ------------------------------- | ------------------------- | ------- |
-| `early_ceo_departure_cost`    | $w_{\text{early}}$      | 0.5     |
-| `vote_penalty_weight`         | $w_{\text{vote}}$       | 2.0     |
-| `overwhelming_penalty_weight` | $w_{\text{over}}$       | 3.0     |
-| `spill_risk_weight`           | $w_{\text{spill}}$      | 2.5     |
-| `review_car_weight`           | $w_{\text{CAR}}$        | 15.0    |
-| `review_direct_cost_weight`   | $w_{\text{cost}}$       | 15.0    |
-| `implementation_cost_sack`    | $w_{\text{impl}}$       | 1.0     |
-| `ceo_loss_cost`               | $w_{\text{loss}}$       | 1.5     |
-| `reputational_spill_weight`   | $w_{\text{rep}}$        | 1.0     |
-| `second_strike_spill_penalty` | $w_{\text{spill2}}$     | 8.0     |
-| `board_regulatory_liability`  | $w_{\text{reg}}$        | 5.0     |
-| `board_d1_liability`          | $w_{\text{d1\_liab}}$   | 4.0     |
-| `qantas_legal_d1_penalty`     | $w_{\text{legal\_d1}}$  | 3.0     |
-| `qantas_legal_d_rev_penalty`  | $w_{\text{legal\_rev}}$ | 2.0     |
-| `adverse_review_ceo_present_penalty` | $w_{\text{adverse\_ceo}}$ | 5.0 |
+| Parameter                          | Symbol                       | Default |
+| ---------------------------------- | ---------------------------- | ------- |
+| `inaction_base_penalty`            | $w_{\text{inact\_base}}$     | 3.0     |
+| `inaction_no_review_penalty`       | $w_{\text{inact\_no\_rev}}$  | 2.0     |
+| `inaction_ceo_present_penalty`     | $w_{\text{inact\_ceo}}$      | 5.0     |
+| `inaction_no_sack_penalty`         | $w_{\text{inact\_no\_sack}}$ | 3.0     |
+| `vote_strike_penalty`              | $w_{\text{v\_strike}}$       | 2.0     |
+| `vote_overwhelming_penalty`        | $w_{\text{v\_over}}$         | 3.0     |
+| `board_passivity_after_departure`  | $w_{\text{pass}}$            | 0.5     |
+| `review_car_weight`                | $w_{\text{CAR}}$             | 15.0    |
+| `review_car_loss_aversion`         | $\lambda_{\text{la}}$        | 2.25    |
+| `review_direct_cost_weight`        | $w_{\text{cost}}$            | 15.0    |
+| `implementation_cost_sack`         | $w_{\text{impl}}$            | 1.0     |
+| `ceo_loss_cost`                    | $w_{\text{loss}}$            | 1.5     |
+| `ceo_loss_shock_overwhelming`      | $w_{\text{loss\_over}}$      | 0.5     |
+| `negative_review_finding_penalty`  | $w_{\text{rev\_neg}}$        | 5.0     |
+| `balanced_review_finding_penalty`  | $w_{\text{rev\_bal}}$        | 2.5     |
+| `review_after_removal_penalty`     | $w_{\text{rev\_post}}$       | 3.0     |
 
 ### 5.3 ASA utility (opponent — used in predictive distribution)
 
+Seven-dimensional weighted assessment model. Each dimension is scored on a [1, 5] Likert scale with dimension-specific weights summing to 1.0:
+
+| Dimension | Weight | Description |
+|-----------|--------|-------------|
+| FW        | 0.10   | Financial Welfare — share price, legal exposure |
+| PPL       | 0.30   | Pay/Performance Linkage — remuneration outcomes, clawback |
+| TD        | 0.10   | Transparency/Disclosure — governance disclosure quality |
+| EGR       | 0.15   | ESG/Governance Risk — regulatory, labour, ESG signals |
+| BA        | 0.20   | Board Accountability — consequences imposed on management |
+| OL        | 0.10   | Organizational Legitimacy — ASA member trust, credibility |
+| PF        | 0.05   | Procedural Fairness — AGM process, share trading norms |
+
 $$
-\begin{aligned}
-u_A(Z) &= w_{\text{early}}^A \cdot \mathbb{1}[\text{CEO\_resigned\_early}] \\
-&\quad + w_{\text{vote}}^A \cdot V \\
-&\quad + w_{\text{over}}^A \cdot \mathbb{1}[\text{overwhelming}] \\
-&\quad + w_{\text{removal}}^A \cdot \mathbb{1}[\text{CEO\_removed} \wedge \neg\text{CEO\_resigned\_early}] \\
-&\quad - w_{\text{CAR}}^A \cdot \text{CAR} \cdot \mathbb{1}[\text{review\_commissioned}] \\
-&\quad - w_{\text{mob}}^A \cdot \mathbb{1}[a_2 = \text{rec\_strike}] \\
-&\quad + w_{\text{rep}}^A \cdot (V - 0.25)_+ \\
-&\quad + w_{\text{align}}^A \cdot \mathbb{1}[a_2 = \text{rec\_strike} \;\wedge\; \text{strike}]
-\end{aligned}
+u_A(Z) = \sum_{d \in \mathcal{D}} w_d \cdot \text{clip}\!\bigl(s_d^{\text{base}}(Z) + \Delta s_d(Z),\; 1,\; 5\bigr) - w_{\text{mob}} \cdot \mathbb{1}[a_2 = \text{rec\_strike}]
 $$
 
-Default weights:
+**Base scores** $s_d^{\text{base}}$ depend on the path to $A_2$: (CEO\_resigned\_early, $d_1$) determines the lookup key into a 5-row table of base Likert scores per dimension.
 
-| Parameter                      | Symbol                   | Default |
-| ------------------------------ | ------------------------ | ------- |
-| `early_ceo_departure_reward` | $w_{\text{early}}^A$   | 2.0     |
-| `vote_reward_weight`         | $w_{\text{vote}}^A$    | 2.0     |
-| `overwhelming_reward_weight` | $w_{\text{over}}^A$    | 2.0     |
-| `ceo_removal_reward`         | $w_{\text{removal}}^A$ | 3.0     |
-| `review_car_weight`          | $w_{\text{CAR}}^A$     | 15.0    |
-| `mobilisation_cost`          | $w_{\text{mob}}^A$     | 0.3     |
-| `reputational_gain_weight`   | $w_{\text{rep}}^A$     | 1.0     |
-| `market_alignment_bonus`     | $w_{\text{align}}^A$   | 1.5     |
+| Path | FW | PPL | TD | EGR | BA | OL | PF | Weighted Mean |
+|------|-----|-----|-----|------|-----|-----|-----|---------------|
+| CEO resign → D0\_minimal | 2.1 | 1.3 | 1.8 | 1.5 | 2.3 | 2.0 | 3.0 | 1.84 |
+| CEO resign → D1\_review | 2.2 | 1.3 | 2.2 | 1.9 | 2.9 | 2.4 | 3.0 | 2.09 |
+| CEO stay → D0\_minimal | 1.7 | 1.2 | 1.5 | 1.3 | 1.2 | 1.4 | 2.9 | 1.43 |
+| CEO stay → D1\_review | 1.9 | 1.2 | 2.0 | 1.6 | 1.9 | 1.7 | 2.9 | 1.67 |
+| CEO stay → D3\_ceo\_transition | 2.5 | 1.6 | 2.3 | 2.2 | 3.3 | 2.7 | 3.0 | 2.27 |
+
+**Post-A2 adjustments** $\Delta s_d$:
+- Strike: $\Delta \text{BA} += 1.5$, $\Delta \text{OL} += 1.0$
+- Overwhelming: $\Delta \text{BA} += 1.0$, $\Delta \text{OL} += 0.5$
+- CEO removed (involuntary): $\Delta \text{BA} += 1.0$, $\Delta \text{FW} += 0.5$
+- Negative review: $\Delta \text{TD} += 1.0$, $\Delta \text{EGR} += 0.5$
+- Balanced review: $\Delta \text{TD} += 0.3$
+- Market alignment (rec\_strike $\wedge$ strike): $\Delta \text{OL} += 1.0$, $\Delta \text{PF} += 0.5$
+
+Default mobilisation cost: $w_{\text{mob}} = 0.3$.
 
 ### 5.4 CEO utility (opponent — used in predictive distribution)
 
@@ -367,7 +400,7 @@ $$
 **Stay path — disutility (departure-mode-dependent):**
 
 $$
-D_{\text{raw}} = D_{\text{stay}} + D_{\text{departure}}(\tilde{d}_4) \cdot \mathbb{1}[\text{CEO\_removed}] + D_{\text{agm}} \cdot \mathbb{1}[V > 0.25] + D_{\text{disgrace}} \cdot \mathbb{1}[\text{overwhelming}] + D_{\text{adverse\_review}} \cdot \mathbb{1}[\text{review\_commissioned} \wedge \text{adverse}]
+D_{\text{raw}} = D_{\text{stay}} + D_{\text{departure}}(\tilde{d}_4) \cdot \mathbb{1}[\text{CEO\_removed}] + D_{\text{agm}} \cdot \mathbb{1}[V > 0.25] + D_{\text{disgrace}} \cdot \mathbb{1}[\text{overwhelming}] + D_{\text{adverse\_review}} \cdot \mathbb{1}[\text{review\_commissioned} \;\wedge\; \text{outcome} = \text{negative}]
 $$
 
 $$

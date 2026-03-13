@@ -401,13 +401,13 @@ The LLM response is validated against this schema via instructor:
 One free parameter varies while others are held at baseline. Multiple vote percentages from `VOTE_GRID = [0.10, 0.20, 0.26, 0.30, 0.40, 0.50, 0.60, 0.75, 0.83]` and CAR values from `CAR_GRID` are used to trace response surfaces.
 
 **Collapsed parameter groups** (collinear in estimation):
-- `w_removal = w7 + w8` — both fire when CEO involuntarily removed
-- `w_inaction = w10 + w11 + w14` — all fire when strike AND CEO present at end
+- `w_removal = implementation_cost_sack + ceo_loss_cost` — both fire when CEO involuntarily removed
+- `w_inaction = inaction_base_penalty + inaction_no_review_penalty + inaction_ceo_present_penalty + inaction_no_sack_penalty` — components fire conditionally on strike, review status, and CEO status
 
-Target parameters: w1 (early CEO departure, 8 scenarios at varied V), w2 (vote penalty, 9 vote levels), w3 (overwhelming penalty), w4 (spill risk), w_removal (CEO removal cost), w8s/w_remove_ceo_overwhelming/w8r (shock relief terms), w9 (reputational spill), w_inaction (inaction penalty contrast), w12 (continued inaction — overwhelming), w13 (continued inaction — strike), w15 (adverse review CEO present penalty).
+Target parameters: `board_passivity_after_departure` (graduated by response_strength, 8 scenarios at varied V), `vote_strike_penalty` (vote penalty, 9 vote levels), `vote_overwhelming_penalty` (overwhelming penalty), `w_removal` (CEO removal cost = `implementation_cost_sack` + `ceo_loss_cost`), `ceo_loss_shock_overwhelming` (shock relief when overwhelming vote), `w_inaction` (inaction penalty components), `negative_review_finding_penalty` (adverse review penalty, unconditional on CEO status), `balanced_review_finding_penalty` (balanced review penalty, unconditional on CEO status), `ceo_accountability_benefit` (benefit when removal backed by governance review), `review_after_removal_penalty` (penalty for removing CEO without commissioning review).
 
 ### Tier 2: Joint Scenarios (20 scenarios)
-Realistic multi-penalty combinations — e.g., first strike + CEO present + adverse review activates w_inaction, w12, w13, w15 simultaneously.
+Realistic multi-penalty combinations — e.g., first strike + CEO present + adverse review activates `w_inaction` components, `negative_review_finding_penalty`, and `ceo_accountability_benefit` simultaneously.
 
 ### Tier 3: Behavioural Probes (~34 scenarios)
 - **Loss aversion** (6): Matched CAR gain/loss pairs at ±3%, ±5%, ±8%

@@ -1,0 +1,10 @@
+Parameter,EU_low_x0.5,EU_baseline,EU_high_x1.5,Swing,Abs_swing
+Pr(negative review) scaling,1.648076,1.648076,1.648076,0.0,0.0
+$w_{\mathrm{no\_review}}$ (no review penalty),1.648449,1.648076,1.647704,-0.000745,0.000745
+$w_{\mathrm{inaction}}$ (inaction base penalty),1.649709,1.648076,1.646443,-0.003266,0.003266
+$w_{\mathrm{removal}}$ (CEO removal cost),1.655669,1.648076,1.640483,-0.015186,0.015186
+$w_{\mathrm{ovw}}$ (vote-overwhelming penalty),1.719944,1.648076,1.576227,-0.143717,0.143717
+$w_{\mathrm{strike}}$ (vote-strike penalty),1.773647,1.648076,1.522846,-0.250801,0.250801
+$w_{\mathrm{review\_neg}}$ (negative review penalty),2.039306,1.648076,1.256015,-0.78329,0.78329
+$w_{\mathrm{review\_bal}}$ (balanced review penalty),2.983322,1.648076,0.267322,-2.716,2.716
+$w_{\mathrm{accountability}}$ (CEO accountability),-0.74345,1.648076,4.403002,5.146452,5.146452

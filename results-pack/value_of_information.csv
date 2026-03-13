@@ -1,0 +1,3 @@
+Information_signal,Baseline_EU,Baseline_optimal,EU_with_perfect_info,VoI,VoI_pct_of_baseline,Detail
+ASA recommendation (A2),-4.9532,Commission review,-4.934,0.0192,0.4%,If A2_rec_strike: best=Commission review (EU=-4.9452); If A2_no_strike: best=Commission review (EU=-4.7145)
+Vote outcome (V),-4.9532,Commission review,-4.9496,0.0036,0.1%,If no_strike: best=Commission review (EU=-4.5753); If first_strike: best=Commission review (EU=-4.6737); If overwhelming: best=Commission review (EU=-5.3195)

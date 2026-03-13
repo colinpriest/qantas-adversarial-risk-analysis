@@ -1,0 +1,12 @@
+D1_action,D1_label,Component,Contribution
+D0_minimal,Do nothing,anchored,-0.396
+D0_minimal,Do nothing,w_inaction_base,-0.0123
+D0_minimal,Do nothing,w_inaction_delay,-0.2771
+D0_minimal,Do nothing,w_inaction_no_review,-0.0122
+D0_minimal,Do nothing,w_passivity,-1.092
+D0_minimal,Do nothing,w_review_balanced,-2.6818
+D0_minimal,Do nothing,w_review_negative,-0.7749
+D1_review,Commission review,anchored,-0.3917
+D1_review,Commission review,w_passivity,-1.0898
+D1_review,Commission review,w_review_balanced,-2.6871
+D1_review,Commission review,w_review_negative,-0.7765
