@@ -1,0 +1,9 @@
+parameter,engine_key,description,posterior_mean,posterior_sd,ci_lo,ci_hi,spec_default,estimation_method
+w_ctx_inaction,asa_ctx_inaction,"Context: penalty for Board visible inaction (no review, no CEO sacking)",2.5415,0.2814,1.9591,3.0799,1.0,stan_ordinal_probit
+w_ctx_departure,asa_ctx_departure,Context: credit for CEO having departed (voluntary or Board-forced),0.6048,0.2258,0.1992,1.0676,1.0,stan_ordinal_probit
+w_ctx_review,asa_ctx_review,Context: credit for Board having commissioned governance review,0.3044,0.1661,0.0695,0.7025,1.0,stan_ordinal_probit
+w_strike_cost,asa_strike_cost,Interaction: net mobilisation cost of recommending strike,0.1382,0.0619,0.0412,0.2778,1.0,stan_ordinal_probit
+w_strike_vs_passive,asa_strike_vs_passive,Interaction: marginal value of striking when Board has not acted,7.015,0.2674,6.5208,7.5706,1.0,stan_ordinal_probit
+w_departure_dampens,asa_departure_dampens,Interaction: CEO departure reduces marginal value of striking,0.7973,0.0862,0.6243,0.9625,1.0,stan_ordinal_probit
+w_sack_dampens,asa_sack_dampens,Interaction: Board-forced CEO exit further reduces strike value,0.0242,0.0111,0.0079,0.0506,1.0,stan_ordinal_probit
+w_credibility_signal,asa_credibility_signal,Interaction: repeat-game credibility value of striking in high-profile case,1.0968,0.0866,0.9289,1.2698,1.0,stan_ordinal_probit

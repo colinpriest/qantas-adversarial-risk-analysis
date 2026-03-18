@@ -1,0 +1,58 @@
+{
+  "within_sample_fit": {
+    "mean_rmse": 0.748689,
+    "metric": "rmse_likert_score",
+    "target": 0.05,
+    "meets_target": false
+  },
+  "within_sample_kl": {
+    "mean": 0.748689,
+    "target": 0.05,
+    "meets_target": false
+  },
+  "worst_5_scenarios": [
+    {
+      "scenario_id": "S1_022",
+      "kl": 2.887444
+    },
+    {
+      "scenario_id": "S1_036",
+      "kl": 2.883791
+    },
+    {
+      "scenario_id": "S1_023",
+      "kl": 2.870586
+    },
+    {
+      "scenario_id": "S1_034",
+      "kl": 2.868135
+    },
+    {
+      "scenario_id": "S2_011",
+      "kl": 2.861352
+    }
+  ],
+  "historical_prediction": {
+    "available": true,
+    "scenario_id": "S4_001",
+    "predicted_probs": {
+      "D0_minimal": 0.0,
+      "D1_review": 0.1105,
+      "D3_ceo_transition": 0.8895
+    },
+    "posterior_mean_eu": {
+      "D0_minimal": -12.2547,
+      "D1_review": -0.0144,
+      "D3_ceo_transition": -0.0108
+    },
+    "rank_of_D1_review": 2,
+    "top_action": "D3_ceo_transition",
+    "top_prob": 0.8895
+  },
+  "mcmc_diagnostics": {
+    "n_divergences": 0,
+    "max_rhat": 1.0208,
+    "min_ess_bulk": 7678.0,
+    "n_samples": 8000
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "gap_constraints": {
+    "departure": {
+      "low": 0.01,
+      "expected": 0.05,
+      "high": 0.08,
+      "higher_node": "ceo_stay__do_nothing",
+      "lower_node": "ceo_resign__do_nothing",
+      "label": "CEO departure effect"
+    },
+    "review_stay": {
+      "low": 0.01,
+      "expected": 0.04,
+      "high": 0.08,
+      "higher_node": "ceo_stay__do_nothing",
+      "lower_node": "ceo_stay__review",
+      "label": "Review effect (CEO stays)"
+    },
+    "review_resign": {
+      "low": 0.01,
+      "expected": 0.05,
+      "high": 0.09100000000000001,
+      "higher_node": "ceo_resign__do_nothing",
+      "lower_node": "ceo_resign__review",
+      "label": "Review effect (CEO resigned)"
+    },
+    "sacking": {
+      "low": 0.03,
+      "expected": 0.08,
+      "high": 0.12,
+      "higher_node": "ceo_resign__review",
+      "lower_node": "ceo_stay__board_forces_exit",
+      "label": "Sacking signal"
+    }
+  },
+  "n_valid": 50,
+  "reasonings": [
+    "The resignation of the CEO (Node 1) compared to him staying (Node 3) provides a clear accountability signal, hence the gap is substantial but limited since the Board took no further action. Commissioning a review while the CEO is still in place (Node 4) provides some reduction in strike propensity but significantly less than if the CEO had resigned, hence smaller gaps are observed in those transitions. Finally, a Board-forced exit demonstrates a stronger accountability signal than even a resignation coupled with a review, which justifies the larger gaps for that scenario.",
+    "The departure of the CEO provides a clear accountability signal that likely reduces P(strike), but because the Board's inaction moderates this effect, the gap is between 0.02 and 0.08. Commissioning a review with a non-resigned CEO creates a small gap as it indicates future oversight. The gap from a review after a resignation adds some additional comfort, but may not drastically change the outlook. The strongest signal of Board action comes from forcing the CEO's exit, which creates a significant accountability shift, leading to a higher gap compared to the review scenario.",
+    "The departure of the CEO (from Node 1 to Node 3) has a clear positive impact on ASA's perception of accountability, resulting in a modest but significant reduction in P(strike). Commissioning a review (Node 3 to Node 4), while positive, does not substantially mitigate concerns. The review after a resignation (Node 1 to Node 2) provides additional assurance but is limited due to the retrospective nature of the pay vote. Forcing the CEO's exit (Node 2 to Node 5) generates a stronger accountability signal, leading to a similar but amplified reduction in P(strike)."
+  ]
+}

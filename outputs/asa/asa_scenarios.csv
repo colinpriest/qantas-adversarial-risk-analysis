@@ -1,0 +1,897 @@
+scenario_id,tier,target_parameter,decision_node,state_vector,feasible_actions,prompt_text
+T1_ceo_resign_nothing,1,core_path,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has taken no substantive governance action. Its public posture has been defensive.
+
+Speed of Board response: The Board has not acted despite the passage of time since the crisis became public.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T1_ceo_resign_review,1,core_path,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T1_ceo_stay_nothing,1,core_path,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has taken no substantive governance action. Its public posture has been defensive.
+
+Speed of Board response: The Board has not acted despite the passage of time since the crisis became public.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T1_ceo_stay_review,1,core_path,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T1_ceo_stay_sacked,1,core_path,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has forced the CEO's departure — the strongest possible accountability action short of clawback.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_delay_001,2,w_strike_cost,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": true, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board's action came only after weeks of sustained public and regulatory pressure. The delay raises questions about whether the response reflects genuine commitment to reform or reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_delay_002,2,w_strike_cost,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": true, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board's action came only after weeks of sustained public and regulatory pressure. The delay raises questions about whether the response reflects genuine commitment to reform or reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_delay_003,2,w_strike_cost,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": false, ""action_delayed"": true, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has forced the CEO's departure — the strongest possible accountability action short of clawback.
+
+Speed of Board response: The Board's action came only after weeks of sustained public and regulatory pressure. The delay raises questions about whether the response reflects genuine commitment to reform or reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_delay_low_profile_004,2,w_strike_cost,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": true, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board's action came only after weeks of sustained public and regulatory pressure. The delay raises questions about whether the response reflects genuine commitment to reform or reactive damage control.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_delay_low_profile_005,2,w_strike_cost,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": false, ""action_delayed"": true, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has forced the CEO's departure — the strongest possible accountability action short of clawback.
+
+Speed of Board response: The Board's action came only after weeks of sustained public and regulatory pressure. The delay raises questions about whether the response reflects genuine commitment to reform or reactive damage control.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_immediate_006,2,w_strike_cost,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_low_profile_007,2,w_credibility_signal,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has taken no substantive governance action. Its public posture has been defensive.
+
+Speed of Board response: The Board has not acted despite the passage of time since the crisis became public.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_low_profile_008,2,w_credibility_signal,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has taken no substantive governance action. Its public posture has been defensive.
+
+Speed of Board response: The Board has not acted despite the passage of time since the crisis became public.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_low_profile_009,2,w_credibility_signal,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_low_profile_010,2,w_credibility_signal,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has forced the CEO's departure — the strongest possible accountability action short of clawback.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_low_profile_011,2,w_credibility_signal,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_low_profile_012,2,w_credibility_signal,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": false}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has taken strong accountability action: forced CEO departure AND commissioned a governance review.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a lower-profile case. The company is not a major consumer brand and media coverage has been limited. While ASA monitors the company, its stance will receive modest public attention.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_combined_013,2,joint,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has taken strong accountability action: forced CEO departure AND commissioned a governance review.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T2_combined_014,2,joint,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": true, ""action_delayed"": true, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has taken strong accountability action: forced CEO departure AND commissioned a governance review.
+
+Speed of Board response: The Board's action came only after weeks of sustained public and regulatory pressure. The delay raises questions about whether the response reflects genuine commitment to reform or reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_framing_001,3,framing_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.\n\nCEO status: The CEO announced a voluntary resignation, citing personal reasons.\n\nBoard governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.\n\nCase profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.\n\n[QUESTION]\nASA's company monitor team is preparing its voting intentions. Two actions are feasible:\n\nAction A \u2014 No strike recommendation: ASA votes open proxies in favour of the remuneration report.\nAction B \u2014 Recommend strike: ASA votes open proxies against the remuneration report.\n\nRate the appropriateness of EACH action on a 1-5 scale:\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO announced a voluntary resignation, citing personal reasons.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Case profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of the remuneration report.
+Action B — Recommend strike: ASA votes open proxies against the remuneration report.
+
+Rate the appropriateness of EACH action on a 1-5 scale:
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_framing_002,3,framing_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.\n\nCEO status: The Board announced it had terminated the CEO's employment, effective immediately.\n\nBoard governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.\n\nCase profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.\n\n[QUESTION]\nASA's company monitor team is preparing its voting intentions. Two actions are feasible:\n\nAction A \u2014 No strike recommendation: ASA votes open proxies in favour of the remuneration report.\nAction B \u2014 Recommend strike: ASA votes open proxies against the remuneration report.\n\nRate the appropriateness of EACH action on a 1-5 scale:\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.
+
+CEO status: The Board announced it had terminated the CEO's employment, effective immediately.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Case profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of the remuneration report.
+Action B — Recommend strike: ASA votes open proxies against the remuneration report.
+
+Rate the appropriateness of EACH action on a 1-5 scale:
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_framing_003,3,framing_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.\n\nCEO status: The CEO departed. The company statement said it was by mutual agreement between the CEO and the Board.\n\nBoard governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.\n\nCase profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.\n\n[QUESTION]\nASA's company monitor team is preparing its voting intentions. Two actions are feasible:\n\nAction A \u2014 No strike recommendation: ASA votes open proxies in favour of the remuneration report.\nAction B \u2014 Recommend strike: ASA votes open proxies against the remuneration report.\n\nRate the appropriateness of EACH action on a 1-5 scale:\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO departed. The company statement said it was by mutual agreement between the CEO and the Board.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Case profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of the remuneration report.
+Action B — Recommend strike: ASA votes open proxies against the remuneration report.
+
+Rate the appropriateness of EACH action on a 1-5 scale:
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_framing_004,3,framing_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.\n\nCEO status: The CEO resigned after weeks of sustained public pressure and media scrutiny, but the Board did not formally force the departure.\n\nBoard governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.\n\nCase profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.\n\n[QUESTION]\nASA's company monitor team is preparing its voting intentions. Two actions are feasible:\n\nAction A \u2014 No strike recommendation: ASA votes open proxies in favour of the remuneration report.\nAction B \u2014 Recommend strike: ASA votes open proxies against the remuneration report.\n\nRate the appropriateness of EACH action on a 1-5 scale:\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially against a backdrop of regulatory action and governance failures. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO resigned after weeks of sustained public pressure and media scrutiny, but the Board did not formally force the departure.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Case profile: This is a nationally prominent case with intense media coverage. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of the remuneration report.
+Action B — Recommend strike: ASA votes open proxies against the remuneration report.
+
+Rate the appropriateness of EACH action on a 1-5 scale:
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_sequence_005,3,sequence_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.\n\nSequence of events: The Board first commissioned a governance review. Two weeks later, the CEO resigned voluntarily.\n\nCase profile: National icon, maximum media coverage.\n\n[QUESTION]\nRate the appropriateness of EACH action on a 1-5 scale:\nAction A \u2014 No strike recommendation   Action B \u2014 Recommend strike\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.
+
+Sequence of events: The Board first commissioned a governance review. Two weeks later, the CEO resigned voluntarily.
+
+Case profile: National icon, maximum media coverage.
+
+[QUESTION]
+Rate the appropriateness of EACH action on a 1-5 scale:
+Action A — No strike recommendation   Action B — Recommend strike
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_sequence_006,3,sequence_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.\n\nSequence of events: The CEO resigned first. The Board then commissioned a governance review in response.\n\nCase profile: National icon, maximum media coverage.\n\n[QUESTION]\nRate the appropriateness of EACH action on a 1-5 scale:\nAction A \u2014 No strike recommendation   Action B \u2014 Recommend strike\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.
+
+Sequence of events: The CEO resigned first. The Board then commissioned a governance review in response.
+
+Case profile: National icon, maximum media coverage.
+
+[QUESTION]
+Rate the appropriateness of EACH action on a 1-5 scale:
+Action A — No strike recommendation   Action B — Recommend strike
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_sequence_007,3,sequence_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.\n\nSequence of events: The CEO's resignation and the Board's announcement of a governance review were made on the same day.\n\nCase profile: National icon, maximum media coverage.\n\n[QUESTION]\nRate the appropriateness of EACH action on a 1-5 scale:\nAction A \u2014 No strike recommendation   Action B \u2014 Recommend strike\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.
+
+Sequence of events: The CEO's resignation and the Board's announcement of a governance review were made on the same day.
+
+Case profile: National icon, maximum media coverage.
+
+[QUESTION]
+Rate the appropriateness of EACH action on a 1-5 scale:
+Action A — No strike recommendation   Action B — Recommend strike
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T3_sequence_008,3,sequence_bias,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nCrisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.\n\nSequence of events: The Board commissioned a governance review. The CEO has not resigned and remains in position.\n\nCase profile: National icon, maximum media coverage.\n\n[QUESTION]\nRate the appropriateness of EACH action on a 1-5 scale:\nAction A \u2014 No strike recommendation   Action B \u2014 Recommend strike\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay is egregiously above benchmark against regulatory and ESG failures.
+
+Sequence of events: The Board commissioned a governance review. The CEO has not resigned and remains in position.
+
+Case profile: National icon, maximum media coverage.
+
+[QUESTION]
+Rate the appropriateness of EACH action on a 1-5 scale:
+Action A — No strike recommendation   Action B — Recommend strike
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+T4_qantas_2023,4,historical_calibration,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true, ""custom_prompt"": ""[GAME STATE \u2014 PATH TO ASA's DECISION POINT]\n\nDecision point: Late September 2023.\n\nPath to this node:\n- Alan Joyce announced his immediate resignation effective 2 September 2023,\n  brought forward from a planned November departure following intense public\n  and regulatory pressure.\n- The Qantas Board has announced an independent review of the company's\n  governance and culture. Terms of reference and reviewer disclosed publicly.\n- No clawback of Joyce's FY23 remuneration has been announced, but the Board\n  has signalled it is exploring conditional holdback of bonus components.\n- Incoming Chair John Mullen made public statements acknowledging governance\n  failings.\n\nCrisis context:\n- FY23 statutory profit A$2.47 billion\n- Alan Joyce FY23 remuneration: A$21.4 million (near 10-fold increase YoY)\n- ACCC filed Federal Court action alleging ~8,000 ghost flight ticket sales\n- Federal Court ruled Qantas illegally outsourced ~1,700 ground workers\n- Joyce sold ~90% of his shareholding before the ACCC announcement\n- FY23 remuneration report: no conduct-linked gating, no clawback provisions\n\nCase profile: Qantas is a national icon. Maximum media coverage, near-universal\nASA member exposure as shareholders and customers. ASA's stance is front-page news.\n\nCRITICAL: ASA's actual voting intention is NOT known at this decision point.\nReason prospectively about what ASA SHOULD do.\n\n[QUESTION]\nASA's company monitor team is preparing its voting intentions for the Qantas\nNovember 2023 AGM. Two actions are feasible:\n\nAction A \u2014 No strike recommendation\nAction B \u2014 Recommend strike\n\nRate the appropriateness of EACH action on a 1-5 scale:\n1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate\n\nRespond with structured Likert scores for each action and brief reasoning.""}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Decision point: Late September 2023.
+
+Path to this node:
+- Alan Joyce announced his immediate resignation effective 2 September 2023,
+  brought forward from a planned November departure following intense public
+  and regulatory pressure.
+- The Qantas Board has announced an independent review of the company's
+  governance and culture. Terms of reference and reviewer disclosed publicly.
+- No clawback of Joyce's FY23 remuneration has been announced, but the Board
+  has signalled it is exploring conditional holdback of bonus components.
+- Incoming Chair John Mullen made public statements acknowledging governance
+  failings.
+
+Crisis context:
+- FY23 statutory profit A$2.47 billion
+- Alan Joyce FY23 remuneration: A$21.4 million (near 10-fold increase YoY)
+- ACCC filed Federal Court action alleging ~8,000 ghost flight ticket sales
+- Federal Court ruled Qantas illegally outsourced ~1,700 ground workers
+- Joyce sold ~90% of his shareholding before the ACCC announcement
+- FY23 remuneration report: no conduct-linked gating, no clawback provisions
+
+Case profile: Qantas is a national icon. Maximum media coverage, near-universal
+ASA member exposure as shareholders and customers. ASA's stance is front-page news.
+
+CRITICAL: ASA's actual voting intention is NOT known at this decision point.
+Reason prospectively about what ASA SHOULD do.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for the Qantas
+November 2023 AGM. Two actions are feasible:
+
+Action A — No strike recommendation
+Action B — Recommend strike
+
+Rate the appropriateness of EACH action on a 1-5 scale:
+1 = Not appropriate   3 = Uncertain   5 = Strongly appropriate
+
+Respond with structured Likert scores for each action and brief reasoning."
+A2_ceo_resign__do_nothing,1,a2_node,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has taken no substantive governance action. Its public posture has been defensive.
+
+Speed of Board response: The Board has not acted despite the passage of time since the crisis became public.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+A2_ceo_resign__review,1,a2_node,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": true, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO has announced their resignation. This is a voluntary departure — the CEO chose to leave rather than being forced out by the Board.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+A2_ceo_stay__do_nothing,1,a2_node,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has taken no substantive governance action. Its public posture has been defensive.
+
+Speed of Board response: The Board has not acted despite the passage of time since the crisis became public.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+A2_ceo_stay__review,1,a2_node,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": false, ""review_commissioned"": true, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The CEO remains in position. The CEO has not resigned and the Board has not forced the CEO's departure.
+
+Board governance action: The Board has commissioned an independent governance review with publicly disclosed terms of reference.
+
+Board accountability posture: The Board has commissioned a governance review, signalling willingness to reform, but has not taken direct action against the CEO.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."
+A2_ceo_stay__board_forces_exit,1,a2_node,A2,"{""decision_node"": ""A2"", ""ceo_resigned"": false, ""ceo_sacked"": true, ""review_commissioned"": false, ""action_delayed"": false, ""high_profile"": true}","[""no_strike"", ""rec_strike""]","[GAME STATE — PATH TO ASA's DECISION POINT]
+
+Crisis context: The company's remuneration report is public. Executive pay has increased substantially — a multi-fold increase year-on-year — against a backdrop of serious regulatory action (court proceedings filed), confirmed labour law violations, and insider share sale timing concerns. The pay-performance link is fundamentally broken.
+
+CEO status: The Board has taken the significant step of forcing the CEO's departure. This is a Board-initiated accountability action, not a voluntary resignation.
+
+Board governance action: The Board has NOT commissioned an independent governance review. No structural governance reform has been announced.
+
+Board accountability posture: The Board has forced the CEO's departure — the strongest possible accountability action short of clawback.
+
+Speed of Board response: The Board acted promptly — within days of the crisis becoming public. The speed of response suggests genuine commitment to accountability rather than reactive damage control.
+
+Case profile: This is a nationally prominent case. The company is a major consumer brand and household name. Media coverage is intense and sustained. ASA's members are overwhelmingly shareholders and/or customers. ASA's stance will be front-page news.
+
+[QUESTION]
+ASA's company monitor team is preparing its voting intentions for this company's
+upcoming AGM. The remuneration report is now public. Two actions are feasible:
+
+Action A — No strike recommendation: ASA votes open proxies in favour of (or
+abstains on) the remuneration report. ASA may still express concerns privately.
+
+Action B — Recommend strike: ASA votes open proxies against the remuneration
+report and publishes a voting intention explaining its reasoning.
+
+Please rate the appropriateness of EACH action separately on a 1-5 scale:
+1 = Not appropriate / not warranted given the circumstances
+3 = Uncertain / could go either way
+5 = Strongly appropriate / clearly warranted
+
+Respond with structured Likert scores for each action and brief reasoning."

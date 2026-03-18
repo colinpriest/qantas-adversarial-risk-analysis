@@ -1,0 +1,13 @@
+{
+  "historical": {
+    "available": true,
+    "scenario_id": "T4_qantas_2023",
+    "p_rec_strike": 0.9999,
+    "p_no_strike": 0.0001,
+    "delta_eu": 8.9821,
+    "passed": "True",
+    "source": "calibrated_weights",
+    "expected": "rec_strike (observed: ASA recommended strike at Qantas 2023 AGM)",
+    "detail": "P(rec_strike) = 1.000 PASS (threshold: 0.80, source: calibrated weights)"
+  }
+}

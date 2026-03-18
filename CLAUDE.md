@@ -10,7 +10,7 @@ Three-player adversarial risk analysis of Qantas governance decisions under stra
 | Numerics | NumPy, Pandas | 1.20+, 1.3+ | Array operations and data manipulation |
 | Bayesian | CmdStanPy | 1.0+ | Interface to Stan posterior samples |
 | Data I/O | openpyxl | 3.0+ | Excel-based data contracts |
-| Testing | pytest | (dev) | Comprehensive test suite (114 tests) |
+| Testing | pytest | (dev) | Comprehensive test suite (151 tests) |
 
 **Why this stack:** Numerical game theory with uncertain beliefs requires explicit Bayesian reasoning (Stan), pandas for complex state transitions, and Excel for non-technical stakeholder accessibility.
 
@@ -36,7 +36,7 @@ python -m run.run_unified_ARA --n_draws 500 --no-laplacian
 
 ### Testing
 ```bash
-# Run all 114 tests
+# Run all 151 tests
 python -m pytest tests/test_engine.py -v
 
 # Run specific test class
@@ -63,21 +63,36 @@ Qantas/
 ├── run/                             # CLI entry points
 │   ├── __init__.py
 │   ├── run_unified_ARA.py           # Unified game tree (all strategic modes)
-│   ├── game_tree.py                 # Shared tree builder and utilities
+│   ├── run_board_mode.py            # Board-focal single-mode runner
+│   ├── run_asa_mode.py              # ASA-focal single-mode runner
+│   ├── game_tree.py                 # Fast tree builder with posterior weight draws
+│   ├── interactive_tree.py          # Interactive HTML dashboard with LLM commentary
 │   ├── sensitivity.py               # Grid sensitivity over utility weights
-│   └── visualise_tree.py            # Tree visualization (development utility)
+│   ├── visualise_tree.py            # Static tree visualization (PNG)
+│   └── apply_estimated_weights.py   # Apply quantification outputs to governance_spec
 │
-├── tests/                           # Test suite (2 files, 114 tests)
+├── tests/                           # Test suite (2 files, 151 tests)
 │   ├── __init__.py
-│   ├── test_engine.py               # Comprehensive engine tests across 14 classes
+│   ├── test_engine.py               # Comprehensive engine tests across 17 classes
 │   └── create_test_data.py          # Synthetic checkpoint generation
+│
+├── paper-results-pack.py              # Section 7 results: PPC, sensitivity, counterfactuals
+├── board_utility_quantification.py    # Board utility parameter estimation pipeline
+├── asa_utility_quantification.py      # ASA utility parameter estimation pipeline
+│
+├── utility-quantification/            # Quantification supporting files
+│   ├── cache/                         # Board LLM response cache (SHA-256 keyed)
+│   ├── asa-cache/                     # ASA LLM response cache
+│   ├── ara_board_utility_experiment_spec.md  # Formal specification
+│   └── what-was-built.md             # Implementation notes
 │
 ├── data/                            # Data contracts & checkpoints
 │   ├── governance_spec.xlsx         # Game tree structure, actions, utilities (8 sheets)
 │   ├── opponent_priors.xlsx         # Prior distributions for opponent parameters
 │   └── checkpoints/                 # Belief checkpoint .npz files (Cpre, C0–C3)
 │
-├── outputs/                         # Results from run scripts (CSV)
+├── outputs/                         # Results from run scripts (CSV, HTML dashboards)
+├── results-pack/                    # Paper Section 7 outputs (CSV tables, PNG figures)
 ├── docs/                            # Formal specifications and diagrams
 ├── models/                          # Stan models (belief_model.stan, media_better.stan)
 ├── deprecated/                      # Legacy V1 pipeline scripts
@@ -93,14 +108,17 @@ The engine operates in two tightly coupled layers:
 
 **Layer A — Belief Estimation (External Stan):** Upstream Bayesian models produce posterior draws (500 per checkpoint) for market beliefs (`B_mkt`), management beliefs (`B_mgmt`), voting model parameters (`alpha_vote`, `gamma_A`, `gamma_D`, `sigma_vote`), and review findings parameters. These are serialized in `.npz` checkpoint files.
 
-**Layer B — Adversarial Tree Recursion (Python):** The engine consumes checkpoints and Excel data contracts to execute a unified game tree recursion. The tree has 10 decision/chance/terminal nodes and supports:
+**Layer B — Adversarial Tree Recursion (Python):** The engine consumes checkpoints and Excel data contracts to execute a unified game tree recursion. The tree has 12 decision/chance/terminal nodes and supports:
 - **D0_ceo** (CEO resign/stay) — pre-game branching point
 - **D1** (Board governance reform) — minimal, review, or CEO transition
 - **A2** (ASA strike recommendation) — no strike or recommend strike
 - **V** (Shareholder vote) — logit-normal with belief-dependent parameters
+- **M_agm** (Market reaction to AGM)
+- **D4** (CEO response) — stay, resign, or negotiate exit (first-mover post-AGM)
 - **D_rev** (Board review decision) — no action, commission, or sack CEO
-- **R** (Review findings) — Bernoulli adverse outcome
-- **D4** (CEO response) — stay, resign, or negotiate exit
+- **R** (Review findings) — Dirichlet trinary (negative, balanced, positive)
+- **M_rev** (Market reaction to review)
+- **D4_post_review / D_rev_post_review** — second-stage interaction if review negative + CEO present
 - **Terminal** — compute utility for all actors
 
 Node recursion pattern:
@@ -114,7 +132,7 @@ Node recursion pattern:
 | Module | Location | Purpose |
 |--------|----------|---------|
 | **state.py** | engine/ | Game state tracking (CEO_present, review status); feasibility rule enforcement; belief bundle loading; prior sampling |
-| **chance_models.py** | engine/ | Vote percentage via logit-normal; review findings via Bernoulli; overconfidence bias scaling |
+| **chance_models.py** | engine/ | Vote percentage via logit-normal; review findings via Dirichlet trinary; overconfidence bias scaling |
 | **utilities.py** | engine/ | Actor-specific utility functions: Board minimizes opposition & disruption; ASA maximizes accountability; CEO maximizes CRRA wealth utility |
 | **modes.py** | engine/ | Focal actor configurations (Board, ASA, Board-L2, ASA-L2); switches opponent roles and modelling depth |
 | **predictive.py** | engine/ | ARA opponent modelling: samples opponent parameters from focal actor's priors, evaluates stochastic rollouts, returns empirical best-response distribution |
@@ -188,7 +206,7 @@ distribution = pred.compute(node_name, state, focal_beliefs_draw)
 
 ## Testing Strategy
 
-**Test Coverage:** 114 tests across 14 classes covering:
+**Test Coverage:** 151 tests across 17 classes covering:
 - Data loading and validation (governance_spec, opponent_priors, checkpoints)
 - Feasibility rules and state transitions
 - Chance models (vote percentage, review findings)
@@ -199,6 +217,9 @@ distribution = pred.compute(node_name, state, focal_beliefs_draw)
 - Solver integration (end-to-end)
 - Spec validation checklist
 - Edge cases and overconfidence bias
+- D0_ceo decision node and scenario conditioning
+- Scenario utilities, Laplace smoothing, post-review round
+- Interactive tree output
 
 **Test Data:** Synthetic checkpoints generated by `create_test_data.py` for reproducible testing without external dependencies.
 
@@ -276,4 +297,4 @@ When working on tasks involving these technologies, invoke the corresponding ski
 | numpy | Handles NumPy array operations and numerical computations |
 | python | Manages Python 3.8+ scripting, numerical computing, and module organization |
 | stan | Manages Stan Bayesian models for belief estimation (belief_model.stan, media_better.stan) |
-| pytest | Configures pytest test suite with 114 tests and coverage reporting |
+| pytest | Configures pytest test suite with 151 tests and coverage reporting |

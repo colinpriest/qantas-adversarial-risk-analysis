@@ -20,8 +20,10 @@ models/*.exe
 Thumbs.db
 desktop.ini
 
-# Generated outputs (regenerate via run scripts)
-outputs/
+# Generated outputs — tracked in repo for reproducibility (large binaries via LFS)
+# Pipeline logs are too large to track
+outputs/*.log
+outputs/**/*.log
 
 # LLM elicitation cache (regenerate via quantification scripts)
 utility-quantification/cache/

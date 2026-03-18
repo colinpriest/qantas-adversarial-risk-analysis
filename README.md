@@ -351,7 +351,7 @@ Outcome statistics per action include: `Pr_strike`, `Pr_overwhelming`, `Pr_CEO_r
 
 ## Tests
 
-151 tests across 16 classes covering data loading, feasibility rules, chance models, utilities, mode configurations, predictive distributions, tree evaluation, solver integration, spec validation, edge cases, overconfidence bias, D0_ceo decision node, scenario conditioning, scenario utilities, and interactive tree output.
+151 tests across 17 classes covering data loading, feasibility rules, chance models, utilities, mode configurations, predictive distributions, tree evaluation, solver integration, spec validation, edge cases, overconfidence bias, D0_ceo decision node, scenario conditioning, scenario utilities, Laplace smoothing, post-review round, and interactive tree output.
 
 ```bash
 python -m pytest tests/test_engine.py -v

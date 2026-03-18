@@ -1,0 +1,13 @@
+parameter,status,engine_key,description,spec_default,estimate,posterior_sd,ci_lower,ci_upper
+w_inaction_base,stan_ordinal_probit,inaction_base_penalty,Board inaction: minimal action at all decision points,3.0,6.144,0.4944,5.2771,7.1962
+w_inaction_no_review,stan_ordinal_probit,inaction_no_review_penalty,Board inaction: no governance review commissioned,2.0,6.1107,0.2151,5.7017,6.538
+w_inaction_delay,stan_ordinal_probit,inaction_delay_penalty,Board delay: acted at D_rev after doing nothing at D1 (reactive vs proactive),1.5,0.2872,0.1681,0.0645,0.7179
+w_passivity,stan_ordinal_probit,board_passivity_after_departure,Board passivity after CEO departure (zero when Board responds decisively),0.5,2.1827,0.4004,1.3877,2.9694
+w_removal,stan_ordinal_probit,implementation_cost_sack + ceo_loss_cost,CEO removal cost (implementation + disruption),1.8,0.0152,0.0049,0.0074,0.0265
+w_remove_ceo_overwhelming,stan_ordinal_probit,ceo_loss_shock_overwhelming,CEO removal shock relief (overwhelming),0.5,0.0101,0.0045,0.0035,0.0206
+w_review_negative,stan_ordinal_probit,negative_review_finding_penalty,Negative review finding penalty,5.0,4.0679,0.73,2.6424,5.5131
+w_review_balanced,stan_ordinal_probit,balanced_review_finding_penalty,Balanced review finding penalty,2.5,3.3586,1.2885,0.9541,5.9205
+w_review_post_removal,stan_ordinal_probit,review_after_removal_penalty,No governance review after involuntary CEO removal,3.0,0.0057,0.0021,0.0024,0.0104
+w_ceo_accountability,stan_ordinal_probit,ceo_accountability_benefit,Accountability benefit: CEO removal backed by governance review,3.0,5.5744,0.0623,5.4535,5.6964
+w_strike,stan_ordinal_probit,vote_strike_penalty,Vote penalty from first strike (scenario-level),2.0,0.794,0.4935,0.1594,2.0274
+w_overwhelming,stan_ordinal_probit,vote_overwhelming_penalty,Additional vote penalty from overwhelming (scenario-level),3.0,0.8179,0.501,0.1657,2.0598

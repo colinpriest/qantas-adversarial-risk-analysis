@@ -1,0 +1,6 @@
+outputs/*.npz filter=lfs diff=lfs merge=lfs -text
+outputs/**/*.npz filter=lfs diff=lfs merge=lfs -text
+outputs/*.png filter=lfs diff=lfs merge=lfs -text
+outputs/**/*.png filter=lfs diff=lfs merge=lfs -text
+outputs/*.html filter=lfs diff=lfs merge=lfs -text
+outputs/**/*.html filter=lfs diff=lfs merge=lfs -text

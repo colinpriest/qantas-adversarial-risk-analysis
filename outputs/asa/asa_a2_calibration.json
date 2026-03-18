@@ -1,0 +1,193 @@
+{
+  "tree_probs": {
+    "stayed_D0_minimal": {
+      "A2_no_strike": 0.0199,
+      "A2_rec_strike": 0.9801
+    },
+    "resigned_D0_minimal": {
+      "A2_no_strike": 0.0317,
+      "A2_rec_strike": 0.9683
+    },
+    "stayed_D1_review": {
+      "A2_no_strike": 0.0318,
+      "A2_rec_strike": 0.9682
+    },
+    "resigned_D1_review": {
+      "A2_no_strike": 0.0487,
+      "A2_rec_strike": 0.9513
+    },
+    "stayed_D3_ceo_transition": {
+      "A2_no_strike": 0.0709,
+      "A2_rec_strike": 0.9291
+    }
+  },
+  "beta_priors": {
+    "stayed_D0_minimal": {
+      "alpha": 260,
+      "beta": 5,
+      "beta_mean": 0.9811,
+      "n_eff": 265,
+      "sd": 0.0083,
+      "ci_lo": 0.9617,
+      "ci_hi": 0.9938
+    },
+    "resigned_D0_minimal": {
+      "alpha": 155,
+      "beta": 5,
+      "beta_mean": 0.9688,
+      "n_eff": 160,
+      "sd": 0.0137,
+      "ci_lo": 0.9368,
+      "ci_hi": 0.9897
+    },
+    "stayed_D1_review": {
+      "alpha": 156,
+      "beta": 5,
+      "beta_mean": 0.9689,
+      "n_eff": 161,
+      "sd": 0.0136,
+      "ci_lo": 0.9372,
+      "ci_hi": 0.9898
+    },
+    "resigned_D1_review": {
+      "alpha": 168,
+      "beta": 9,
+      "beta_mean": 0.9492,
+      "n_eff": 177,
+      "sd": 0.0165,
+      "ci_lo": 0.9124,
+      "ci_hi": 0.9764
+    },
+    "stayed_D3_ceo_transition": {
+      "alpha": 80,
+      "beta": 6,
+      "beta_mean": 0.9302,
+      "n_eff": 86,
+      "sd": 0.0273,
+      "ci_lo": 0.868,
+      "ci_hi": 0.9737
+    }
+  },
+  "implied_probs": {
+    "ceo_stay__do_nothing": {
+      "p_strike": 0.9801,
+      "analytical_p": 0.991004,
+      "mc_optimized_p": 0.98012,
+      "simulated_p": 0.9806,
+      "target": 0.98,
+      "beta_mean": 0.9811,
+      "sim_vs_beta_error": -0.0006,
+      "mc_vs_beta_error": -0.001012
+    },
+    "ceo_resign__do_nothing": {
+      "p_strike": 0.9683,
+      "analytical_p": 0.983039,
+      "mc_optimized_p": 0.96832,
+      "simulated_p": 0.9687,
+      "target": 0.9668,
+      "beta_mean": 0.9688,
+      "sim_vs_beta_error": -0.0001,
+      "mc_vs_beta_error": -0.00043
+    },
+    "ceo_stay__review": {
+      "p_strike": 0.9682,
+      "analytical_p": 0.983115,
+      "mc_optimized_p": 0.96823,
+      "simulated_p": 0.9684,
+      "target": 0.9618,
+      "beta_mean": 0.9689,
+      "sim_vs_beta_error": -0.0005,
+      "mc_vs_beta_error": -0.000714
+    },
+    "ceo_resign__review": {
+      "p_strike": 0.9513,
+      "analytical_p": 0.969811,
+      "mc_optimized_p": 0.9513,
+      "simulated_p": 0.9518,
+      "target": 0.9568,
+      "beta_mean": 0.9492,
+      "sim_vs_beta_error": 0.0027,
+      "mc_vs_beta_error": 0.002147
+    },
+    "ceo_stay__board_forces_exit": {
+      "p_strike": 0.9291,
+      "analytical_p": 0.948827,
+      "mc_optimized_p": 0.92911,
+      "simulated_p": 0.9295,
+      "target": 0.9268,
+      "beta_mean": 0.9302,
+      "sim_vs_beta_error": -0.0008,
+      "mc_vs_beta_error": -0.001123
+    }
+  },
+  "targets": {
+    "ceo_stay__do_nothing": 0.98,
+    "ceo_resign__do_nothing": 0.9668000000000001,
+    "ceo_stay__review": 0.9618000000000001,
+    "ceo_resign__review": 0.9568000000000001,
+    "ceo_stay__board_forces_exit": 0.9268000000000001
+  },
+  "calibrated_weights": {
+    "w_strike_cost": {
+      "mean": 0.5112,
+      "sigma": 3.5751,
+      "lower": 0.5,
+      "upper": 10.0,
+      "distribution": "truncnorm"
+    },
+    "w_strike_vs_passive": {
+      "mean": 0.5077,
+      "sigma": 0.1001,
+      "lower": 0.5,
+      "upper": 10.0,
+      "distribution": "truncnorm"
+    },
+    "w_departure_dampens": {
+      "mean": 0.5067,
+      "sigma": 0.1017,
+      "lower": 0.5,
+      "upper": 10.0,
+      "distribution": "truncnorm"
+    },
+    "w_sack_dampens": {
+      "mean": 0.5076,
+      "sigma": 0.1008,
+      "lower": 0.5,
+      "upper": 10.0,
+      "distribution": "truncnorm"
+    },
+    "w_credibility_signal": {
+      "mean": 10.0,
+      "sigma": 2.0435,
+      "lower": 0.5,
+      "upper": 10.0,
+      "distribution": "truncnorm"
+    },
+    "w_ctx_inaction": {
+      "mean": 1.0,
+      "sigma": 0.0,
+      "lower": 1.0,
+      "upper": 5.0,
+      "distribution": "fixed"
+    },
+    "w_ctx_departure": {
+      "mean": 1.0,
+      "sigma": 0.0,
+      "lower": 1.0,
+      "upper": 5.0,
+      "distribution": "fixed"
+    },
+    "w_ctx_review": {
+      "mean": 1.0,
+      "sigma": 0.0,
+      "lower": 1.0,
+      "upper": 5.0,
+      "distribution": "fixed"
+    }
+  },
+  "p_floor": 0.8512000000000001,
+  "p_expected_floor": 0.9268000000000001,
+  "p_absolute_floor": 0.8512000000000001,
+  "optimisation_loss": 4.327e-05,
+  "optimisation_converged": true
+}
