@@ -95,7 +95,6 @@ Qantas/
 ├── results-pack/                    # Paper Section 7 outputs (CSV tables, PNG figures)
 ├── docs/                            # Formal specifications and diagrams
 ├── models/                          # Stan models (belief_model.stan, media_better.stan)
-├── deprecated/                      # Legacy V1 pipeline scripts
 ├── [background]/                    # Research materials (agm-pdfs, board-background, etc.)
 ├── README.md                        # User-facing documentation
 ├── requirements.txt                 # Python dependencies
@@ -280,7 +279,6 @@ mean_vote_percent, sd_vote_percent
 ## References
 
 - **README.md** — User-facing documentation with full API reference
-- **specs-for-version-2.md** — Detailed specifications (game tree, parameters, methodology)
 - **docs/algebraic.md** — Formal algebraic notation for utilities and models
 - **[Actor backgrounds]** — Research materials (agm-pdfs/, board-background/, asa_background/, ceo-background/)
 

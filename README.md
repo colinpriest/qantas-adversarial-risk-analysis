@@ -4,11 +4,13 @@ A three-player adversarial risk analysis engine for Qantas governance decisions.
 
 **Actors:** Board, ASA (Australian Shareholders Association), CEO
 
+![Project infographic](project-infographic.png)
+
 ## Architecture
 
 The system is organized into two layers:
 
-- **Layer A — Bayesian estimation (Stan):** Existing Stan models produce belief checkpoint `.npz` files containing posterior draws for market/management beliefs and model parameters. See [deprecated pipeline](README-deprecated.md) for the upstream estimation steps.
+- **Layer A — Bayesian estimation (Stan):** Stan models (`models/belief_model.stan`, `models/media_better.stan`) produce belief checkpoint `.npz` files containing posterior draws for market/management beliefs and model parameters.
 - **Layer B — Adversarial tree engine (Python):** The `engine/` package consumes checkpoints and Excel data contracts to evaluate governance decisions via ARA recursion.
 
 ## Project Structure
@@ -50,14 +52,13 @@ Qantas/
 │   └── checkpoints/                   # Belief checkpoint .npz files (Cpre, C0–C3)
 │
 ├── tests/
-│   ├── test_engine.py                 # 151 tests across 16 test classes
+│   ├── test_engine.py                 # 151 tests across 17 test classes
 │   └── create_test_data.py            # Generate synthetic checkpoint data
 │
 ├── results-pack/                      # Paper Section 7 outputs (CSV tables, PNG figures)
 ├── outputs/                           # Results from run scripts (CSV, HTML dashboards)
 ├── models/                            # Stan models (belief_model.stan, media_better.stan)
 ├── docs/                              # Formal specifications and diagrams
-├── deprecated/                        # Legacy V1 pipeline scripts
 └── requirements.txt
 ```
 
@@ -97,6 +98,7 @@ All three actor EU streams (Board, CEO, ASA) are propagated through every node. 
 | `--posterior-draws` | `outputs/stan_posterior_draws.npz` | Path to posterior draws file                             |
 | `--param-estimates` | `outputs/parameter_estimates.csv`  | Path to parameter estimates (for vote weights)           |
 | `--no-laplacian`    | off                                | Disable Laplacian smoothing on stochastic decision probs |
+| `--no-commentary`   | off                                | Skip LLM commentary in the interactive HTML dashboard    |
 | `--seed`            | `42`                               | Random seed                                              |
 | `--output`          | (none)                             | Output CSV path                                          |
 
@@ -131,7 +133,10 @@ Sweeps a grid over utility weights (81 combinations by default) and tracks how t
 | `--checkpoint` | `C0`                              | Belief checkpoint                    |
 | `--n_draws`    | `20`                              | Draws per grid point                 |
 | `--K`          | `50`                              | Opponent samples (reduced for speed) |
-| `--R_rollouts` | `10`                              | Rollouts (reduced for speed)         |
+| `--R_rollouts` | `25`                              | Rollouts (reduced for speed)         |
+| `--n_workers`  | (auto)                            | Parallel worker processes            |
+| `--seed`       | `42`                              | Random seed                          |
+| `--no-board-prior` / `--no-ceo-prior` / `--no-asa-prior` | off | Disable Beta prior integration per actor |
 | `--output`     | `outputs/sensitivity_results.csv` | Output path                          |
 
 
@@ -335,6 +340,59 @@ C0         | ceo_resigned | 0.73        | Board | Board Mode | D1_review        
 `Pr_scenario` is the ARA-predicted probability of the CEO's D0_ceo action from the focal actor's perspective.
 
 Outcome statistics per action include: `Pr_strike`, `Pr_overwhelming`, `Pr_CEO_removed`, `Pr_review_adverse`, `mean_vote_percent`, `sd_vote_percent`.
+
+## Results
+
+Headline results from the paper results pack (`python paper-results-pack.py --n_draws 500`; full tables and figures in [results-pack/](results-pack/)).
+
+### Posterior Predictive Check
+
+Model predictions versus the actual 2023 AGM outcomes. The model correctly predicts four of the five observed events; the vote fraction is directionally right (a first strike well above the 25% threshold) but under-predicts the record 82.9% protest vote.
+
+| Event | Predicted | Actual | Match |
+| ----- | --------- | ------ | ----- |
+| CEO departure (D0_ceo) | Pr(resign) = 96.2% | Resigned | ✅ |
+| Board action (D1) | Commission review (Pr = 99.0%) | Commission review | ✅ |
+| ASA recommendation (A2) | Pr(strike) = 95.1% | Strike recommended | ✅ |
+| Vote fraction (V) | Mean = 35.6%, SD = 13.0%, 90% CI [22.1%, 62.3%] | 82.9% | ❌ |
+| Review outcome (R) | Pr(balanced) = 80.4%, Pr(negative) = 19.1% | Balanced | ✅ |
+
+Posterior predictive vote distributions per Board action (unbiased and overconfidence-biased):
+
+![Posterior predictive vote distributions](results-pack/vote_distributions.png)
+
+### Counterfactual Analysis
+
+Board expected utility if a different action had been taken at D1, in both pre-game scenarios. Commissioning a review is optimal in both worlds; forcing a CEO exit (only feasible if the CEO had stayed) is dominated.
+
+| Scenario | D1 action | Board EU | ASA EU | Pr(strike) | Pr(CEO removed) | Optimal |
+| -------- | --------- | -------- | ------ | ---------- | --------------- | ------- |
+| CEO resigned | Do nothing | −5.47 | 2.13 | 0.84 | 1.00 | |
+| CEO resigned | Commission review | −4.94 | 2.36 | 0.83 | 1.00 | ✅ |
+| CEO stayed | Do nothing | 0.76 | 1.95 | 0.84 | 0.80 | |
+| CEO stayed | Commission review | 1.69 | 2.21 | 0.84 | 0.80 | ✅ |
+| CEO stayed | Force CEO exit | 1.64 | 2.71 | 0.82 | 1.00 | |
+
+### Sensitivity Analysis
+
+Tornado chart of Board expected utility under ±50% scaling of each utility parameter. The CEO accountability weight and the review finding penalties dominate; vote penalties matter moderately; the review probability scaling and inaction penalties are negligible.
+
+![Tornado chart of Board EU sensitivity](results-pack/tornado_chart.png)
+
+### Expected Utility Decomposition
+
+Board EU broken into weighted phi component contributions per D1 action:
+
+![Board EU decomposition](results-pack/eu_decomposition.png)
+
+### Value of Information
+
+The strategic value to the Board of observing a signal before committing at D1 is small — the optimal action (commission review) is robust to what ASA recommends and how the vote lands.
+
+| Information signal | Baseline EU | EU with perfect information | Value of information |
+| ------------------ | ----------- | --------------------------- | -------------------- |
+| ASA recommendation (A2) | −4.953 | −4.934 | 0.019 (0.4%) |
+| Vote outcome (V) | −4.953 | −4.950 | 0.004 (0.1%) |
 
 ## Key Design Decisions
 

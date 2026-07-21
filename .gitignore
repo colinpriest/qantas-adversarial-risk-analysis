@@ -34,6 +34,11 @@ utility-quantification/asa-cache/
 .idea/
 .codex/
 .cursor/
+AGENTS.md
+README-deprecated.md
+
+# Legacy V1 pipeline (superseded by V2 engine)
+deprecated/
 *.swp
 *.swo
 

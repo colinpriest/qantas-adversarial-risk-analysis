@@ -4,3 +4,4 @@ outputs/*.png filter=lfs diff=lfs merge=lfs -text
 outputs/**/*.png filter=lfs diff=lfs merge=lfs -text
 outputs/*.html filter=lfs diff=lfs merge=lfs -text
 outputs/**/*.html filter=lfs diff=lfs merge=lfs -text
+project-infographic.png filter=lfs diff=lfs merge=lfs -text
